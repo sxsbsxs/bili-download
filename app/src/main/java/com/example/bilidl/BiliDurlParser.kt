@@ -56,7 +56,7 @@ internal object BiliDurlParser {
                     sizeBytes = segment.sizeBytes.coerceAtLeast(0L)
                 )
             }
-            .sortedWith(compareBy<BiliDirectSegment> { it.order }.thenBy { it.urls.first() })
+            .sortedBy { it.order } // Kotlin's stable sort preserves API array order for equal/missing order values.
     }
 }
 
