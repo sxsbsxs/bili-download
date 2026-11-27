@@ -243,7 +243,7 @@ class BiliDownloadWorker(
         return when (BiliDownloadRetryPolicy.httpStatus(error)) {
             403 -> "HTTP 403：B站 CDN 拒绝访问。应用已尝试备用地址并刷新视频链接。" +
                 "请查看失败详情中的 CDN 主机和响应信息；这可能是 CDN 风控、节点限制或请求范围策略。" +
-                if (transportDetails.isBlank()) "" else " 详情：$transportDetails""
+                if (transportDetails.isBlank()) "" else " 详情：$transportDetails"
             404 -> "HTTP 404：B站视频地址已失效或资源不可用，请重新解析后下载。"
             429 -> "HTTP 429：B站请求过于频繁，请稍后再试。"
             else -> error.message ?: "下载失败"
