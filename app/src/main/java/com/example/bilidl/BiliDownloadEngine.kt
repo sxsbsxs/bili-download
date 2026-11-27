@@ -82,9 +82,6 @@ object BiliDownloadEngine {
                     progress(84, "正在封装 M4A")
                     DownloadStoragePolicy.ensureAvailable(workDir, audioTemp.length())
                     BiliMediaMuxer.muxAudioToM4a(audioTemp, audioOutputTemp)
-                    // The M4A has been validated; release the source track before
-                    // MediaStore copies the final file, avoiding a third full-size copy.
-                    deleteTransferArtifact(audioTemp)
                     val saved = publishFile(
                         context,
                         audioOutputTemp,
@@ -92,6 +89,9 @@ object BiliDownloadEngine {
                         "m4a",
                         "audio/mp4"
                     )
+                    // Keep the source track until the published copy succeeds so
+                    // a failed MediaStore write does not discard the resumable input.
+                    deleteTransferArtifact(audioTemp)
                     val sidecars = exportSidecars(
                         context = context,
                         workDir = workDir,
