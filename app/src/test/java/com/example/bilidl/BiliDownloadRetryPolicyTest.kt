@@ -3,6 +3,7 @@ package com.example.bilidl
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.IOException
 import java.net.SocketTimeoutException
 
 class BiliDownloadRetryPolicyTest {
