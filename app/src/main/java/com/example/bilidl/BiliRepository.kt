@@ -588,7 +588,7 @@ class BiliRepository(
     }
 
     private fun downloadCover(url: String?): Bitmap? {
-        val normalized = normalizeCoverUrl(url) ?: return null
+        val normalized = BiliCoverUrlPolicy.normalize(url) ?: return null
         val referers = listOf("https://www.bilibili.com/", "https://m.bilibili.com/")
         for (referer in referers) {
             val connection = runCatching {
