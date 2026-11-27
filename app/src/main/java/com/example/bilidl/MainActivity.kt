@@ -157,7 +157,8 @@ class MainActivity : ComponentActivity() {
             .build()
 
         setDownloadState(id, ST_WAITING, "等待下载")
-        workManager.enqueueUniqueWork("bilidl_" + id, ExistingWorkPolicy.REPLACE, request)
+        // A duplicate UI action must not cancel an in-flight transfer for the same task.
+        workManager.enqueueUniqueWork("bilidl_" + id, ExistingWorkPolicy.KEEP, request)
         observeUniqueWork(id)
     }
 
