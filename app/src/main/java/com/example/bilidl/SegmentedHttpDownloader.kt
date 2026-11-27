@@ -123,9 +123,16 @@ internal object SegmentedHttpDownloader {
             CHUNK_SIZE.toString()
         ).joinToString("\n")
 
-        val reusable = target.isFile && target.length() == probe.totalBytes &&
-            metaFile.isFile && metaFile.readText() == expectedMeta &&
-            mapFile.isFile && mapFile.readText().length == chunkCount
+        val targetMatches = target.isFile && target.length() == probe.totalBytes
+        val metadataMatches = metaFile.isFile && metaFile.readText() == expectedMeta
+        val mapMatches = mapFile.isFile && mapFile.readText().length == chunkCount
+        val reusable = TransferCheckpointPolicy.canReuse(
+            etag = probe.etag,
+            lastModified = probe.lastModified,
+            targetMatches = targetMatches,
+            metadataMatches = metadataMatches,
+            mapMatches = mapMatches
+        )
 
         val completed = if (reusable) {
             mapFile.readText().map { it == '1' }.toBooleanArray()
