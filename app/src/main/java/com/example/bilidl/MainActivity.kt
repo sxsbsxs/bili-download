@@ -1,6 +1,6 @@
 package com.example.bilidl
 
-import android.app.Activity
+import androidx.activity.ComponentActivity
 import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.Context
@@ -16,12 +16,21 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import java.util.concurrent.Executors
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import org.json.JSONObject
 
 /*
  * ===== 给后端开发者（GPT）的说明 =====
@@ -40,9 +49,10 @@ import android.widget.*
  *          concurrent(Int 0..3 =1/2/3/5) wifi_only danmaku audio_only notify(Boolean)
  *          变化时会回调 onSettingChanged(key, value)
  */
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
 
     companion object {
+        private const val DOWNLOAD_TAG = "bilidl-download"
         const val ST_DOWNLOADING = 0
         const val ST_WAITING = 1
         const val ST_PAUSED = 2
@@ -50,36 +60,287 @@ class MainActivity : Activity() {
         const val ST_DONE = 4
     }
 
-    // 仅保留真实业务的接入点。未接入服务前不生成假解析结果、假进度或假登录态。
-    // ===================== 交给后端实现 =====================
+    // ===================== 真实业务接入 =====================
     private fun onParseClicked(text: String) {
-        showError("解析服务尚未接入；链接已通过格式检查，可在此接入 Bilibili API。")
+        setBusy(parseBtn, true)
+        parseBtn.text = "解析中…"
+        backgroundExecutor.execute {
+            try {
+                val video = BiliRepository { SecureCookieStore.load(this) }.inspect(text)
+                runOnUiThread {
+                    parsedVideo = video
+                    selectedQualityId = preferredQualityId(video.qualities)
+                    showVideo(
+                        video.title,
+                        video.uploader,
+                        video.cover,
+                        "第 " + video.page + " P · " + formatDuration(video.durationSeconds) +
+                            " · " + video.qualities.size + " 种可用画质"
+                    )
+                    homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
+                }
+            } catch (error: Exception) {
+                showError(error.message ?: "解析失败，请检查网络后重试")
+            }
+        }
     }
 
     private fun onDownloadClicked() {
-        toast("下载服务尚未接入，当前不会创建虚假下载任务")
+        val video = parsedVideo
+        if (video == null) {
+            toast("请先解析一个 B站视频")
+            return
+        }
+        val spec = DownloadSpec(
+            video = video,
+            qualityId = selectedQualityId.takeIf { it > 0 } ?: video.qualities.firstOrNull()?.id ?: 80,
+            audioOnly = prefs.getBoolean("audio_only", false)
+        )
+        val id = "bili_" + System.currentTimeMillis()
+        downloadSpecs[id] = spec
+        persistDownloadSpec(id, spec)
+        addDownload(id, video.title, video.cover)
+        enqueueDownload(id, spec)
+        selectTab(1)
+        toast("已加入下载任务")
     }
 
-    private fun onPauseClicked(id: String) { toast("暂停功能需要下载服务支持") }
-    private fun onResumeClicked(id: String) { toast("下载任务控制接口尚未接入") }
-    private fun onDeleteClicked(id: String, deleteFile: Boolean) {}
-    private fun onOpenClicked(id: String) { toast("文件打开功能尚未接入") }
-    private fun onClearFinishedClicked() {}
+    private fun enqueueDownload(id: String, spec: DownloadSpec) {
+        val networkType = if (prefs.getBoolean("wifi_only", true)) {
+            androidx.work.NetworkType.UNMETERED
+        } else {
+            androidx.work.NetworkType.CONNECTED
+        }
+        val constraints = androidx.work.Constraints.Builder()
+            .setRequiredNetworkType(networkType)
+            .build()
+        val request = OneTimeWorkRequestBuilder<BiliDownloadWorker>()
+            .setConstraints(constraints)
+            .setInputData(
+                workDataOf(
+                    BiliDownloadWorker.KEY_TASK_ID to id,
+                    BiliDownloadWorker.KEY_BVID to spec.video.bvid.orEmpty(),
+                    BiliDownloadWorker.KEY_AID to spec.video.aid,
+                    BiliDownloadWorker.KEY_CID to spec.video.cid,
+                    BiliDownloadWorker.KEY_TITLE to spec.video.title,
+                    BiliDownloadWorker.KEY_QUALITY to spec.qualityId,
+                    BiliDownloadWorker.KEY_AUDIO_ONLY to spec.audioOnly
+                )
+            )
+            .addTag(DOWNLOAD_TAG)
+            .build()
+
+        setDownloadState(id, ST_WAITING, "等待下载")
+        workManager.enqueueUniqueWork("bilidl_" + id, ExistingWorkPolicy.REPLACE, request)
+        observeUniqueWork(id)
+    }
+
+    private fun observeUniqueWork(id: String) {
+        workManager.getWorkInfosForUniqueWorkLiveData("bilidl_" + id).observe(this) { infos ->
+            val info = infos.firstOrNull { it.state == WorkInfo.State.RUNNING }
+                ?: infos.firstOrNull { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED }
+                ?: infos.firstOrNull()
+            if (info != null) handleWorkInfo(id, info)
+        }
+    }
+
+    private fun persistDownloadSpec(id: String, spec: DownloadSpec) {
+        val value = JSONObject()
+            .put("bvid", spec.video.bvid ?: "")
+            .put("aid", spec.video.aid)
+            .put("cid", spec.video.cid)
+            .put("page", spec.video.page)
+            .put("title", spec.video.title)
+            .put("uploader", spec.video.uploader)
+            .put("duration", spec.video.durationSeconds)
+            .put("coverUrl", spec.video.coverUrl ?: "")
+            .put("quality", spec.qualityId)
+            .put("audioOnly", spec.audioOnly)
+        taskPrefs.edit().putString(id, value.toString()).apply()
+    }
+
+    private fun handleWorkInfo(id: String, info: WorkInfo) {
+        if (!items.containsKey(id)) return
+        when (info.state) {
+            WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED ->
+                setDownloadState(id, ST_WAITING, "等待下载")
+            WorkInfo.State.RUNNING -> {
+                val progress = info.progress.getInt(BiliDownloadWorker.KEY_PROGRESS, 0)
+                val detail = info.progress.getString(BiliDownloadWorker.KEY_DETAIL).orEmpty()
+                updateDownload(id, progress, detail)
+            }
+            WorkInfo.State.SUCCEEDED -> {
+                val uriText = info.outputData.getString(BiliDownloadWorker.KEY_URI)
+                if (!uriText.isNullOrBlank()) savedFileUris[id] = Uri.parse(uriText)
+                finishDownload(id, info.outputData.getString(BiliDownloadWorker.KEY_SIZE_TEXT) ?: "已保存")
+            }
+            WorkInfo.State.FAILED -> failDownload(
+                id,
+                info.outputData.getString(BiliDownloadWorker.KEY_ERROR) ?: "下载失败"
+            )
+            WorkInfo.State.CANCELLED -> setDownloadState(id, ST_PAUSED, "已取消，可重新下载")
+        }
+    }
+
+    private fun restoreDownloadTasks() {
+        taskPrefs.all.forEach { entry ->
+            val id = entry.key
+            val raw = entry.value as? String ?: return@forEach
+            val json = try {
+                JSONObject(raw)
+            } catch (_: Exception) {
+                taskPrefs.edit().remove(id).apply()
+                return@forEach
+            }
+            val video = BiliVideo(
+                bvid = json.optString("bvid").takeIf { it.isNotBlank() },
+                aid = json.optLong("aid"),
+                cid = json.optLong("cid"),
+                page = json.optInt("page", 1),
+                title = json.optString("title", "B站视频"),
+                uploader = json.optString("uploader"),
+                durationSeconds = json.optInt("duration"),
+                coverUrl = json.optString("coverUrl").takeIf { it.isNotBlank() },
+                cover = null,
+                qualities = emptyList()
+            )
+            val spec = DownloadSpec(
+                video,
+                json.optInt("quality", 80),
+                json.optBoolean("audioOnly", false)
+            )
+            downloadSpecs[id] = spec
+            if (!items.containsKey(id)) addDownload(id, video.title, null)
+            observeUniqueWork(id)
+        }
+    }
+
+    private fun onPauseClicked(id: String) {
+        workManager.cancelUniqueWork("bilidl_" + id)
+        setDownloadState(id, ST_PAUSED, "已取消，可重新下载")
+    }
+
+    private fun onResumeClicked(id: String) {
+        val spec = downloadSpecs[id]
+        if (spec == null) {
+            toast("任务参数已失效，请重新解析视频")
+            return
+        }
+        enqueueDownload(id, spec)
+    }
+
+    private fun onDeleteClicked(id: String, deleteFile: Boolean) {
+        workManager.cancelUniqueWork("bilidl_" + id)
+        workManager.pruneWork()
+        downloadSpecs.remove(id)
+        taskPrefs.edit().remove(id).apply()
+        val savedUri = savedFileUris.remove(id)
+        if (deleteFile) {
+            savedUri?.let { contentResolver.delete(it, null, null) }
+        }
+    }
+
+    private fun onOpenClicked(id: String) {
+        val uri = savedFileUris[id]
+        if (uri == null) {
+            toast("文件记录不存在")
+            return
+        }
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, contentResolver.getType(uri) ?: "video/*")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            toast("没有可打开此文件的播放器")
+        }
+    }
+
+    private fun onClearFinishedClicked() {
+        val activeIds = items.keys
+        taskPrefs.all.keys.filter { it !in activeIds }.forEach { taskPrefs.edit().remove(it).apply() }
+        downloadSpecs.keys.toList().filter { it !in activeIds }.forEach(downloadSpecs::remove)
+        savedFileUris.keys.toList().filter { it !in activeIds }.forEach(savedFileUris::remove)
+        workManager.pruneWork()
+    }
 
     private fun onRequestQrCode() {
-        setQrStatus("扫码登录服务尚未接入", true)
-        qrOverlay.text = "登录功能尚未接入"
+        setQrStatus("扫码登录暂未接入；当前可使用本机 SESSDATA 授权", true)
+        qrOverlay.text = "请切换到 Cookie 授权"
         qrOverlay.visibility = View.VISIBLE
     }
 
     private fun onCookieLogin(sessdata: String) {
-        loginFailed("Cookie 登录服务尚未接入；请勿将 SESSDATA 分享给他人。")
+        backgroundExecutor.execute {
+            try {
+                val (name, vip) = BiliRepository().verifyCookie(sessdata)
+                SecureCookieStore.save(this, sessdata)
+                runOnUiThread { loginSuccess(name, null, vip) }
+            } catch (error: Exception) {
+                loginFailed(error.message ?: "授权验证失败")
+            }
+        }
     }
 
-    private fun onLogoutClicked() { logoutDone() }
+    private fun onLogoutClicked() {
+        SecureCookieStore.clear(this)
+        logoutDone()
+    }
+
     private fun onSettingChanged(key: String, value: Any) {}
-    private fun onChoosePathClicked() { toast("下载目录选择功能尚未接入") }
-    private fun onClearCacheClicked() { toast("缓存清理服务尚未接入") }
+    private fun onChoosePathClicked() {
+        toast("视频保存位置：Download/BiliDl")
+    }
+
+    private fun onClearCacheClicked() {
+        val cache = java.io.File(cacheDir, "bilidl")
+        cache.deleteRecursively()
+        toast("临时下载缓存已清理")
+    }
+
+    private fun formatDuration(seconds: Int): String {
+        val safe = seconds.coerceAtLeast(0)
+        return String.format(java.util.Locale.US, "%02d:%02d", safe / 60, safe % 60)
+    }
+
+    private fun preferredQualityId(qualities: List<BiliQuality>): Int {
+        if (qualities.isEmpty()) return 80
+        val target = when (prefs.getInt("quality", 0)) {
+            1 -> 80
+            2 -> 64
+            3 -> 32
+            4 -> 16
+            else -> return qualities.first().id
+        }
+        return qualities.firstOrNull { it.id <= target }?.id ?: qualities.last().id
+    }
+
+    private fun qualityLabelForSelection(video: BiliVideo): String {
+        return video.qualities.firstOrNull { it.id == selectedQualityId }?.label
+            ?: video.qualities.firstOrNull()?.label
+            ?: "自动"
+    }
+
+    private fun showAvailableQualities() {
+        val video = parsedVideo
+        if (video == null || video.qualities.isEmpty()) {
+            toast("请先解析视频，获取这条视频实际提供的画质")
+            return
+        }
+        val labels = video.qualities.map { it.label }.toTypedArray()
+        val selected = video.qualities.indexOfFirst { it.id == selectedQualityId }.coerceAtLeast(0)
+        AlertDialog.Builder(this)
+            .setTitle("选择当前视频可用画质")
+            .setSingleChoiceItems(labels, selected) { dialog, which ->
+                selectedQualityId = video.qualities[which].id
+                homeQualityTv.text = video.qualities[which].label + "  ›"
+                dialog.dismiss()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     // =======================================================
 
     // ===================== 供后端调用的界面方法 =====================
@@ -91,11 +352,14 @@ class MainActivity : Activity() {
         metaTv.visibility = if (meta.isEmpty()) View.GONE else View.VISIBLE
         if (cover != null) coverIv.setImageBitmap(cover) else coverIv.setImageDrawable(null)
         resultCard.visibility = View.VISIBLE
+        parsedVideo?.let { homeQualityTv.text = qualityLabelForSelection(it) + "  ›" }
         say("", sub)
     }
 
     fun showError(message: String) = runOnUiThread {
         setBusy(parseBtn, false); parseBtn.text = "解析"
+        parsedVideo = null
+        resultCard.visibility = View.GONE
         say(message, err)
     }
 
@@ -204,6 +468,18 @@ class MainActivity : Activity() {
     private var userName = ""
     private var userVip = false
     private var userAvatar: Bitmap? = null
+
+    private val backgroundExecutor = Executors.newFixedThreadPool(2)
+    private val workManager by lazy { WorkManager.getInstance(applicationContext) }
+    private val taskPrefs by lazy {
+        getSharedPreferences("download_tasks", Context.MODE_PRIVATE)
+    }
+    private var parsedVideo: BiliVideo? = null
+    private var selectedQualityId = 0
+    private data class DownloadSpec(val video: BiliVideo, val qualityId: Int, val audioOnly: Boolean)
+    private val downloadSpecs = HashMap<String, DownloadSpec>()
+    private val savedFileUris = HashMap<String, Uri>()
+
 
     // 首页
     private lateinit var input: EditText
@@ -467,6 +743,19 @@ class MainActivity : Activity() {
         selectTab(0)
         refreshAccountUi()
         refreshDownloadList()
+        restoreDownloadTasks()
+        setDownloadPathText("Download/BiliDl")
+        backgroundExecutor.execute {
+            val cookie = SecureCookieStore.load(this)
+            if (!cookie.isNullOrBlank()) {
+                try {
+                    val (name, vip) = BiliRepository().verifyCookie(cookie)
+                    runOnUiThread { if (!isFinishing) loginSuccess(name, null, vip) }
+                } catch (_: Exception) {
+                    SecureCookieStore.clear(this)
+                }
+            }
+        }
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -616,9 +905,7 @@ class MainActivity : Activity() {
             text = qualityText()
         }
         qualityRow.addView(homeQualityTv)
-        qualityRow.setOnClickListener {
-            pickOption("优先画质", "quality", qualityOptions, 0) { refreshQuality() }
-        }
+        qualityRow.setOnClickListener { showAvailableQualities() }
 
         dlBtn = pillButton("加入下载任务", true)
         dlBtn.setOnClickListener {
@@ -719,7 +1006,7 @@ class MainActivity : Activity() {
             setHintTextColor(sub)
             setTextColor(ink)
             textSize = 14f
-            singleLine = true
+            isSingleLine = true
             background = shape(Color.WHITE, 14, Color.parseColor("#E8EAF0"))
             setPadding(dp(14), dp(12), dp(14), dp(12))
             addTextChangedListener(object : TextWatcher {
@@ -809,7 +1096,7 @@ class MainActivity : Activity() {
                 r.bar.visibility = View.VISIBLE
                 r.info.text = if (item.info.isEmpty()) "${item.progress}%" else "${item.progress}%  ·  ${item.info}"
                 r.info.setTextColor(sub)
-                r.primary.text = "暂停"
+                r.primary.text = "取消"
             }
             ST_WAITING -> {
                 r.bar.visibility = View.VISIBLE
@@ -819,9 +1106,9 @@ class MainActivity : Activity() {
             }
             ST_PAUSED -> {
                 r.bar.visibility = View.VISIBLE
-                r.info.text = "已暂停 · ${item.progress}%"
+                r.info.text = "已取消 · 可从头重新下载"
                 r.info.setTextColor(sub)
-                r.primary.text = "继续"
+                r.primary.text = "重新下载"
             }
             ST_FAILED -> {
                 r.bar.visibility = View.GONE
@@ -1182,7 +1469,7 @@ class MainActivity : Activity() {
             setTextColor(ink)
         })
         cookiePanel.addView(TextView(this).apply {
-            text = "SESSDATA 属于敏感凭据，请勿截图、转发或提交到公开仓库。当前版本尚未接入登录验证服务。"
+            text = "粘贴 B站 SESSDATA 进行本机授权。凭据使用 Android Keystore 加密保存，不会上传到本应用服务器；请勿分享给他人。"
             textSize = 12f
             setTextColor(sub)
             setLineSpacing(0f, 1.2f)
@@ -1225,10 +1512,9 @@ class MainActivity : Activity() {
     }
 
     private fun showLogin() {
-        selectLoginSeg(0)
+        selectLoginSeg(1)
         cookieErrTv.text = ""
         loginPage.visibility = View.VISIBLE
-        refreshQr()
     }
 
     private fun hideLogin() {
