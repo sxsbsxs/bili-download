@@ -27,3 +27,7 @@ jobs:
         run: git show --check --oneline --format= HEAD
       - name: Check project layout and dependencies
         run: bash scripts/check-project.sh
+      - name: Test anonymous playurl probe helpers
+        run: |
+          python3 -m py_compile scripts/probe-anonymous-playurl.py
+          python3 -m unittest discover -s scripts/tests -v
