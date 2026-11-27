@@ -100,7 +100,25 @@ internal object SegmentedHttpDownloader {
         writerFactory: PositionalFileWriterFactory,
         referer: String
     ) {
-        val probe = probeWithRetry(url, cookie, referer)
+        val probe = try {
+            probeWithRetry(url, cookie, referer)
+        } catch (rangeError: Exception) {
+            if (BiliDownloadRetryPolicy.httpStatus(rangeError) != 403) throw rangeError
+
+            // Some CDN nodes reject Range altogether but still allow a normal
+            // full response. Try sequential GET once before abandoning this URL.
+            try {
+                downloadSequentialWithRetry(url, target, cookie, isCancelled, onProgress, referer)
+                return
+            } catch (sequentialError: CancellationException) {
+                throw sequentialError
+            } catch (sequentialError: Exception) {
+                throw IOException(
+                    "有界 Range 请求被 CDN 拒绝；顺序下载回退也失败：${sequentialError.message}",
+                    rangeError
+                ).also { it.addSuppressed(sequentialError) }
+            }
+        }
         if (
             probe == null ||
             !TransferCheckpointPolicy.supportsVerifiedRanges(probe.etag, probe.lastModified)
