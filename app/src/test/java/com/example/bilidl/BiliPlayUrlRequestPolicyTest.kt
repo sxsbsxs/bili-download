@@ -19,6 +19,7 @@ class BiliPlayUrlRequestPolicyTest {
         assertEquals("1", parameters["try_look"])
         assertEquals("80", parameters["qn"])
         assertEquals("4048", parameters["fnval"])
+        assertEquals("pc", parameters["platform"])
         assertEquals("BV1xx411c7mD", parameters["bvid"])
         assertFalse(parameters.containsKey("avid"))
     }
@@ -64,6 +65,7 @@ class BiliPlayUrlRequestPolicyTest {
         )
 
         assertEquals("0", parameters["fnval"])
+        assertEquals("pc", parameters["platform"])
         assertEquals("80", parameters["qn"])
         assertEquals("1", parameters["try_look"])
     }
