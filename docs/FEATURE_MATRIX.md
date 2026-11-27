@@ -28,7 +28,8 @@ This file is a status sheet, not a marketing checklist.
 | Saved resource browser | Implemented | Completed task rows open saved MP4, danmaku XML, and subtitle SRT resources |
 | Task execution history | Implemented | View timestamped status changes and failure/retry messages per task |
 | Anonymous playurl live probe | Implemented, manual | `scripts/probe-anonymous-playurl.py` resolves a public BV/part and checks whether the live anonymous WBI DASH response contains quality id 80; the manual workflow requires a real BV input |
-| Live CDN/device QA | Not verified by normal CI | Automated tests validate FLV tag merging with generated fixtures and HTTP transport against a local range server; manual live probe validates a selected public video. Danmaku/subtitle availability and playback on physical phones still require representative live content/device runs |
+| Android live pipeline smoke | Implemented, manual | Android instrumentation test downloads a public DASH stream on API 35, remuxes it with device MediaExtractor/MediaMuxer, validates MP4 via JNI, and calls live danmaku/subtitle APIs plus XML/SRT exporters |
+| Live CDN/device QA | Not run automatically | Offline CI validates FLV tag merging and local HTTP behavior; manual workflows exercise a supplied public video on the live Bilibili API and Android emulator. Physical OEM-device compatibility still needs a run on real phones |
 
 ## Release gate
 
