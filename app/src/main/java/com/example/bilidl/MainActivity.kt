@@ -64,6 +64,7 @@ class MainActivity : ComponentActivity() {
 
     private val mainViewModel: MainViewModel by viewModels()
     private val downloadsViewModel: DownloadsViewModel by viewModels()
+    private val loginViewModel: LoginViewModel by viewModels()
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
@@ -476,114 +477,65 @@ class MainActivity : ComponentActivity() {
         downloadsViewModel.deleteCompletedTasks()
     }
 
-    @Volatile private var qrLoginGeneration = 0
+    private fun observeLoginState() {
+        lifecycleScope.launch {
+            loginViewModel.state.collect { state ->
+                when (state) {
+                    LoginUiState.Idle,
+                    LoginUiState.CheckingSession -> Unit
+                    LoginUiState.RequestingQr -> {
+                        qrIv.setImageDrawable(null)
+                        qrOverlay.text = "正在申请二维码…"
+                        qrOverlay.visibility = View.VISIBLE
+                        setQrStatus("正在连接 B站登录服务…")
+                    }
+                    is LoginUiState.QrReady -> {
+                        showQrCode(state.bitmap)
+                        setQrStatus("请使用哔哩哔哩 App 扫描二维码")
+                    }
+                    LoginUiState.Scanned ->
+                        setQrStatus("已扫描，请在哔哩哔哩 App 中确认登录")
+                    LoginUiState.Expired -> showQrExpired()
+                    LoginUiState.VerifyingCookie -> {
+                        setBusy(cookieBtn, true)
+                        cookieBtn.text = "登录中…"
+                    }
+                    is LoginUiState.Success -> {
+                        setBusy(cookieBtn, false)
+                        loginSuccess(state.username, null, state.vip)
+                    }
+                    is LoginUiState.Error -> {
+                        setBusy(cookieBtn, false)
+                        if (state.source == LoginFailureSource.QR_CODE) {
+                            qrOverlay.text = "登录失败，点击刷新"
+                            qrOverlay.visibility = View.VISIBLE
+                        }
+                        loginFailed(state.message)
+                    }
+                    LoginUiState.LoggedOut -> logoutDone()
+                }
+            }
+        }
+    }
+
+
     @Volatile private var qrLoginActive = false
     private var activeLoginSegment = -1
 
     private fun onRequestQrCode() {
-        val generation = ++qrLoginGeneration
-        qrLoginActive = true
-        qrIv.setImageDrawable(null)
-        qrOverlay.text = "正在申请二维码…"
-        qrOverlay.visibility = View.VISIBLE
-        setQrStatus("正在连接 B站登录服务…")
-
-        backgroundExecutor.execute {
-            try {
-                val session = BiliQrLoginClient.generate()
-                val bitmap = BiliQrLoginClient.renderQr(session.url)
-                runOnUiThread {
-                    if (!isFinishing && generation == qrLoginGeneration && qrLoginActive) {
-                        showQrCode(bitmap)
-                        setQrStatus("请使用哔哩哔哩 App 扫描二维码")
-                    }
-                }
-
-                val expiresAt = System.currentTimeMillis() + 180_000L
-                var finished = false
-                while (
-                    !finished &&
-                    qrLoginActive &&
-                    generation == qrLoginGeneration &&
-                    System.currentTimeMillis() < expiresAt
-                ) {
-                    when (val result = BiliQrLoginClient.poll(session)) {
-                        is BiliQrPollResult -> when (result.state) {
-                            BiliQrLoginState.WAITING -> Unit
-                            BiliQrLoginState.SCANNED -> runOnUiThread {
-                                if (generation == qrLoginGeneration && qrLoginActive) {
-                                    setQrStatus("已扫描，请在哔哩哔哩 App 中确认登录")
-                                }
-                            }
-                            BiliQrLoginState.EXPIRED -> {
-                                finished = true
-                                runOnUiThread {
-                                    if (generation == qrLoginGeneration) showQrExpired()
-                                }
-                            }
-                            BiliQrLoginState.SUCCESS -> {
-                                val sessdata = result.sessdata
-                                    ?: throw IOException("扫码成功，但没有获取到登录凭据")
-                                val (name, vip) = BiliRepository().verifyCookie(sessdata)
-                                SecureCookieStore.save(this, sessdata)
-                                finished = true
-                                qrLoginActive = false
-                                runOnUiThread {
-                                    if (generation == qrLoginGeneration && !isFinishing) {
-                                        loginSuccess(name, null, vip)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (!finished) Thread.sleep(2_000L)
-                }
-
-                if (
-                    !finished &&
-                    generation == qrLoginGeneration &&
-                    qrLoginActive
-                ) {
-                    runOnUiThread {
-                        if (generation == qrLoginGeneration) showQrExpired()
-                    }
-                }
-            } catch (error: Exception) {
-                if (generation == qrLoginGeneration && qrLoginActive) {
-                    runOnUiThread {
-                        if (generation == qrLoginGeneration) {
-                            qrOverlay.text = "登录失败，点击刷新"
-                            qrOverlay.visibility = View.VISIBLE
-                            loginFailed(error.message ?: "B站扫码登录失败，请重试")
-                        }
-                    }
-                }
-            } finally {
-                if (generation == qrLoginGeneration) qrLoginActive = false
-            }
-        }
+        loginViewModel.requestQrCode()
     }
 
     private fun stopQrLogin() {
-        qrLoginActive = false
-        qrLoginGeneration++
+        loginViewModel.stopQrLogin()
     }
 
     private fun onCookieLogin(sessdata: String) {
-        backgroundExecutor.execute {
-            try {
-                val (name, vip) = BiliRepository().verifyCookie(sessdata)
-                SecureCookieStore.save(this, sessdata)
-                runOnUiThread { loginSuccess(name, null, vip) }
-            } catch (error: Exception) {
-                loginFailed(error.message ?: "授权验证失败")
-            }
-        }
+        loginViewModel.loginWithSessdata(sessdata)
     }
 
     private fun onLogoutClicked() {
-        SecureCookieStore.clear(this)
-        logoutDone()
+        loginViewModel.logout()
     }
 
     private fun onSettingChanged(key: String, value: Any) {}
@@ -1129,23 +1081,14 @@ class MainActivity : ComponentActivity() {
 
         setContentView(rootFrame)
         observeParseState()
+        observeLoginState()
         selectTab(0)
         refreshAccountUi()
         refreshDownloadList()
         restoreDownloadTasks()
         restoreRoomTasks()
         setDownloadPathText("Download/BiliDl")
-        backgroundExecutor.execute {
-            val cookie = SecureCookieStore.load(this)
-            if (!cookie.isNullOrBlank()) {
-                try {
-                    val (name, vip) = BiliRepository().verifyCookie(cookie)
-                    runOnUiThread { if (!isFinishing) loginSuccess(name, null, vip) }
-                } catch (_: Exception) {
-                    SecureCookieStore.clear(this)
-                }
-            }
-        }
+        loginViewModel.restoreSession()
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
