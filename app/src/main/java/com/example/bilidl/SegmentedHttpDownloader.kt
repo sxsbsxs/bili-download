@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -23,6 +24,8 @@ import java.util.concurrent.atomic.AtomicLong
 internal object SegmentedHttpDownloader {
     private const val CHUNK_SIZE = 4L * 1024L * 1024L
     private const val BUFFER_SIZE = 64 * 1024
+    private const val MAX_RANGE_ATTEMPTS = 3
+    private const val MAX_SEQUENTIAL_ATTEMPTS = 3
     private const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36"
 
@@ -52,7 +55,7 @@ internal object SegmentedHttpDownloader {
                 lastError = error
             }
         }
-        throw IOException("分段下载失败：" + (lastError?.message ?: "没有可用 CDN 地址"))
+        throw IOException("分段下载失败：" + (lastError?.message ?: "没有可用 CDN 地址"), lastError)
     }
 
     private suspend fun downloadOne(
@@ -63,17 +66,35 @@ internal object SegmentedHttpDownloader {
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit
     ) {
-        val probe = probe(url, cookie)
+        val probe = probeWithRetry(url, cookie)
         if (
             probe == null ||
             !TransferCheckpointPolicy.supportsVerifiedRanges(probe.etag, probe.lastModified)
         ) {
             // Without a stable validator, parallel ranges could mix bytes from
             // different CDN representations. Use a clean sequential response.
-            downloadSequential(url, target, cookie, isCancelled, onProgress)
+            downloadSequentialWithRetry(url, target, cookie, isCancelled, onProgress)
             return
         }
         downloadRanges(url, target, cookie, probe, concurrency, isCancelled, onProgress)
+    }
+
+    private suspend fun probeWithRetry(url: String, cookie: String?): Probe? {
+        var lastError: Exception? = null
+        for (attempt in 0 until MAX_RANGE_ATTEMPTS) {
+            try {
+                return probe(url, cookie)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                lastError = error
+                if (!BiliDownloadRetryPolicy.shouldRetry(error, attempt, MAX_RANGE_ATTEMPTS)) {
+                    throw error
+                }
+                delay(500L * (attempt + 1))
+            }
+        }
+        throw lastError ?: IOException("CDN 探测失败")
     }
 
     private fun probe(url: String, cookie: String?): Probe? {
@@ -84,7 +105,7 @@ internal object SegmentedHttpDownloader {
             val status = connection.responseCode
             if (status == HttpURLConnection.HTTP_OK) return null
             if (status != HttpURLConnection.HTTP_PARTIAL) {
-                throw IOException("CDN 探测返回 HTTP $status")
+                throw BiliHttpException(status, "CDN 探测")
             }
             val contentRange = connection.getHeaderField("Content-Range").orEmpty()
             val total = Regex("""bytes\s+\d+-\d+/(\d+)""", RegexOption.IGNORE_CASE)
@@ -159,6 +180,7 @@ internal object SegmentedHttpDownloader {
             }
         )
         val total = probe.totalBytes
+        val inFlightBytes = AtomicLong(0L)
         val lock = Any()
 
         ParcelFileDescriptor.open(
@@ -172,16 +194,19 @@ internal object SegmentedHttpDownloader {
                         if (isCancelled()) throw CancellationException("下载已取消")
                         val start = index.toLong() * CHUNK_SIZE
                         val end = minOf(total - 1L, start + CHUNK_SIZE - 1L)
-                        val received = downloadRange(
-                            url, cookie, probe, descriptor.fd, start, end,
-                            isCancelled
-                        ) { bytes ->
-                            val now = completedBytes.addAndGet(bytes)
-                            onProgress(((now * 100L) / total).toInt().coerceIn(0, 99))
-                        }
-
-                        val expected = end - start + 1L
-                        if (received != expected) throw IOException("分段长度不匹配：$received / $expected")
+                        downloadRangeWithRetry(
+                            url = url,
+                            cookie = cookie,
+                            probe = probe,
+                            fd = descriptor.fd,
+                            start = start,
+                            end = end,
+                            isCancelled = isCancelled,
+                            completedBytes = completedBytes,
+                            inFlightBytes = inFlightBytes,
+                            totalBytes = total,
+                            onProgress = onProgress
+                        )
                         synchronized(lock) {
                             if (!NativeTransfer.sync(descriptor.fd)) {
                                 throw IOException("分段写入同步失败")
@@ -203,6 +228,59 @@ internal object SegmentedHttpDownloader {
         onProgress(100)
     }
 
+    private suspend fun downloadRangeWithRetry(
+        url: String,
+        cookie: String?,
+        probe: Probe,
+        fd: Int,
+        start: Long,
+        end: Long,
+        isCancelled: () -> Boolean,
+        completedBytes: AtomicLong,
+        inFlightBytes: AtomicLong,
+        totalBytes: Long,
+        onProgress: (Int) -> Unit
+    ): Long {
+        val expected = end - start + 1L
+        var lastError: Exception? = null
+
+        for (attempt in 0 until MAX_RANGE_ATTEMPTS) {
+            val attemptBytes = AtomicLong(0L)
+            try {
+                val received = downloadRange(
+                    url, cookie, probe, fd, start, end, isCancelled
+                ) { bytes ->
+                    attemptBytes.addAndGet(bytes)
+                    inFlightBytes.addAndGet(bytes)
+                    val current = completedBytes.get() + inFlightBytes.get()
+                    onProgress(((current * 100L) / totalBytes).toInt().coerceIn(0, 99))
+                }
+                if (received != expected) {
+                    throw RetryableDownloadException("分段长度不匹配：$received / $expected")
+                }
+
+                inFlightBytes.addAndGet(-attemptBytes.get())
+                completedBytes.addAndGet(received)
+                val current = completedBytes.get() + inFlightBytes.get()
+                onProgress(((current * 100L) / totalBytes).toInt().coerceIn(0, 99))
+                return received
+            } catch (cancelled: CancellationException) {
+                inFlightBytes.addAndGet(-attemptBytes.get())
+                throw cancelled
+            } catch (error: Exception) {
+                inFlightBytes.addAndGet(-attemptBytes.get())
+                val current = completedBytes.get() + inFlightBytes.get()
+                onProgress(((current * 100L) / totalBytes).toInt().coerceIn(0, 99))
+                lastError = error
+                if (!BiliDownloadRetryPolicy.shouldRetry(error, attempt, MAX_RANGE_ATTEMPTS)) {
+                    throw error
+                }
+                delay(500L * (attempt + 1))
+            }
+        }
+        throw lastError ?: IOException("CDN 分段下载失败")
+    }
+
     private suspend fun downloadRange(
         url: String,
         cookie: String?,
@@ -221,19 +299,16 @@ internal object SegmentedHttpDownloader {
         try {
             val status = connection.responseCode
             if (status != HttpURLConnection.HTTP_PARTIAL) {
-                throw IOException("CDN 分段请求返回 HTTP $status")
+                throw BiliHttpException(status, "CDN 分段请求")
             }
             val range = connection.getHeaderField("Content-Range").orEmpty()
-            if (range.isNotBlank()) {
-                val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""", RegexOption.IGNORE_CASE)
-                    .find(range)
-                if (match != null) {
-                    val actualStart = match.groupValues[1].toLong()
-                    val actualEnd = match.groupValues[2].toLong()
-                    if (actualStart != start || actualEnd != end) {
-                        throw IOException("CDN 返回了不匹配的分段范围")
-                    }
-                }
+            val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+)""", RegexOption.IGNORE_CASE)
+                .find(range) ?: throw IOException("CDN 未提供有效的分段范围")
+            val actualStart = match.groupValues[1].toLong()
+            val actualEnd = match.groupValues[2].toLong()
+            val actualTotal = match.groupValues[3].toLong()
+            if (actualStart != start || actualEnd != end || actualTotal != probe.totalBytes) {
+                throw IOException("CDN 返回了不匹配的分段范围")
             }
 
             var offset = start
@@ -244,7 +319,7 @@ internal object SegmentedHttpDownloader {
                 while (remaining > 0L) {
                     if (isCancelled()) throw CancellationException("下载已取消")
                     val count = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-                    if (count < 0) throw IOException("分段连接提前结束")
+                    if (count < 0) throw RetryableDownloadException("分段连接提前结束")
                     if (count == 0) continue
                     val block = if (count == buffer.size) buffer else buffer.copyOf(count)
                     val written = NativeTransfer.writeAt(fd, offset, block)
@@ -263,6 +338,35 @@ internal object SegmentedHttpDownloader {
         }
     }
 
+    private suspend fun downloadSequentialWithRetry(
+        url: String,
+        target: File,
+        cookie: String?,
+        isCancelled: () -> Boolean,
+        onProgress: (Int) -> Unit
+    ) {
+        var lastError: Exception? = null
+        for (attempt in 0 until MAX_SEQUENTIAL_ATTEMPTS) {
+            target.delete()
+            File(target.absolutePath + ".ranges").delete()
+            File(target.absolutePath + ".meta").delete()
+            try {
+                downloadSequential(url, target, cookie, isCancelled, onProgress)
+                return
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                lastError = error
+                target.delete()
+                if (!BiliDownloadRetryPolicy.shouldRetry(error, attempt, MAX_SEQUENTIAL_ATTEMPTS)) {
+                    throw error
+                }
+                delay(750L * (attempt + 1))
+            }
+        }
+        throw lastError ?: IOException("顺序下载失败")
+    }
+
     private fun downloadSequential(
         url: String,
         target: File,
@@ -274,7 +378,7 @@ internal object SegmentedHttpDownloader {
         try {
             val status = connection.responseCode
             if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_PARTIAL) {
-                throw IOException("下载服务器返回 HTTP $status")
+                throw BiliHttpException(status, "下载服务器请求")
             }
             val total = connection.contentLengthLong
             var copied = 0L
@@ -300,7 +404,9 @@ internal object SegmentedHttpDownloader {
                 }
             }
             if (copied == 0L) throw IOException("下载到的文件为空")
-            if (total > 0L && copied < total) throw IOException("下载未完成，连接提前中断")
+            if (total > 0L && copied < total) {
+                throw RetryableDownloadException("下载未完成，连接提前中断")
+            }
             File(target.absolutePath + ".ranges").delete()
             File(target.absolutePath + ".meta").delete()
             onProgress(100)
