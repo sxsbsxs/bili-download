@@ -39,10 +39,8 @@ class BiliDanmakuProtoParserTest {
     @Test
     fun ignoresEmptyAndInvalidProgressElements() {
         val emptyComment = stringField(7, "")
-        val negativeProgress = byteArrayOf()
-            .plus(varintField(2, 0L))
-            .plus(stringField(7, "content"))
-        val response = messageField(1, emptyComment) + messageField(1, negativeProgress)
+        val missingProgress = stringField(7, "content")
+        val response = messageField(1, emptyComment) + messageField(1, missingProgress)
 
         assertTrue(BiliDanmakuProtoParser.parse(response).isEmpty())
     }
