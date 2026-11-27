@@ -46,7 +46,8 @@ class BiliDownloadWorker(
                 video,
                 quality,
                 audioOnly,
-                SecureCookieStore.load(applicationContext)
+                SecureCookieStore.load(applicationContext),
+                isCancelled = { isStopped }
             ) { percent, detail ->
                 setProgressAsync(workDataOf(KEY_PROGRESS to percent, KEY_DETAIL to detail))
             }
