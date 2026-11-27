@@ -69,7 +69,7 @@ object BiliDownloadEngine {
                     }
                     if (source.audioUrls.isNotEmpty()) {
                         progress(49, "正在下载音频流")
-                        downloadStream(source.audioUrls, audioTemp, cookie, isCancelled) { value ->
+                        downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
                             progress(49 + value * 44 / 100, "音频流")
                         }
                     }
