@@ -100,7 +100,9 @@ class MainActivity : ComponentActivity() {
         val spec = DownloadSpec(
             video = video,
             qualityId = selectedQualityId.takeIf { it > 0 } ?: video.qualities.firstOrNull()?.id ?: 80,
-            audioOnly = prefs.getBoolean("audio_only", false)
+            audioOnly = prefs.getBoolean("audio_only", false),
+            downloadDanmaku = prefs.getBoolean("danmaku", false),
+            downloadSubtitles = prefs.getBoolean("subtitles", false)
         )
         val id = "bili_" + System.currentTimeMillis()
         downloadSpecs[id] = spec
@@ -128,9 +130,13 @@ class MainActivity : ComponentActivity() {
                     BiliDownloadWorker.KEY_BVID to spec.video.bvid.orEmpty(),
                     BiliDownloadWorker.KEY_AID to spec.video.aid,
                     BiliDownloadWorker.KEY_CID to spec.video.cid,
+                    BiliDownloadWorker.KEY_PAGE to spec.video.page,
+                    BiliDownloadWorker.KEY_DURATION to spec.video.durationSeconds,
                     BiliDownloadWorker.KEY_TITLE to spec.video.title,
                     BiliDownloadWorker.KEY_QUALITY to spec.qualityId,
                     BiliDownloadWorker.KEY_AUDIO_ONLY to spec.audioOnly,
+                    BiliDownloadWorker.KEY_DOWNLOAD_DANMAKU to spec.downloadDanmaku,
+                    BiliDownloadWorker.KEY_DOWNLOAD_SUBTITLES to spec.downloadSubtitles,
                     BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[prefs.getInt("concurrent", 1).coerceIn(0, 3)]
                 )
             )
@@ -168,6 +174,8 @@ class MainActivity : ComponentActivity() {
             .put("coverUrl", spec.video.coverUrl ?: "")
             .put("quality", spec.qualityId)
             .put("audioOnly", spec.audioOnly)
+            .put("downloadDanmaku", spec.downloadDanmaku)
+            .put("downloadSubtitles", spec.downloadSubtitles)
         taskPrefs.edit().putString(id, value.toString()).apply()
     }
 
@@ -219,7 +227,9 @@ class MainActivity : ComponentActivity() {
             val spec = DownloadSpec(
                 video,
                 json.optInt("quality", 80),
-                json.optBoolean("audioOnly", false)
+                json.optBoolean("audioOnly", false),
+                json.optBoolean("downloadDanmaku", false),
+                json.optBoolean("downloadSubtitles", false)
             )
             downloadSpecs[id] = spec
             if (!items.containsKey(id)) addDownload(id, video.title, null)
@@ -464,7 +474,13 @@ class MainActivity : ComponentActivity() {
                     // Fetch each P independently so its available quality list is respected.
                     val partVideo = repository.inspect(pageUrl(video, page))
                     val quality = preferredQualityId(partVideo.qualities)
-                    prepared += DownloadSpec(partVideo, quality, audioOnly)
+                    prepared += DownloadSpec(
+                        partVideo,
+                        quality,
+                        audioOnly,
+                        prefs.getBoolean("danmaku", false),
+                        prefs.getBoolean("subtitles", false)
+                    )
                 } catch (_: Exception) {
                     skipped += page.pageNumber
                 }
@@ -651,7 +667,13 @@ class MainActivity : ComponentActivity() {
     }
     private var parsedVideo: BiliVideo? = null
     private var selectedQualityId = 0
-    private data class DownloadSpec(val video: BiliVideo, val qualityId: Int, val audioOnly: Boolean)
+    private data class DownloadSpec(
+        val video: BiliVideo,
+        val qualityId: Int,
+        val audioOnly: Boolean,
+        val downloadDanmaku: Boolean = false,
+        val downloadSubtitles: Boolean = false
+    )
     private val downloadSpecs = HashMap<String, DownloadSpec>()
     private val savedFileUris = HashMap<String, Uri>()
 
@@ -1516,7 +1538,8 @@ class MainActivity : ComponentActivity() {
         col.addView(
             group(
                 "内容",
-                switchRow("同时下载弹幕", "danmaku", false),
+                switchRow("同时下载弹幕", "danmaku", false, "保存为 B站兼容 XML 弹幕文件"),
+                switchRow("同时下载字幕", "subtitles", false, "下载视频提供的字幕并保存为 SRT"),
                 switchRow("仅保存音频", "audio_only", false, "只提取音频，不保留画面")
             ), sideMargins(20)
         )

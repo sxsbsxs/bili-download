@@ -3,9 +3,12 @@ package com.example.bilidl
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import com.example.bilidl.common.content.BiliSubtitleCue
+import com.example.bilidl.common.content.BiliSubtitleTrack
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -210,6 +213,148 @@ class BiliRepository(
             )
         }
         throw IOException("B站没有返回可下载的音视频流；可能需要登录或该视频限制下载")
+    }
+
+    /**
+     * 获取当前分P可用字幕。字幕列表由 B站 player/wbi/v2 返回。
+     */
+    fun getSubtitleTracks(video: BiliVideo): List<BiliSubtitleTrack> {
+        val parameters = linkedMapOf<String, String>()
+        if (!video.bvid.isNullOrBlank()) {
+            parameters["bvid"] = video.bvid
+        } else {
+            parameters["aid"] = video.aid.toString()
+        }
+        parameters["cid"] = video.cid.toString()
+        val root = requestJson(
+            "https://api.bilibili.com/x/player/wbi/v2?" + signWbi(parameters)
+        )
+        val subtitleArray = checkedData(root)
+            .optJSONObject("subtitle")
+            ?.optJSONArray("subtitles")
+            ?: return emptyList()
+
+        return (0 until subtitleArray.length()).mapNotNull { index ->
+            val item = subtitleArray.optJSONObject(index) ?: return@mapNotNull null
+            val subtitleUrl = item.optString("subtitle_url").takeIf { it.isNotBlank() }
+                ?: return@mapNotNull null
+            BiliSubtitleTrack(
+                id = item.optLong("id"),
+                language = item.optString("lan").ifBlank { "und" },
+                languageName = item.optString("lan_doc")
+                    .ifBlank { item.optString("lan").ifBlank { "字幕" } },
+                url = normalizeSubtitleUrl(subtitleUrl)
+            )
+        }.distinctBy { it.url }
+    }
+
+    /**
+     * 下载并解析一条 BCC JSON 字幕轨道。
+     */
+    fun getSubtitleCues(track: BiliSubtitleTrack): List<BiliSubtitleCue> {
+        val root = JSONObject(requestText(normalizeSubtitleUrl(track.url)))
+        val body = root.optJSONArray("body") ?: return emptyList()
+        return (0 until body.length()).mapNotNull { index ->
+            val item = body.optJSONObject(index) ?: return@mapNotNull null
+            val from = item.optDouble("from", Double.NaN)
+            val to = item.optDouble("to", Double.NaN)
+            val text = item.optString("content").trim()
+            if (!from.isFinite() || !to.isFinite() || from < 0.0 || to <= from || text.isBlank()) {
+                return@mapNotNull null
+            }
+            BiliSubtitleCue(from, to, text)
+        }
+    }
+
+    /**
+     * 获取一个 6 分钟分段的弹幕 protobuf。调用方按视频时长计算 segment_index。
+     */
+    fun getDanmakuSegment(cid: Long, segmentIndex: Int): ByteArray {
+        require(cid > 0L) { "视频 CID 无效" }
+        require(segmentIndex > 0) { "弹幕分段编号无效" }
+        val url = "https://api.bilibili.com/x/v2/dm/web/seg.so" +
+            "?type=1&oid=" + cid + "&segment_index=" + segmentIndex
+        return requestBytes(url)
+    }
+
+    private fun normalizeSubtitleUrl(value: String): String = when {
+        value.startsWith("//") -> "https:$value"
+        value.startsWith("http://", ignoreCase = true) ||
+            value.startsWith("https://", ignoreCase = true) -> value
+        value.startsWith("/") -> "https://aisubtitle.hdslb.com$value"
+        else -> "https://aisubtitle.hdslb.com/$value"
+    }
+
+    private fun requestText(url: String, cookieOverride: String? = cookieProvider()): String {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15_000
+            readTimeout = 25_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", userAgent)
+            setRequestProperty("Referer", "https://www.bilibili.com/")
+            setRequestProperty("Origin", "https://www.bilibili.com")
+            setRequestProperty("Accept", "application/json, text/plain, */*")
+            setRequestProperty("Accept-Encoding", "identity")
+            if (!cookieOverride.isNullOrBlank()) {
+                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
+            }
+        }
+        try {
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                val detail = runCatching {
+                    connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                }.getOrNull().orEmpty().take(160)
+                throw BiliHttpException(status, "B站字幕请求", detail)
+            }
+            return connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun requestBytes(url: String, cookieOverride: String? = cookieProvider()): ByteArray {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 15_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", userAgent)
+            setRequestProperty("Referer", "https://www.bilibili.com/")
+            setRequestProperty("Origin", "https://www.bilibili.com")
+            setRequestProperty("Accept", "application/octet-stream, */*")
+            setRequestProperty("Accept-Encoding", "identity")
+            if (!cookieOverride.isNullOrBlank()) {
+                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
+            }
+        }
+        try {
+            val status = connection.responseCode
+            if (status !in 200..299) {
+                val detail = runCatching {
+                    connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+                }.getOrNull().orEmpty().take(160)
+                throw BiliHttpException(status, "B站弹幕请求", detail)
+            }
+            val output = ByteArrayOutputStream()
+            connection.inputStream.use { input ->
+                val buffer = ByteArray(64 * 1024)
+                var total = 0
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    if (total > 12 * 1024 * 1024) {
+                        throw IOException("弹幕分段超过 12 MiB 安全上限")
+                    }
+                    output.write(buffer, 0, count)
+                }
+            }
+            return output.toByteArray()
+        } finally {
+            connection.disconnect()
+        }
     }
 
     private fun getPlayInfo(bvid: String?, aid: Long, cid: Long, quality: Int): JSONObject {

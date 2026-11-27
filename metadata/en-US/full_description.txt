@@ -1,0 +1,19 @@
+BiliDl is an Android app for saving Bilibili videos that your account or the public page is allowed to access.
+
+Features:
+- Parse b23.tv, BV, av, ep, and ss links.
+- Show quality options actually returned for each video.
+- Download DASH video/audio and package the result as MP4.
+- Save AAC audio-only streams as M4A.
+- Parallel HTTP range downloads, verified checkpoints, and bounded retry.
+- Bilibili QR authorization with credentials encrypted locally using Android Keystore.
+- Background download tasks and progress notifications.
+- Optional export of segmented Bilibili danmaku as XML.
+- Optional download of BCC subtitles and conversion to SRT.
+
+Current limits:
+- Safe merging of multi-segment legacy DURL/FLV streams is not implemented.
+- DASH sample extraction and muxing still use Android MediaExtractor/MediaMuxer.
+- CI does not replace live CDN and on-device playback testing.
+
+Only save content you are authorized to access and preserve, and respect creators' rights and Bilibili's rules.
