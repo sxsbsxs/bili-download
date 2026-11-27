@@ -34,7 +34,7 @@ To verify anonymous preview quality against a specific public video without send
 
     python3 scripts/probe-anonymous-playurl.py --bvid BV1xxxxxxxxx --page 1 --require-1080p
 
-The probe resolves the selected part CID, obtains the current WBI key, signs a `try_look=1` / `qn=80` DASH request, and reports the actual video track IDs returned by Bilibili. It does not download or publish the video. The same check is available as the manually triggered **Bilibili anonymous playurl smoke test** GitHub Actions workflow.
+The probe resolves the selected part CID, obtains the current WBI key, signs a `try_look=1` / `qn=80` DASH request, and reports the actual video track IDs returned by Bilibili. It does not download or publish the video. The same check is available as the manually triggered **Bilibili anonymous playurl smoke test** GitHub Actions workflow. For a fuller Android-side run, trigger **Live Bilibili Android pipeline smoke test** with a public BV number; it downloads the selected DASH stream on an Android emulator, remuxes and inspects the MP4, then exercises the live danmaku and subtitle endpoints and the production XML/SRT exporters.
 
 ## Build
 
