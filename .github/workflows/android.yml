@@ -22,6 +22,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.13"
+      - name: Test native MP4 inspector
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iapp/src/main/cpp app/src/main/cpp/mp4_inspector.cpp app/src/test/cpp/mp4_inspector_test.cpp -o /tmp/mp4_inspector_test
+          /tmp/mp4_inspector_test
       - name: Install NDK and CMake
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null

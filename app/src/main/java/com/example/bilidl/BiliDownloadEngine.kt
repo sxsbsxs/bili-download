@@ -178,9 +178,7 @@ object BiliDownloadEngine {
                 muxer = muxer
             )
             muxer.stop()
-            if (!NativeTransfer.validateMp4(output.absolutePath)) {
-                throw IOException("MP4 容器校验失败：缺少完整的 ftyp/moov/mdat 结构")
-            }
+            inspectMp4OrThrow(output, "MP4")
         } catch (error: Exception) {
             output.delete()
             if (error is IOException) throw error
@@ -224,9 +222,7 @@ object BiliDownloadEngine {
             }
             muxer.stop()
 
-            if (!NativeTransfer.validateMp4(output.absolutePath)) {
-                throw IOException("M4A 容器校验失败")
-            }
+            inspectMp4OrThrow(output, "M4A")
             if (output.length() <= 0L) throw IOException("生成的 M4A 文件为空")
         } catch (error: Exception) {
             output.delete()
@@ -235,6 +231,17 @@ object BiliDownloadEngine {
         } finally {
             try { muxer?.release() } catch (_: Exception) {}
             try { extractor.release() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Verify the actual sample tables and media-data references before publishing.
+     * A plausible ftyp/moov/mdat header is not enough to prove a playable file.
+     */
+    private fun inspectMp4OrThrow(file: File, formatLabel: String) {
+        val report = NativeTransfer.inspectMp4(file.absolutePath)
+        if (!report.startsWith("OK:")) {
+            throw IOException("$formatLabel 容器结构校验失败：$report")
         }
     }
 
