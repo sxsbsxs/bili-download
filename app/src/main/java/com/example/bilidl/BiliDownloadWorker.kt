@@ -25,6 +25,10 @@ class BiliDownloadWorker(
             val title = inputData.getString(KEY_TITLE).orEmpty()
             val quality = inputData.getInt(KEY_QUALITY, 80)
             val audioOnly = inputData.getBoolean(KEY_AUDIO_ONLY, false)
+            val downloadDanmaku = inputData.getBoolean(KEY_DOWNLOAD_DANMAKU, false)
+            val downloadSubtitles = inputData.getBoolean(KEY_DOWNLOAD_SUBTITLES, false)
+            val durationSeconds = inputData.getInt(KEY_DURATION, 0)
+            val page = inputData.getInt(KEY_PAGE, 1)
             val transferId = inputData.getString(KEY_TASK_ID).orEmpty()
             val concurrency = inputData.getInt(KEY_CONCURRENT, 2)
             if (cid <= 0L || (bvid.isNullOrBlank() && aid <= 0L)) {
@@ -35,10 +39,10 @@ class BiliDownloadWorker(
                 bvid = bvid,
                 aid = aid,
                 cid = cid,
-                page = 1,
+                page = page,
                 title = title,
                 uploader = "",
-                durationSeconds = 0,
+                durationSeconds = durationSeconds,
                 coverUrl = null,
                 cover = null,
                 qualities = emptyList()
@@ -54,6 +58,8 @@ class BiliDownloadWorker(
                 transferId.ifBlank { id.toString() },
                 concurrency,
                 SecureCookieStore.load(applicationContext),
+                downloadDanmaku = downloadDanmaku,
+                downloadSubtitles = downloadSubtitles,
                 isCancelled = { isStopped }
             ) { percent, detail ->
                 synchronized(progressLock) {
@@ -72,7 +78,19 @@ class BiliDownloadWorker(
                 workDataOf(
                     KEY_URI to saved.uri.toString(),
                     KEY_FILE_NAME to saved.displayName,
-                    KEY_SIZE_TEXT to BiliDownloadEngine.formatSize(saved.sizeBytes),
+                    KEY_SIZE_TEXT to buildString {
+                        append(BiliDownloadEngine.formatSize(saved.sizeBytes))
+                        if (saved.additionalFiles.isNotEmpty()) {
+                            append(" · 附加文件：")
+                            append(saved.additionalFiles.joinToString("、"))
+                        }
+                        if (saved.warnings.isNotEmpty()) {
+                            append(" · ")
+                            append(saved.warnings.joinToString("；"))
+                        }
+                    },
+                    KEY_CONTENT_FILES to saved.additionalFiles.toTypedArray(),
+                    KEY_CONTENT_WARNINGS to saved.warnings.toTypedArray(),
                     KEY_PROGRESS to 100
                 )
             )
@@ -125,6 +143,12 @@ class BiliDownloadWorker(
         const val KEY_TITLE = "title"
         const val KEY_QUALITY = "quality"
         const val KEY_AUDIO_ONLY = "audio_only"
+        const val KEY_DOWNLOAD_DANMAKU = "download_danmaku"
+        const val KEY_DOWNLOAD_SUBTITLES = "download_subtitles"
+        const val KEY_DURATION = "duration_seconds"
+        const val KEY_PAGE = "page_number"
+        const val KEY_CONTENT_FILES = "content_files"
+        const val KEY_CONTENT_WARNINGS = "content_warnings"
         const val KEY_CONCURRENT = "concurrent"
         const val KEY_PROGRESS = "progress"
         const val KEY_DETAIL = "detail"
