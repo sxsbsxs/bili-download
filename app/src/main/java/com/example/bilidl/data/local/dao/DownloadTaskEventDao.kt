@@ -21,6 +21,16 @@ interface DownloadTaskEventDao {
     )
     fun observeRecent(taskId: String, limit: Int): Flow<List<DownloadTaskEventEntity>>
 
+    @Query(
+        """
+        SELECT * FROM download_task_events
+        WHERE taskId = :taskId
+        ORDER BY createdAt DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getRecent(taskId: String, limit: Int): List<DownloadTaskEventEntity>
+
     @Query("DELETE FROM download_task_events WHERE taskId = :taskId")
     suspend fun deleteByTask(taskId: String)
 }
