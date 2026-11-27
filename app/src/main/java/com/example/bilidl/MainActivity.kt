@@ -519,7 +519,6 @@ class MainActivity : ComponentActivity() {
     }
 
 
-    @Volatile private var qrLoginActive = false
     private var activeLoginSegment = -1
 
     private fun onRequestQrCode() {
