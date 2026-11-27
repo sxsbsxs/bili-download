@@ -80,7 +80,11 @@ object BiliDownloadEngine {
                         progress(3 + value * 78 / 100, "音频流")
                     }
                     progress(84, "正在封装 M4A")
+                    DownloadStoragePolicy.ensureAvailable(workDir, audioTemp.length())
                     BiliMediaMuxer.muxAudioToM4a(audioTemp, audioOutputTemp)
+                    // The M4A has been validated; release the source track before
+                    // MediaStore copies the final file, avoiding a third full-size copy.
+                    deleteTransferArtifact(audioTemp)
                     val saved = publishFile(
                         context,
                         audioOutputTemp,
@@ -118,7 +122,15 @@ object BiliDownloadEngine {
                         }
                     }
                     progress(95, "正在封装 MP4")
+                    val sourceTrackBytes = videoTemp.length() +
+                        audioTemp.takeIf { it.exists() }?.length().orZero()
+                    DownloadStoragePolicy.ensureAvailable(workDir, sourceTrackBytes)
                     BiliMediaMuxer.muxToMp4(videoTemp, audioTemp.takeIf { it.exists() }, finalTemp)
+                    // Only discard resumable source tracks after muxing succeeded.
+                    // This frees the largest temporary files before MediaStore's
+                    // publication copy, reducing peak storage pressure.
+                    deleteTransferArtifact(videoTemp)
+                    deleteTransferArtifact(audioTemp)
                     val saved = publishFile(context, finalTemp, video.title, "mp4", "video/mp4")
                     val sidecars = exportSidecars(
                         context = context,
@@ -173,14 +185,10 @@ object BiliDownloadEngine {
         } finally {
             audioOutputTemp.delete()
             if (completed) {
-                videoTemp.delete()
-                audioTemp.delete()
-                directTemp.delete()
+                deleteTransferArtifact(videoTemp)
+                deleteTransferArtifact(audioTemp)
+                deleteTransferArtifact(directTemp)
                 finalTemp.delete()
-                listOf(videoTemp, audioTemp, directTemp).forEach { file ->
-                    File(file.absolutePath + ".ranges").delete()
-                    File(file.absolutePath + ".meta").delete()
-                }
             }
         }
     }
@@ -366,6 +374,10 @@ object BiliDownloadEngine {
         extension: String,
         mimeType: String
     ): SavedDownload {
+        DownloadStoragePolicy.ensureAvailable(
+            Environment.getExternalStorageDirectory(),
+            source.length()
+        )
         val safeTitle = title
             .replace(Regex("""[\\/:*?"<>|]"""), "_")
             .replace(Regex("""\s+"""), " ")
@@ -399,6 +411,14 @@ object BiliDownloadEngine {
             throw error
         }
     }
+
+    private fun deleteTransferArtifact(file: File) {
+        file.delete()
+        File(file.absolutePath + ".ranges").delete()
+        File(file.absolutePath + ".meta").delete()
+    }
+
+    private fun Long?.orZero(): Long = this ?: 0L
 
     private fun extensionForMime(mime: String, fallback: String): String {
         return when {
