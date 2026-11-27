@@ -66,7 +66,11 @@ class BiliDownloadWorker(
         } catch (error: kotlinx.coroutines.CancellationException) {
             throw error
         } catch (error: Exception) {
-            Result.failure(workDataOf(KEY_ERROR to (error.message ?: "下载失败")))
+            if (BiliDownloadRetryPolicy.shouldRetry(error, runAttemptCount, MAX_WORK_RETRIES)) {
+                Result.retry()
+            } else {
+                Result.failure(workDataOf(KEY_ERROR to (error.message ?: "下载失败")))
+            }
         }
     }
 
@@ -113,5 +117,6 @@ class BiliDownloadWorker(
         const val KEY_SIZE_TEXT = "size_text"
         const val CHANNEL_ID = "bilidl_downloads"
         const val NOTIFICATION_ID = 4107
+        private const val MAX_WORK_RETRIES = 3
     }
 }
