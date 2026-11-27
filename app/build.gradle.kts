@@ -13,7 +13,6 @@ android {
         targetSdk = 35
         versionCode = 2
         versionName = "1.1.0"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     compileOptions {
@@ -25,9 +24,6 @@ android {
         jvmTarget = "17"
     }
 
-    testOptions {
-        unitTests.isIncludeAndroidResources = true
-    }
 }
 
 dependencies {
