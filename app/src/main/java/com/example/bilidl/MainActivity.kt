@@ -6,7 +6,6 @@ import androidx.lifecycle.lifecycleScope
 import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -65,6 +64,7 @@ class MainActivity : ComponentActivity() {
     private val mainViewModel: MainViewModel by viewModels()
     private val downloadsViewModel: DownloadsViewModel by viewModels()
     private val loginViewModel: LoginViewModel by viewModels()
+    private val settingsViewModel: SettingsViewModel by viewModels()
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
@@ -128,7 +128,7 @@ class MainActivity : ComponentActivity() {
         val spec = DownloadSpec(
             video = video,
             qualityId = selectedQualityId.takeIf { it > 0 } ?: video.qualities.firstOrNull()?.id ?: 80,
-            audioOnly = prefs.getBoolean("audio_only", false),
+            audioOnly = settingsViewModel.getBoolean("audio_only", false),
             downloadDanmaku = prefs.getBoolean("danmaku", false),
             downloadSubtitles = prefs.getBoolean("subtitles", false)
         )
@@ -165,7 +165,7 @@ class MainActivity : ComponentActivity() {
                     BiliDownloadWorker.KEY_AUDIO_ONLY to spec.audioOnly,
                     BiliDownloadWorker.KEY_DOWNLOAD_DANMAKU to spec.downloadDanmaku,
                     BiliDownloadWorker.KEY_DOWNLOAD_SUBTITLES to spec.downloadSubtitles,
-                    BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[prefs.getInt("concurrent", 1).coerceIn(0, 3)]
+                    BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[settingsViewModel.getInt("concurrent", 1).coerceIn(0, 3)]
                 )
             )
             .setBackoffCriteria(
@@ -537,7 +537,6 @@ class MainActivity : ComponentActivity() {
         loginViewModel.logout()
     }
 
-    private fun onSettingChanged(key: String, value: Any) {}
     private fun onChoosePathClicked() {
         toast("视频保存位置：Download/BiliDl")
     }
@@ -786,7 +785,6 @@ class MainActivity : ComponentActivity() {
     private val concurrentOptions = arrayOf("1 个", "2 个", "3 个", "5 个")
 
     // ---------------- 状态 ----------------
-    private lateinit var prefs: SharedPreferences
     private lateinit var pages: List<View>
     private val tabIcon = ArrayList<TextView>()
     private val tabText = ArrayList<TextView>()
@@ -1059,7 +1057,6 @@ class MainActivity : ComponentActivity() {
     // ---------------- 生命周期 ----------------
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = getSharedPreferences("ui", Context.MODE_PRIVATE)
         window.statusBarColor = bg
         window.navigationBarColor = Color.WHITE
         window.decorView.systemUiVisibility =
@@ -1149,8 +1146,7 @@ class MainActivity : ComponentActivity() {
         AlertDialog.Builder(this)
             .setTitle(title)
             .setSingleChoiceItems(options, prefs.getInt(key, def)) { d, which ->
-                prefs.edit().putInt(key, which).apply()
-                onSettingChanged(key, which)
+                settingsViewModel.setInt(key, which)
                 after()
                 d.dismiss()
             }
@@ -1730,8 +1726,7 @@ class MainActivity : ComponentActivity() {
         sw.thumbTintList = ColorStateList(states, intArrayOf(pink, Color.parseColor("#BFC5D0")))
         sw.trackTintList = ColorStateList(states, intArrayOf(Color.parseColor("#FDB9CC"), Color.parseColor("#E3E6EC")))
         sw.setOnCheckedChangeListener { _, checked ->
-            prefs.edit().putBoolean(key, checked).apply()
-            onSettingChanged(key, checked)
+            settingsViewModel.setBoolean(key, checked)
         }
         return settingRow(title, desc, sw) { sw.toggle() }
     }
