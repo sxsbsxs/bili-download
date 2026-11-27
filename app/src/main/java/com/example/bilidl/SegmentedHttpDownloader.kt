@@ -1,6 +1,7 @@
 package com.example.bilidl
 
 import android.os.ParcelFileDescriptor
+import java.io.Closeable
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -16,6 +17,29 @@ import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.atomic.AtomicLong
+
+internal interface PositionalFileWriter : Closeable {
+    fun writeAt(offset: Long, bytes: ByteArray): Int
+    fun sync(): Boolean
+}
+
+internal fun interface PositionalFileWriterFactory {
+    fun open(target: File): PositionalFileWriter
+}
+
+internal object NativePositionalFileWriterFactory : PositionalFileWriterFactory {
+    override fun open(target: File): PositionalFileWriter {
+        val descriptor = ParcelFileDescriptor.open(target, ParcelFileDescriptor.MODE_READ_WRITE)
+        return object : PositionalFileWriter {
+            override fun writeAt(offset: Long, bytes: ByteArray): Int =
+                NativeTransfer.writeAt(descriptor.fd, offset, bytes)
+
+            override fun sync(): Boolean = NativeTransfer.sync(descriptor.fd)
+
+            override fun close() = descriptor.close()
+        }
+    }
+}
 
 /**
  * BiliDl's own range downloader. It uses Android's HTTP/TLS implementation,
@@ -42,12 +66,13 @@ internal object SegmentedHttpDownloader {
         cookie: String?,
         concurrency: Int,
         isCancelled: () -> Boolean,
-        onProgress: (Int) -> Unit
+        onProgress: (Int) -> Unit,
+        writerFactory: PositionalFileWriterFactory = NativePositionalFileWriterFactory
     ) = withContext(Dispatchers.IO) {
         var lastError: Exception? = null
         for (url in urls) {
             try {
-                downloadOne(url, target, cookie, concurrency, isCancelled, onProgress)
+                downloadOne(url, target, cookie, concurrency, isCancelled, onProgress, writerFactory)
                 return@withContext
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -64,7 +89,8 @@ internal object SegmentedHttpDownloader {
         cookie: String?,
         concurrency: Int,
         isCancelled: () -> Boolean,
-        onProgress: (Int) -> Unit
+        onProgress: (Int) -> Unit,
+        writerFactory: PositionalFileWriterFactory
     ) {
         val probe = probeWithRetry(url, cookie)
         if (
@@ -76,7 +102,7 @@ internal object SegmentedHttpDownloader {
             downloadSequentialWithRetry(url, target, cookie, isCancelled, onProgress)
             return
         }
-        downloadRanges(url, target, cookie, probe, concurrency, isCancelled, onProgress)
+        downloadRanges(url, target, cookie, probe, concurrency, isCancelled, onProgress, writerFactory)
     }
 
     private suspend fun probeWithRetry(url: String, cookie: String?): Probe? {
@@ -135,7 +161,8 @@ internal object SegmentedHttpDownloader {
         probe: Probe,
         concurrency: Int,
         isCancelled: () -> Boolean,
-        onProgress: (Int) -> Unit
+        onProgress: (Int) -> Unit,
+        writerFactory: PositionalFileWriterFactory
     ) = coroutineScope {
         target.parentFile?.mkdirs()
         val mapFile = File(target.absolutePath + ".ranges")
@@ -183,10 +210,7 @@ internal object SegmentedHttpDownloader {
         val inFlightBytes = AtomicLong(0L)
         val lock = Any()
 
-        ParcelFileDescriptor.open(
-            target,
-            ParcelFileDescriptor.MODE_READ_WRITE
-        ).use { descriptor ->
+        writerFactory.open(target).use { writer ->
             val semaphore = Semaphore(concurrency.coerceIn(1, 8))
             completed.indices.filterNot { completed[it] }.map { index ->
                 async(Dispatchers.IO) {
@@ -198,7 +222,7 @@ internal object SegmentedHttpDownloader {
                             url = url,
                             cookie = cookie,
                             probe = probe,
-                            fd = descriptor.fd,
+                            writer = writer,
                             start = start,
                             end = end,
                             isCancelled = isCancelled,
@@ -208,7 +232,7 @@ internal object SegmentedHttpDownloader {
                             onProgress = onProgress
                         )
                         synchronized(lock) {
-                            if (!NativeTransfer.sync(descriptor.fd)) {
+                            if (!writer.sync()) {
                                 throw IOException("分段写入同步失败")
                             }
                             completed[index] = true
@@ -218,7 +242,7 @@ internal object SegmentedHttpDownloader {
                 }
             }.awaitAll()
 
-            if (!NativeTransfer.sync(descriptor.fd)) {
+            if (!writer.sync()) {
                 throw IOException("无法将下载数据同步到磁盘")
             }
         }
@@ -232,7 +256,7 @@ internal object SegmentedHttpDownloader {
         url: String,
         cookie: String?,
         probe: Probe,
-        fd: Int,
+        writer: PositionalFileWriter,
         start: Long,
         end: Long,
         isCancelled: () -> Boolean,
@@ -248,7 +272,7 @@ internal object SegmentedHttpDownloader {
             val attemptBytes = AtomicLong(0L)
             try {
                 val received = downloadRange(
-                    url, cookie, probe, fd, start, end, isCancelled
+                    url, cookie, probe, writer, start, end, isCancelled
                 ) { bytes ->
                     attemptBytes.addAndGet(bytes)
                     inFlightBytes.addAndGet(bytes)
@@ -285,7 +309,7 @@ internal object SegmentedHttpDownloader {
         url: String,
         cookie: String?,
         probe: Probe,
-        fd: Int,
+        writer: PositionalFileWriter,
         start: Long,
         end: Long,
         isCancelled: () -> Boolean,
@@ -322,7 +346,7 @@ internal object SegmentedHttpDownloader {
                     if (count < 0) throw RetryableDownloadException("分段连接提前结束")
                     if (count == 0) continue
                     val block = if (count == buffer.size) buffer else buffer.copyOf(count)
-                    val written = NativeTransfer.writeAt(fd, offset, block)
+                    val written = writer.writeAt(offset, block)
                     if (written != count) {
                         throw IOException("本地分段写入失败（$written）")
                     }
