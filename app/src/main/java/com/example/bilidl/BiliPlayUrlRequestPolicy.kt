@@ -28,6 +28,9 @@ internal object BiliPlayUrlRequestPolicy {
         val requestedQuality = if (!hasSessionCookie && quality <= 0) 80 else quality
         parameters["qn"] = requestedQuality.toString()
         parameters["fnval"] = fnval
+        // Keep the DASH request on the desktop/web player path. The HTML5
+        // platform negotiates MP4-only playback and is not our DASH pipeline.
+        parameters["platform"] = "pc"
         parameters["fourk"] = "1"
         parameters["web_location"] = "1315873"
         if (!hasSessionCookie) {
