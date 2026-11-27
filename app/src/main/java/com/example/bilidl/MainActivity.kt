@@ -1636,22 +1636,31 @@ class MainActivity : ComponentActivity() {
         }
         backgroundExecutor.execute {
             val repository = BiliDownloadTaskRepository.getInstance(applicationContext)
+            var submitted = 0
             targets.forEach { (id, spec) ->
-                runCatching {
+                val eligible = runCatching {
                     runBlocking(Dispatchers.IO) {
-                        val task = repository.getTask(id)
-                        if (task?.status == DownloadTaskStatus.FAILED ||
-                            task?.status == DownloadTaskStatus.PAUSED
+                        val task = repository.getTask(id) ?: return@runBlocking false
+                        if (task.status == DownloadTaskStatus.FAILED ||
+                            task.status == DownloadTaskStatus.PAUSED
                         ) {
                             repository.retry(id)
+                            true
+                        } else {
+                            false
                         }
                     }
-                }
-                runOnUiThread {
-                    if (!isFinishing && id in selectedDownloadIds) enqueueDownload(id, spec)
+                }.getOrDefault(false)
+                if (eligible) {
+                    submitted++
+                    runOnUiThread {
+                        if (!isFinishing) enqueueDownload(id, spec)
+                    }
                 }
             }
-            runOnUiThread { toast("已提交 " + targets.size + " 个重试任务") }
+            runOnUiThread {
+                toast("已提交 " + submitted + " 个重试任务")
+            }
         }
     }
 
