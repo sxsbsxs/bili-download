@@ -16,11 +16,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-java@v4
-        if: github.event_name == 'pull_request'
-        with:
-          distribution: temurin
-          java-version: "17"
       - name: Check pull request whitespace
         if: github.event_name == 'pull_request'
         env:
