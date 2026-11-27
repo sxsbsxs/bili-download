@@ -205,8 +205,9 @@ class MainActivity : ComponentActivity() {
         workManager.cancelUniqueWork("bilidl_" + id)
         workManager.pruneWork()
         downloadSpecs.remove(id)
+        val savedUri = savedFileUris.remove(id)
         if (deleteFile) {
-            savedFileUris.remove(id)?.let { contentResolver.delete(it, null, null) }
+            savedUri?.let { contentResolver.delete(it, null, null) }
         }
     }
 
