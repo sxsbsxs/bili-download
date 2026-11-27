@@ -118,6 +118,9 @@ object BiliDownloadEngine {
                         warnings = sidecars.warnings
                     )
                 } else {
+                    // Do not accidentally mux an audio fragment left by an earlier
+                    // audio-capable attempt when the current playurl is video-only.
+                    if (source.audioUrls.isEmpty()) deleteTransferArtifact(audioTemp)
                     if (BiliMediaMuxer.isValidMp4(finalTemp)) {
                         progress(95, "恢复已封装的 MP4")
                     } else {
