@@ -24,6 +24,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.io.IOException
 import android.text.TextUtils
 import android.text.TextWatcher
@@ -283,14 +284,31 @@ class MainActivity : ComponentActivity() {
 
     private fun restoreRoomTasks() {
         backgroundExecutor.execute {
+            val repository = BiliDownloadTaskRepository.getInstance(applicationContext)
             val records = runCatching {
-                runBlocking(Dispatchers.IO) {
-                    BiliDownloadTaskRepository.getInstance(applicationContext).getAllTasks()
-                }
+                runBlocking(Dispatchers.IO) { repository.getAllTasks() }
             }.getOrElse { emptyList() }
 
+            // Reconcile durable task metadata with WorkManager before touching the UI.
+            // A missing WorkInfo means the process/task scheduler lost the execution
+            // record; only then do we enqueue again. Existing work is observed, never
+            // replaced, so process recovery cannot accidentally restart a live transfer.
+            val recoveryPlan = records.map { task ->
+                val needsExecution = task.status == DownloadTaskStatus.QUEUED ||
+                    task.status == DownloadTaskStatus.RUNNING
+                val workInfos = if (needsExecution) {
+                    runCatching {
+                        workManager.getWorkInfosForUniqueWork("bilidl_" + task.taskId)
+                            .get(15, TimeUnit.SECONDS)
+                    }.getOrNull()
+                } else {
+                    null
+                }
+                task to (needsExecution && workInfos?.isEmpty() == true)
+            }
+
             runOnUiThread {
-                records.forEach { task ->
+                recoveryPlan.forEach { (task, shouldRequeue) ->
                     val video = BiliVideo(
                         bvid = task.bvid,
                         aid = task.aid,
@@ -313,7 +331,10 @@ class MainActivity : ComponentActivity() {
                     downloadSpecs[task.taskId] = spec
                     if (!items.containsKey(task.taskId)) addDownload(task.taskId, task.title, null)
                     when (task.status) {
-                        DownloadTaskStatus.QUEUED, DownloadTaskStatus.RUNNING -> observeUniqueWork(task.taskId)
+                        DownloadTaskStatus.QUEUED, DownloadTaskStatus.RUNNING -> {
+                            if (shouldRequeue) enqueueDownload(task.taskId, spec)
+                            else observeUniqueWork(task.taskId)
+                        }
                         DownloadTaskStatus.PAUSED -> setDownloadState(task.taskId, ST_PAUSED, task.detail)
                         DownloadTaskStatus.FAILED -> failDownload(task.taskId, task.errorMessage ?: task.detail)
                         DownloadTaskStatus.COMPLETED -> {
