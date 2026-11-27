@@ -19,7 +19,7 @@ interface DownloadTaskEventDao {
         LIMIT :limit
         """
     )
-    fun observeRecent(taskId: String, limit: Int = 100): Flow<List<DownloadTaskEventEntity>>
+    fun observeRecent(taskId: String, limit: Int): Flow<List<DownloadTaskEventEntity>>
 
     @Query("DELETE FROM download_task_events WHERE taskId = :taskId")
     suspend fun deleteByTask(taskId: String)
