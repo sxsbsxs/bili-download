@@ -129,25 +129,35 @@ class MainActivity : ComponentActivity() {
         val downloadSubtitles = settingsViewModel.getBoolean("subtitles", false)
 
         backgroundExecutor.execute {
-            val repository = BiliRepository { SecureCookieStore.load(applicationContext) }
-            val prepared = ArrayList<DownloadSpec>()
-            val failures = ArrayList<String>()
-
-            targets.forEach { target ->
-                try {
-                    val video = repository.inspect(target)
-                    prepared += DownloadSpec(
-                        video = video,
-                        qualityId = preferredQualityId(video.qualities),
-                        audioOnly = audioOnly,
-                        downloadDanmaku = downloadDanmaku,
-                        downloadSubtitles = downloadSubtitles
-                    )
-                } catch (error: Exception) {
-                    failures += target.take(100) + "\n" +
-                        (error.message ?: "解析失败").take(120)
+            val futures = targets.map { target ->
+                batchExecutor.submit<Pair<DownloadSpec?, String?>> {
+                    try {
+                        val repository = BiliRepository {
+                            SecureCookieStore.load(applicationContext)
+                        }
+                        val video = repository.inspect(target)
+                        DownloadSpec(
+                            video = video,
+                            qualityId = preferredQualityId(video.qualities),
+                            audioOnly = audioOnly,
+                            downloadDanmaku = downloadDanmaku,
+                            downloadSubtitles = downloadSubtitles
+                        ) to null
+                    } catch (error: Exception) {
+                        null to (
+                            target.take(100) + "\n" +
+                                (error.message ?: "解析失败").take(120)
+                            )
+                    }
                 }
             }
+            val outcomes = futures.map { future ->
+                runCatching { future.get() }.getOrElse { error ->
+                    null to ("批量解析任务异常：" + (error.message ?: "未知错误"))
+                }
+            }
+            val prepared = outcomes.mapNotNull { it.first }
+            val failures = outcomes.mapNotNull { it.second }
 
             runOnUiThread {
                 setBusy(parseBtn, false)
@@ -866,6 +876,7 @@ class MainActivity : ComponentActivity() {
     private var userAvatar: Bitmap? = null
 
     private val backgroundExecutor = Executors.newFixedThreadPool(2)
+    private val batchExecutor = Executors.newFixedThreadPool(3)
     private val workManager by lazy { WorkManager.getInstance(applicationContext) }
     private val taskPrefs by lazy {
         getSharedPreferences("download_tasks", Context.MODE_PRIVATE)
@@ -1167,6 +1178,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         stopQrLogin()
         backgroundExecutor.shutdownNow()
+        batchExecutor.shutdownNow()
         super.onDestroy()
     }
 
