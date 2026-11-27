@@ -14,7 +14,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check whitespace
-        run: git diff --check
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-java@v4
+        if: github.event_name == 'pull_request'
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Check pull request whitespace
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: git diff --check "$BASE_SHA...$HEAD_SHA"
+      - name: Check pushed commit whitespace
+        if: github.event_name == 'push'
+        run: git show --check --oneline --format= HEAD
       - name: Check project layout and dependencies
         run: bash scripts/check-project.sh
