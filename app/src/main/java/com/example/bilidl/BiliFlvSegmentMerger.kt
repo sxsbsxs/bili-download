@@ -32,6 +32,9 @@ internal object BiliFlvSegmentMerger {
     private const val COPY_BUFFER_SIZE = 64 * 1024
     private const val MAX_TIMESTAMP = 0xffff_ffffL
 
+    fun isValid(file: File): Boolean =
+        runCatching { inspectSegment(file); true }.getOrDefault(false)
+
     fun merge(segments: List<BiliFlvSegmentInput>, output: File) {
         require(segments.isNotEmpty()) { "至少需要一个 FLV 分段" }
         require(segments.size > 1) { "单个 FLV 分段不需要合并" }
