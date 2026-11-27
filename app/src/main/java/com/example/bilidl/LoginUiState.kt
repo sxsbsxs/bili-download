@@ -2,13 +2,13 @@ package com.example.bilidl
 
 import android.graphics.Bitmap
 
-internal enum class LoginFailureSource {
+enum class LoginFailureSource {
     QR_CODE,
     COOKIE
 }
 
 /** One-way UI state for local Bilibili account authorization. */
-internal sealed interface LoginUiState {
+sealed interface LoginUiState {
     data object Idle : LoginUiState
     data object CheckingSession : LoginUiState
     data object RequestingQr : LoginUiState
