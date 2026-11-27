@@ -43,6 +43,9 @@ class BiliDownloadWorker(
                 cover = null,
                 qualities = emptyList()
             )
+            var lastReportedPercent = -1
+            var lastReportedDetail = ""
+            val progressLock = Any()
             val saved = BiliDownloadEngine.download(
                 applicationContext,
                 video,
@@ -53,7 +56,17 @@ class BiliDownloadWorker(
                 SecureCookieStore.load(applicationContext),
                 isCancelled = { isStopped }
             ) { percent, detail ->
-                setProgressAsync(workDataOf(KEY_PROGRESS to percent, KEY_DETAIL to detail))
+                synchronized(progressLock) {
+                    // The range engine reports each buffer write; update WorkManager
+                    // only when the visible percentage or stage actually changes.
+                    if (percent != lastReportedPercent || detail != lastReportedDetail) {
+                        lastReportedPercent = percent
+                        lastReportedDetail = detail
+                        val progressData = workDataOf(KEY_PROGRESS to percent, KEY_DETAIL to detail)
+                        setProgressAsync(progressData)
+                        setForegroundAsync(foregroundInfo(percent, detail))
+                    }
+                }
             }
             Result.success(
                 workDataOf(
@@ -74,20 +87,24 @@ class BiliDownloadWorker(
         }
     }
 
-    private fun foregroundInfo(): ForegroundInfo {
+    private fun foregroundInfo(
+        progress: Int? = null,
+        detail: String = ""
+    ): ForegroundInfo {
         val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager.createNotificationChannel(
                 NotificationChannel(CHANNEL_ID, "BiliDl 下载", NotificationManager.IMPORTANCE_LOW)
             )
         }
+        val isComplete = progress != null && progress >= 100
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("BiliDl 正在下载")
-            .setContentText(inputData.getString(KEY_TITLE).orEmpty())
-            .setOngoing(true)
+            .setContentTitle(if (isComplete) "BiliDl 下载完成" else "BiliDl 正在下载")
+            .setContentText(detail.ifBlank { inputData.getString(KEY_TITLE).orEmpty() })
+            .setOngoing(!isComplete)
             .setOnlyAlertOnce(true)
-            .setProgress(100, 0, true)
+            .setProgress(100, (progress ?: 0).coerceIn(0, 100), progress == null)
             .build()
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             ForegroundInfo(
