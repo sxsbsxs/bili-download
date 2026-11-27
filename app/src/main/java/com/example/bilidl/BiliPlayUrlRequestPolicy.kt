@@ -22,7 +22,10 @@ internal object BiliPlayUrlRequestPolicy {
             parameters["avid"] = aid.toString()
         }
         parameters["cid"] = cid.toString()
-        parameters["qn"] = quality.toString()
+        // A no-quality probe must ask for the 1080P preview tier; a qn=0
+        // request can negotiate a lower anonymous default before try_look is applied.
+        val requestedQuality = if (!hasSessionCookie && quality <= 0) 80 else quality
+        parameters["qn"] = requestedQuality.toString()
         parameters["fnval"] = "4048"
         parameters["fourk"] = "1"
         parameters["web_location"] = "1315873"
