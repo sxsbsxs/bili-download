@@ -45,7 +45,7 @@ class BiliDownloadTaskRepository private constructor(
     suspend fun getResources(taskId: String): List<DownloadResourceEntity> =
         resources.getByTask(taskId)
 
-    suspend fun registerTask(task: DownloadTaskEntity) {
+    suspend fun registerTask(task: DownloadTaskEntity, preferIncomingSpec: Boolean = false) {
         database.withTransaction {
             val existing = tasks.getById(task.taskId)
             if (existing == null) {
@@ -60,7 +60,7 @@ class BiliDownloadTaskRepository private constructor(
                     )
                 )
             } else {
-                tasks.upsert(DownloadTaskSpecMergePolicy.merge(existing, task))
+                tasks.upsert(DownloadTaskSpecMergePolicy.merge(existing, task, preferIncomingSpec))
             }
         }
     }
