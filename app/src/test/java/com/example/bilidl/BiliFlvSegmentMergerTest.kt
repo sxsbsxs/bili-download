@@ -49,7 +49,11 @@ class BiliFlvSegmentMergerTest {
 
         val parsed = readTags(output)
         assertEquals(1, parsed.count { it.type == 18 })
-        assertEquals(listOf(0L, 0L, 40L, 1_000L, 1_000L, 1_040L), parsed.map { it.timestamp })
+        assertEquals(
+            "Unexpected merged timestamps: ${parsed.map { it.timestamp }}",
+            listOf(0L, 0L, 40L, 1_000L, 1_000L, 1_040L),
+            parsed.map { it.timestamp }
+        )
         assertEquals(listOf(8, 9, 8, 9), parsed.filter { it.type != 18 }.map { it.type })
         RandomAccessFile(output, "r").use { input ->
             val header = ByteArray(9)
