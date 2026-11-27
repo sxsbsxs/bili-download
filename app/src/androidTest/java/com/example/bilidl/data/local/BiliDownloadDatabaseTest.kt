@@ -69,6 +69,39 @@ class BiliDownloadDatabaseTest {
     }
 
     @Test
+    fun updatingTaskSpecDoesNotCascadeDeleteResourcesOrEvents() = runBlocking {
+        val taskId = "task-upsert"
+        val original = task(taskId, title = "Original title")
+        database.downloadTaskDao().upsert(original)
+        database.downloadResourceDao().upsert(
+            DownloadResourceEntity(
+                resourceId = "$taskId:media",
+                taskId = taskId,
+                resourceType = DownloadResourceType.MEDIA,
+                displayName = "kept.mp4",
+                mimeType = "video/mp4",
+                contentUri = "content://media/external/video/2",
+                sizeBytes = 2048
+            )
+        )
+        database.downloadTaskEventDao().insert(
+            DownloadTaskEventEntity(
+                taskId = taskId,
+                fromStatus = null,
+                toStatus = DownloadTaskStatus.QUEUED,
+                stage = "等待下载",
+                message = "任务创建"
+            )
+        )
+
+        database.downloadTaskDao().upsert(original.copy(title = "Updated title"))
+
+        assertEquals("Updated title", database.downloadTaskDao().getById(taskId)?.title)
+        assertEquals(1, database.downloadResourceDao().countByTask(taskId))
+        assertEquals(1, database.downloadTaskEventDao().getRecent(taskId, 10).size)
+    }
+
+    @Test
     fun taskSearchAndLiveObservationReturnUpdatedRecords() = runBlocking {
         val matching = task("task-search", title = "Bilibili sample", bvid = "BV1RoomTest")
         database.downloadTaskDao().upsert(matching)
