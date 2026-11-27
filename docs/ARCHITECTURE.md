@@ -9,7 +9,7 @@ BiliDl is a Bilibili-specific Android application. It does not embed a generic v
 - app/src/main/java/com/example/bilidl/data/local: Room database, task/resource/event entities, and DAOs.
 - app/src/main/java/com/example/bilidl/data/repository: transactional task lifecycle, state transitions, retry snapshots, and media-resource history.
 - app/src/main/cpp: the original JNI transfer and MP4 inspection core.
-- app/src/test: Kotlin unit tests for link parsing, quality selection, transfer policy, protobuf parsing, and content export.
+- app/src/test: Kotlin unit tests plus Robolectric-backed Room/SQLite integration tests for task persistence, resource ownership, state snapshots, and history queries.
 - app/src/test/cpp: host-side C++ tests for MP4 container inspection.
 - .github/workflows: Android build, source-format checks, and tagged test-build publishing.
 - docs: architecture and feature status.
