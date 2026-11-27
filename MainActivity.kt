@@ -16,8 +16,6 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
@@ -53,8 +51,6 @@ class MainActivity : Activity() {
     }
 
     // 仅保留真实业务的接入点。未接入服务前不生成假解析结果、假进度或假登录态。
-    private val demo = false
-
     // ===================== 交给后端实现 =====================
     private fun onParseClicked(text: String) {
         showError("解析服务尚未接入；链接已通过格式检查，可在此接入 Bilibili API。")
@@ -64,7 +60,7 @@ class MainActivity : Activity() {
         toast("下载服务尚未接入，当前不会创建虚假下载任务")
     }
 
-    private fun onPauseClicked(id: String) {}
+    private fun onPauseClicked(id: String) { toast("暂停功能需要下载服务支持") }
     private fun onResumeClicked(id: String) { toast("下载任务控制接口尚未接入") }
     private fun onDeleteClicked(id: String, deleteFile: Boolean) {}
     private fun onOpenClicked(id: String) { toast("文件打开功能尚未接入") }
@@ -199,7 +195,6 @@ class MainActivity : Activity() {
     private val concurrentOptions = arrayOf("1 个", "2 个", "3 个", "5 个")
 
     // ---------------- 状态 ----------------
-    private val ui = Handler(Looper.getMainLooper())
     private lateinit var prefs: SharedPreferences
     private lateinit var pages: List<View>
     private val tabIcon = ArrayList<TextView>()
@@ -239,7 +234,7 @@ class MainActivity : Activity() {
     private var dlFilter = 0
     private lateinit var dlSegs: List<TextView>
     private lateinit var listBox: LinearLayout
-    private lateinit var clearTv
+    private lateinit var clearTv: TextView
     private lateinit var downloadSearch: EditText
     private var downloadQuery = ""
 
@@ -881,8 +876,8 @@ class MainActivity : Activity() {
     private fun onPrimary(id: String) {
         val item = items[id] ?: return
         when (item.state) {
-            ST_DOWNLOADING, ST_WAITING -> { setDownloadState(id, ST_PAUSED); onPauseClicked(id) }
-            ST_PAUSED, ST_FAILED -> { setDownloadState(id, ST_WAITING); onResumeClicked(id) }
+            ST_DOWNLOADING, ST_WAITING -> onPauseClicked(id)
+            ST_PAUSED, ST_FAILED -> onResumeClicked(id)
             else -> onOpenClicked(id)
         }
     }
@@ -1126,7 +1121,7 @@ class MainActivity : Activity() {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         page.addView(col, match, wrap)
 
-        val h = header("登录哔哩哔哩", "登录后可下载 1080P 及以上画质", 56)
+        val h = header("登录哔哩哔哩", "授权后尝试获取账号可访问的画质", 56)
         h.addView(TextView(this).apply {
             text = "←  返回"
             textSize = 15f
@@ -1187,7 +1182,7 @@ class MainActivity : Activity() {
             setTextColor(ink)
         })
         cookiePanel.addView(TextView(this).apply {
-            text = "在浏览器登录 bilibili.com 后，从开发者工具的 Cookies 中复制名为 SESSDATA 的值粘贴到下面。Cookie 只保存在本机，请勿发给他人。"
+            text = "SESSDATA 属于敏感凭据，请勿截图、转发或提交到公开仓库。当前版本尚未接入登录验证服务。"
             textSize = 12f
             setTextColor(sub)
             setLineSpacing(0f, 1.2f)
