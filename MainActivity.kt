@@ -19,6 +19,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.text.TextUtils
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -51,52 +52,38 @@ class MainActivity : Activity() {
         const val ST_DONE = 4
     }
 
-    private var demo = true  // 接入真实逻辑后改成 false
+    // 仅保留真实业务的接入点。未接入服务前不生成假解析结果、假进度或假登录态。
+    private val demo = false
 
     // ===================== 交给后端实现 =====================
     private fun onParseClicked(text: String) {
-        if (demo) {
-            ui.postDelayed({
-                showVideo("【示例】这是一个视频标题，用来预览界面效果", "示例UP主", null, "时长 03:21 · 播放 12.3万")
-            }, 700)
-            return
-        }
-        showError("解析功能尚未接入")
+        showError("解析服务尚未接入；链接已通过格式检查，可在此接入 Bilibili API。")
     }
 
     private fun onDownloadClicked() {
-        if (demo) {
-            val id = "demo_" + System.currentTimeMillis()
-            addDownload(id, titleTv.text.toString(), null)
-            simulate(id)
-            return
-        }
-        toast("下载功能尚未接入")
+        toast("下载服务尚未接入，当前不会创建虚假下载任务")
     }
 
     private fun onPauseClicked(id: String) {}
-    private fun onResumeClicked(id: String) { if (demo) simulate(id) }
+    private fun onResumeClicked(id: String) { toast("下载任务控制接口尚未接入") }
     private fun onDeleteClicked(id: String, deleteFile: Boolean) {}
-    private fun onOpenClicked(id: String) { toast("打开文件（待接入）") }
+    private fun onOpenClicked(id: String) { toast("文件打开功能尚未接入") }
     private fun onClearFinishedClicked() {}
 
     private fun onRequestQrCode() {
-        if (demo) {
-            ui.postDelayed({ showQrCode(fakeQr()); setQrStatus("演示模式：这不是真实二维码") }, 600)
-            return
-        }
-        setQrStatus("二维码登录尚未接入", true)
+        setQrStatus("扫码登录服务尚未接入", true)
+        qrOverlay.text = "登录功能尚未接入"
+        qrOverlay.visibility = View.VISIBLE
     }
 
     private fun onCookieLogin(sessdata: String) {
-        if (demo) { loginSuccess("演示用户", null, true); return }
-        loginFailed("Cookie 登录尚未接入")
+        loginFailed("Cookie 登录服务尚未接入；请勿将 SESSDATA 分享给他人。")
     }
 
     private fun onLogoutClicked() { logoutDone() }
     private fun onSettingChanged(key: String, value: Any) {}
-    private fun onChoosePathClicked() { toast("选择下载位置（待接入）") }
-    private fun onClearCacheClicked() { toast("缓存已清除") }
+    private fun onChoosePathClicked() { toast("下载目录选择功能尚未接入") }
+    private fun onClearCacheClicked() { toast("缓存清理服务尚未接入") }
     // =======================================================
 
     // ===================== 供后端调用的界面方法 =====================
@@ -252,7 +239,9 @@ class MainActivity : Activity() {
     private var dlFilter = 0
     private lateinit var dlSegs: List<TextView>
     private lateinit var listBox: LinearLayout
-    private lateinit var clearTv: TextView
+    private lateinit var clearTv
+    private lateinit var downloadSearch: EditText
+    private var downloadQuery = ""
 
     // 设置页
     private lateinit var avatarIv: ImageView
@@ -301,7 +290,7 @@ class MainActivity : Activity() {
         orientation = LinearLayout.VERTICAL
         background = shape(Color.WHITE, 20)
         setPadding(dp(18), dp(18), dp(18), dp(18))
-        elevation = dp(4).toFloat()
+        elevation = dp(2).toFloat()
     }
 
     private fun sideMargins(top: Int = 16) = LinearLayout.LayoutParams(match, wrap).apply {
@@ -423,12 +412,48 @@ class MainActivity : Activity() {
         statusTv.setOnClickListener(if (onClick == null) null else View.OnClickListener { onClick() })
     }
 
+    /**
+     * 从 B站分享文案中提取可解析目标：
+     * - bilibili.com / m.bilibili.com 完整链接
+     * - b23.tv 短链接（由后端负责跟随重定向）
+     * - BV、av、番剧 ep / ss 编号
+     */
+    private fun normalizeBiliInput(raw: String): String? {
+        val text = raw.trim()
+        if (text.isEmpty()) return null
+
+        val urlPattern = Regex(
+            """https?://(?:(?:www|m)\.)?(?:bilibili\.com|b23\.tv)/[^\s<>"']+""",
+            RegexOption.IGNORE_CASE
+        )
+        val foundUrl = urlPattern.find(text)?.value
+            ?.trimEnd('.', ',', ';', '，', '。', ')', '）', ']', '】')
+        if (!foundUrl.isNullOrBlank()) return foundUrl
+
+        val bvid = Regex("""\bBV[0-9A-Za-z]{10}\b""", RegexOption.IGNORE_CASE)
+            .find(text)?.value
+        if (bvid != null) return "https://www.bilibili.com/video/$bvid"
+
+        val avid = Regex("""\bav\d+\b""", RegexOption.IGNORE_CASE).find(text)?.value
+        if (avid != null) return "https://www.bilibili.com/video/$avid"
+
+        val episode = Regex("""\bep\d+\b""", RegexOption.IGNORE_CASE).find(text)?.value
+        if (episode != null) return "https://www.bilibili.com/bangumi/play/$episode"
+
+        val season = Regex("""\bss\d+\b""", RegexOption.IGNORE_CASE).find(text)?.value
+        if (season != null) return "https://www.bilibili.com/bangumi/play/$season"
+
+        return null
+    }
+
     // ---------------- 生命周期 ----------------
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("ui", Context.MODE_PRIVATE)
-        window.statusBarColor = pink
+        window.statusBarColor = bg
         window.navigationBarColor = Color.WHITE
+        window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
 
         val rootFrame = FrameLayout(this)
         val main = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
@@ -447,7 +472,6 @@ class MainActivity : Activity() {
         selectTab(0)
         refreshAccountUi()
         refreshDownloadList()
-        if (demo) seedDemo()
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -516,48 +540,56 @@ class MainActivity : Activity() {
         val scroll = ScrollView(this).apply { setBackgroundColor(bg); isVerticalScrollBarEnabled = false }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(col, match, wrap)
-        col.addView(header("B站下载器", "粘贴链接，保存你喜欢的视频", 56), match, wrap)
+        col.addView(header("B站下载器", "简单、清晰的 Bilibili 视频保存工具", 56), match, wrap)
 
-        // 输入卡片
         val inputCard = card()
         input = EditText(this).apply {
-            hint = "粘贴 B站链接 或 BV 号"
+            hint = "粘贴 B站链接、BV / av / ep / ss 号"
             setHintTextColor(sub)
             setTextColor(ink)
             textSize = 15f
             minLines = 3
+            maxLines = 5
             gravity = Gravity.TOP
             background = shape(field, 14)
             setPadding(dp(14), dp(14), dp(14), dp(14))
+            setSelectAllOnFocus(false)
         }
+
         val pasteBtn = pillButton("粘贴", false)
+        val clearBtn = pillButton("清空", false)
         parseBtn = pillButton("解析", true)
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        btnRow.addView(pasteBtn, LinearLayout.LayoutParams(0, dp(48), 1f).apply { rightMargin = dp(10) })
-        btnRow.addView(parseBtn, LinearLayout.LayoutParams(0, dp(48), 1.4f))
+        btnRow.addView(pasteBtn, LinearLayout.LayoutParams(0, dp(48), 1f).apply { rightMargin = dp(8) })
+        btnRow.addView(clearBtn, LinearLayout.LayoutParams(0, dp(48), 0.9f).apply { rightMargin = dp(8) })
+        btnRow.addView(parseBtn, LinearLayout.LayoutParams(0, dp(48), 1.2f))
         inputCard.addView(input, match, wrap)
         inputCard.addView(btnRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(14) })
+        inputCard.addView(TextView(this).apply {
+            text = "支持视频 BV / av、番剧 ep / ss，以及 b23.tv 分享短链接"
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(dp(2), dp(10), dp(2), 0)
+        }, match, wrap)
         col.addView(inputCard, sideMargins().apply { topMargin = -dp(32) })
 
-        // 登录提示条
         val tip = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = shape(Color.parseColor("#FFF0F4"), 16)
+            background = shape(Color.parseColor("#FFF3F6"), 16)
             setPadding(dp(16), dp(10), dp(10), dp(10))
         }
         tip.addView(TextView(this).apply {
-            text = "登录后可下载 1080P 及以上高清画质"
-            textSize = 13f
-            setTextColor(Color.parseColor("#C2456C"))
+            text = "登录可能影响可选画质；最终以视频实际提供的清晰度为准"
+            textSize = 12f
+            setTextColor(Color.parseColor("#A83F62"))
         }, LinearLayout.LayoutParams(0, wrap, 1f))
-        val goLogin = chip("去登录", true)
+        val goLogin = chip("账号登录", true)
         goLogin.setOnClickListener { showLogin() }
         tip.addView(goLogin)
         loginTip = tip
         col.addView(tip, sideMargins(16))
 
-        // 结果卡片
         resultCard = card().apply { visibility = View.GONE }
         coverIv = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
@@ -580,17 +612,21 @@ class MainActivity : Activity() {
             setPadding(dp(14), 0, dp(14), 0)
         }
         qualityRow.addView(TextView(this).apply {
-            text = "下载画质"; textSize = 14f; setTextColor(ink)
+            text = "优先画质"; textSize = 14f; setTextColor(ink)
         }, LinearLayout.LayoutParams(0, wrap, 1f))
         homeQualityTv = TextView(this).apply {
-            textSize = 14f; typeface = Typeface.DEFAULT_BOLD; setTextColor(pink); text = qualityText()
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(pink)
+            text = qualityText()
         }
         qualityRow.addView(homeQualityTv)
-        qualityRow.setOnClickListener { pickOption("下载画质", "quality", qualityOptions, 0) { refreshQuality() } }
+        qualityRow.setOnClickListener {
+            pickOption("优先画质", "quality", qualityOptions, 0) { refreshQuality() }
+        }
 
-        dlBtn = pillButton("下载视频", true)
+        dlBtn = pillButton("加入下载任务", true)
         dlBtn.setOnClickListener {
-            say("已加入下载列表 · 点此查看", pink) { selectTab(1) }
             onDownloadClicked()
         }
 
@@ -615,16 +651,42 @@ class MainActivity : Activity() {
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
             val t = cm.primaryClip?.takeIf { it.itemCount > 0 }
                 ?.getItemAt(0)?.coerceToText(this)?.toString()
-            if (t.isNullOrBlank()) say("剪贴板是空的", sub) else { input.setText(t); say("", sub) }
+            if (t.isNullOrBlank()) {
+                say("剪贴板是空的", sub)
+            } else {
+                input.setText(t)
+                input.setSelection(input.text.length)
+                resultCard.visibility = View.GONE
+                say("已粘贴剪贴板内容，点击解析继续", sub)
+            }
         }
+        clearBtn.setOnClickListener {
+            input.setText("")
+            resultCard.visibility = View.GONE
+            say("", sub)
+            input.requestFocus()
+        }
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                if (resultCard.visibility == View.VISIBLE) resultCard.visibility = View.GONE
+                if (!s.isNullOrBlank()) say("", sub)
+            }
+            override fun afterTextChanged(s: android.text.Editable?) {}
+        })
         parseBtn.setOnClickListener {
-            val t = input.text.toString().trim()
-            if (t.isEmpty()) { say("请先粘贴链接或 BV 号", err); return@setOnClickListener }
+            val target = normalizeBiliInput(input.text.toString())
+            if (target == null) {
+                say("请粘贴有效的 B站链接，或输入 BV / av / ep / ss 编号", err)
+                return@setOnClickListener
+            }
+            input.setText(target)
+            input.setSelection(input.text.length)
             setBusy(parseBtn, true)
             parseBtn.text = "解析中…"
             resultCard.visibility = View.GONE
             say("", sub)
-            onParseClicked(t)
+            onParseClicked(target)
         }
         return scroll
     }
@@ -650,12 +712,31 @@ class MainActivity : Activity() {
         })
         page.addView(hdr, match, wrap)
 
-        val (segBox, segs) = buildSegmented(listOf("进行中", "已完成")) { i ->
+        val (segBox, segs) = buildSegmented(listOf("进行中", "已完成", "失败")) { i ->
             dlFilter = i
             refreshDownloadList()
         }
         dlSegs = segs
         page.addView(segBox, sideMargins().apply { topMargin = -dp(26) })
+
+        downloadSearch = EditText(this).apply {
+            hint = "搜索任务名称或状态信息"
+            setHintTextColor(sub)
+            setTextColor(ink)
+            textSize = 14f
+            singleLine = true
+            background = shape(Color.WHITE, 14, Color.parseColor("#E8EAF0"))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
+                    downloadQuery = s?.toString()?.trim().orEmpty()
+                    refreshDownloadList()
+                }
+                override fun afterTextChanged(s: android.text.Editable?) {}
+            })
+        }
+        page.addView(downloadSearch, sideMargins(12))
 
         val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
         listBox = LinearLayout(this).apply {
@@ -668,12 +749,17 @@ class MainActivity : Activity() {
     }
 
     private fun emptyView(): View = TextView(this).apply {
-        text = if (dlFilter == 0) "📭\n\n暂无进行中的任务\n去首页粘贴链接开始下载" else "📂\n\n还没有已完成的下载"
+        text = when {
+            downloadQuery.isNotBlank() -> "🔎\n\n没有找到匹配的任务\n试试其他关键词"
+            dlFilter == 0 -> "📭\n\n暂无进行中的任务\n去首页粘贴 B站链接开始下载"
+            dlFilter == 1 -> "📂\n\n还没有已完成的下载"
+            else -> "✨\n\n目前没有失败任务"
+        }
         textSize = 14f
         setTextColor(sub)
         gravity = Gravity.CENTER
         setLineSpacing(0f, 1.2f)
-        setPadding(0, dp(72), 0, 0)
+        setPadding(0, dp(64), 0, 0)
     }
 
     private fun buildRow(item: DlItem): Row {
@@ -759,14 +845,28 @@ class MainActivity : Activity() {
 
     private fun refreshDownloadList() {
         val done = items.values.count { it.state == ST_DONE }
-        val active = items.size - done
+        val failed = items.values.count { it.state == ST_FAILED }
+        val active = items.values.count { it.state == ST_DOWNLOADING || it.state == ST_WAITING || it.state == ST_PAUSED }
         dlSegs[0].text = "进行中 ($active)"
         dlSegs[1].text = "已完成 ($done)"
+        dlSegs[2].text = "失败 ($failed)"
         styleSegs(dlSegs, dlFilter)
         clearTv.visibility = if (dlFilter == 1 && done > 0) View.VISIBLE else View.GONE
 
         listBox.removeAllViews()
-        val shown = items.values.filter { (it.state == ST_DONE) == (dlFilter == 1) }.reversed()
+        val shown = items.values.filter { item ->
+            val matchesState = when (dlFilter) {
+                0 -> item.state == ST_DOWNLOADING || item.state == ST_WAITING || item.state == ST_PAUSED
+                1 -> item.state == ST_DONE
+                else -> item.state == ST_FAILED
+            }
+            val matchesQuery = downloadQuery.isBlank() ||
+                item.title.contains(downloadQuery, ignoreCase = true) ||
+                item.info.contains(downloadQuery, ignoreCase = true) ||
+                item.sizeText.contains(downloadQuery, ignoreCase = true)
+            matchesState && matchesQuery
+        }.reversed()
+
         if (shown.isEmpty()) {
             listBox.addView(emptyView(), match, wrap)
             return
@@ -934,8 +1034,8 @@ class MainActivity : Activity() {
 
         // 下载
         setQualityTv = valueText(qualityText())
-        val qualityRow = settingRow("默认画质", "未登录时最高约 480P", setQualityTv) {
-            pickOption("默认画质", "quality", qualityOptions, 0) { refreshQuality() }
+        val qualityRow = settingRow("优先画质", "最终选项取决于视频源和账号权限", setQualityTv) {
+            pickOption("优先画质", "quality", qualityOptions, 0) { refreshQuality() }
         }
         pathTv = valueText("系统下载目录  ›")
         val pathRow = settingRow("下载位置", "Download/BiliDl", pathTv) { onChoosePathClicked() }
@@ -1148,46 +1248,4 @@ class MainActivity : Activity() {
         onRequestQrCode()
     }
 
-    // ================= 演示数据（demo = true 时使用） =================
-    private fun seedDemo() {
-        addDownload("d1", "【示例】正在下载的视频，标题很长很长很长很长很长很长很长很长很长很长", null)
-        updateDownload("d1", 42, "3.2 MB/s")
-        addDownload("d2", "【示例】已暂停的视频", null)
-        updateDownload("d2", 17, "")
-        setDownloadState("d2", ST_PAUSED)
-        addDownload("d3", "【示例】下载失败的视频", null)
-        failDownload("d3", "网络连接中断")
-        addDownload("d4", "【示例】已完成的视频", null)
-        finishDownload("d4", "86.4 MB · 720P")
-        simulate("d1")
-    }
-
-    private fun simulate(id: String) {
-        val step = object : Runnable {
-            override fun run() {
-                val item = items[id] ?: return
-                if (item.state == ST_PAUSED || item.state == ST_DONE) return
-                val p = item.progress + 8
-                if (p >= 100) {
-                    finishDownload(id, "86.4 MB · 720P")
-                } else {
-                    updateDownload(id, p, "2.8 MB/s")
-                    ui.postDelayed(this, 400)
-                }
-            }
-        }
-        ui.postDelayed(step, 400)
-    }
-
-    private fun fakeQr(): Bitmap {
-        val n = 29
-        val px = 8
-        val bmp = Bitmap.createBitmap(n * px, n * px, Bitmap.Config.ARGB_8888)
-        val rnd = java.util.Random(7)
-        for (x in 0 until n) for (y in 0 until n) {
-            val c = if (rnd.nextInt(100) < 48) Color.BLACK else Color.WHITE
-            for (i in 0 until px) for (j in 0 until px) bmp.setPixel(x * px + i, y * px + j, c)
-        }
-        return bmp
-    }
 }
