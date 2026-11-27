@@ -39,6 +39,9 @@ class BiliDownloadTaskRepository private constructor(
 
     suspend fun getAllTasks(): List<DownloadTaskEntity> = tasks.getAll()
 
+    suspend fun getResources(taskId: String): List<DownloadResourceEntity> =
+        resources.getByTask(taskId)
+
     suspend fun registerTask(task: DownloadTaskEntity) {
         database.withTransaction {
             val existing = tasks.getById(task.taskId)
@@ -74,14 +77,19 @@ class BiliDownloadTaskRepository private constructor(
         }
     }
 
-    suspend fun markQueued(taskId: String, detail: String, countAttempt: Boolean = false) {
+    suspend fun markQueued(
+        taskId: String,
+        detail: String,
+        countAttempt: Boolean = false,
+        resetProgress: Boolean = false
+    ) {
         transition(
             taskId = taskId,
             targetStatus = DownloadTaskStatus.QUEUED,
             stage = "等待下载",
             detail = detail,
             countAttempt = countAttempt,
-            resetProgress = !countAttempt
+            resetProgress = resetProgress
         )
     }
 
