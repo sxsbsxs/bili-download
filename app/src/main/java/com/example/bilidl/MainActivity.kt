@@ -54,9 +54,7 @@ import kotlinx.coroutines.withContext
  *          状态常量 ST_DOWNLOADING / ST_WAITING / ST_PAUSED / ST_FAILED / ST_DONE
  * 登录页： showQrCode(bitmap) / setQrStatus(msg,isError) / showQrExpired()
  *          loginSuccess(name,avatar,vip) / loginFailed(msg) / logoutDone()
- * 设置：   值保存在 SharedPreferences("ui")，键：quality(Int 0..4 =自动/1080/720/480/360)
- *          concurrent(Int 0..3 =1/2/3/5) wifi_only danmaku audio_only notify(Boolean)
- *          变化时会回调 onSettingChanged(key, value)
+ * 设置状态与持久化由 SettingsViewModel 统一管理；本文件只绑定控件和交互回调。
  */
 class MainActivity : ComponentActivity() {
 
