@@ -1,0 +1,1 @@
+A Bilibili-focused Android downloader with dynamic quality selection, DASH downloads, background tasks, danmaku XML and subtitle SRT export.
