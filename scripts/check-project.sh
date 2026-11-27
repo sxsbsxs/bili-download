@@ -7,6 +7,7 @@ required_files=(
   "app/src/main/java/com/example/bilidl/common/content/BiliDanmakuProtoParser.kt"
   "app/src/main/cpp/mp4_inspector.cpp"
   "app/src/test/cpp/mp4_inspector_test.cpp"
+  "scripts/probe-anonymous-playurl.py"
   "docs/ARCHITECTURE.md"
   "docs/FEATURE_MATRIX.md"
 )
