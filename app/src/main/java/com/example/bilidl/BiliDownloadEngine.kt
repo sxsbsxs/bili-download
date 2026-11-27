@@ -34,7 +34,8 @@ object BiliDownloadEngine {
         qualityId: Int,
         audioOnly: Boolean,
         cookie: String?,
-        progress: (Int, String) -> Unit
+        progress: (Int, String) -> Unit,
+        isCancelled: () -> Boolean = { false }
     ): SavedDownload = withContext(Dispatchers.IO) {
         val repository = BiliRepository { cookie }
         val source = repository.getPlaySource(video, qualityId)
@@ -46,41 +47,40 @@ object BiliDownloadEngine {
         val directTemp = File(workDir, prefix + "_direct")
         try {
             if (source.videoUrls.isNotEmpty()) {
-                progress(2, "正在下载视频流")
-                downloadStream(source.videoUrls, videoTemp) { value ->
-                    progress(2 + (value * if (source.audioUrls.isEmpty()) 92 else 45) / 100, "视频流")
-                }
-
                 if (audioOnly) {
                     if (source.audioUrls.isEmpty()) throw IOException("这个视频没有独立音频流")
-                    progress(48, "正在下载音频")
-                    downloadStream(source.audioUrls, audioTemp) { value ->
-                        progress(48 + value * 45 / 100, "音频流")
+                    progress(3, "正在下载音频")
+                    downloadStream(source.audioUrls, audioTemp, isCancelled) { value ->
+                        progress(3 + value * 94 / 100, "音频流")
                     }
                     val ext = extensionForMime(source.audioMime, "m4a")
                     val saved = publishFile(context, audioTemp, video.title, ext, source.audioMime.ifBlank { "audio/mp4" })
                     progress(100, "已保存")
-                    return@withContext saved
-                }
-
-                if (source.audioUrls.isNotEmpty()) {
-                    progress(49, "正在下载音频流")
-                    downloadStream(source.audioUrls, audioTemp) { value ->
-                        progress(49 + value * 44 / 100, "音频流")
+                    saved
+                } else {
+                    progress(2, "正在下载视频流")
+                    downloadStream(source.videoUrls, videoTemp, isCancelled) { value ->
+                        progress(2 + (value * if (source.audioUrls.isEmpty()) 92 else 45) / 100, "视频流")
                     }
+                    if (source.audioUrls.isNotEmpty()) {
+                        progress(49, "正在下载音频流")
+                        downloadStream(source.audioUrls, audioTemp, isCancelled) { value ->
+                            progress(49 + value * 44 / 100, "音频流")
+                        }
+                    }
+                    progress(95, "正在封装 MP4")
+                    muxToMp4(videoTemp, audioTemp.takeIf { it.exists() }, finalTemp)
+                    val saved = publishFile(context, finalTemp, video.title, "mp4", "video/mp4")
+                    progress(100, "下载完成")
+                    saved
                 }
-                progress(95, "正在封装 MP4")
-                muxToMp4(videoTemp, audioTemp.takeIf { it.exists() }, finalTemp)
-                val saved = publishFile(context, finalTemp, video.title, "mp4", "video/mp4")
-                progress(100, "下载完成")
-                saved
             } else {
                 if (audioOnly) throw IOException("当前视频接口只返回完整视频流，暂不支持单独提取音频")
                 if (source.directUrls.size != 1) {
                     throw IOException("B站仅返回多段旧式 FLV 流；为避免生成损坏文件，本版暂不拼接此格式")
                 }
                 progress(2, "正在下载视频")
-                downloadStream(source.directUrls, directTemp) { value ->
+                downloadStream(source.directUrls, directTemp, isCancelled) { value ->
                     progress(value, "视频流")
                 }
                 val ext = if (source.format.contains("flv", true)) "flv" else "mp4"
@@ -100,12 +100,13 @@ object BiliDownloadEngine {
     private fun downloadStream(
         candidates: List<String>,
         target: File,
+        isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit
     ) {
         var lastError: Exception? = null
         for (candidate in candidates) {
             try {
-                downloadOne(candidate, target, onProgress)
+                downloadOne(candidate, target, isCancelled, onProgress)
                 return
             } catch (error: Exception) {
                 target.delete()
@@ -115,7 +116,12 @@ object BiliDownloadEngine {
         throw IOException("音视频流下载失败：" + (lastError?.message ?: "没有可用地址"))
     }
 
-    private fun downloadOne(url: String, target: File, onProgress: (Int) -> Unit) {
+    private fun downloadOne(
+        url: String,
+        target: File,
+        isCancelled: () -> Boolean,
+        onProgress: (Int) -> Unit
+    ) {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
             readTimeout = 45_000
@@ -139,6 +145,7 @@ object BiliDownloadEngine {
                 target.outputStream().buffered().use { output ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
+                        if (isCancelled()) throw kotlinx.coroutines.CancellationException("下载已取消")
                         val count = input.read(buffer)
                         if (count < 0) break
                         output.write(buffer, 0, count)
@@ -220,6 +227,7 @@ object BiliDownloadEngine {
         val buffer = java.nio.ByteBuffer.allocate(1024 * 1024)
         val info = MediaCodec.BufferInfo()
         while (true) {
+            buffer.clear()
             val size = extractor.readSampleData(buffer, 0)
             if (size < 0) break
             info.offset = 0
