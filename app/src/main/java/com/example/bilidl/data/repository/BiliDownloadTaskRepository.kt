@@ -220,6 +220,10 @@ class BiliDownloadTaskRepository private constructor(
         )
     }
 
+    suspend fun deleteCompletedTasks() {
+        tasks.deleteByStatus(DownloadTaskStatus.COMPLETED)
+    }
+
     suspend fun countByStatus(status: Int): Int = tasks.countByStatus(status)
 
     private suspend fun transition(
