@@ -57,6 +57,7 @@ class BiliRepository(
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
     private var mixinKeyCache: String? = null
     private var mixinKeyExpiresAt = 0L
+    @Volatile private var sessionCookieRejected = false
 
     fun verifyCookie(rawCookie: String): Pair<String, Boolean> {
         val cookie = SecureCookieStore.normalizeCookie(rawCookie)
@@ -413,7 +414,11 @@ class BiliRepository(
     ): JSONObject {
         // Capture the credential once so the preview flag and Cookie header
         // cannot disagree if the session changes while a request is running.
-        val sessionCookie = cookieProvider()?.takeIf { it.isNotBlank() }
+        val sessionCookie = if (sessionCookieRejected) {
+            null
+        } else {
+            cookieProvider()?.takeIf { it.isNotBlank() }
+        }
 
         fun request(cookie: String?): JSONObject {
             val parameters = BiliPlayUrlRequestPolicy.createParameters(
@@ -442,8 +447,9 @@ class BiliRepository(
         }
 
         // The app may have started before restoreSession() finished validating
-        // a persisted cookie. A -101 response proves this credential is not
-        // accepted by the endpoint, so retry public access without sending it.
+        // a persisted cookie. Remember this rejection for the lifetime of this
+        // repository so each lower-quality retry does not resend the same stale cookie.
+        sessionCookieRejected = true
         return request(null)
     }
 
