@@ -27,6 +27,9 @@ internal object BiliQualitySelector {
  * representation validator. Without ETag or Last-Modified we restart cleanly.
  */
 internal object TransferCheckpointPolicy {
+    fun supportsVerifiedRanges(etag: String, lastModified: String): Boolean =
+        etag.isNotBlank() || lastModified.isNotBlank()
+
     fun canReuse(
         etag: String,
         lastModified: String,
@@ -34,7 +37,7 @@ internal object TransferCheckpointPolicy {
         metadataMatches: Boolean,
         mapMatches: Boolean
     ): Boolean {
-        val hasStableValidator = etag.isNotBlank() || lastModified.isNotBlank()
-        return hasStableValidator && targetMatches && metadataMatches && mapMatches
+        return supportsVerifiedRanges(etag, lastModified) &&
+            targetMatches && metadataMatches && mapMatches
     }
 }
