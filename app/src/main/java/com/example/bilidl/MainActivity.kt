@@ -1450,16 +1450,27 @@ class MainActivity : ComponentActivity() {
             } else {
                 input.setText(text)
                 input.setSelection(input.text.length)
-                resultCard.visibility = View.GONE
-                say("已粘贴链接", sub)
+                say(
+                    if (parsedVideo != null && resultCard.visibility == View.VISIBLE) {
+                        "已粘贴链接；保留上次解析结果，点击“解析视频”更新"
+                    } else {
+                        "已粘贴链接；点击“解析视频”开始解析"
+                    },
+                    sub
+                )
             }
         }
 
         input.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                if (resultCard.visibility == View.VISIBLE) resultCard.visibility = View.GONE
-                if (!s.isNullOrBlank()) say("", sub)
+                // IME candidate selection also changes text. Keep the last successful
+                // preview visible; a new result is requested only by tapping Parse.
+                if (parsedVideo != null && resultCard.visibility == View.VISIBLE) {
+                    say("输入已修改；当前仍显示上次解析结果，点击“解析视频”更新", sub)
+                } else if (!s.isNullOrBlank()) {
+                    say("", sub)
+                }
             }
             override fun afterTextChanged(s: android.text.Editable?) {}
         })
@@ -1489,7 +1500,8 @@ class MainActivity : ComponentActivity() {
             input.setSelection(input.text.length)
             setBusy(parseBtn, true)
             parseBtn.text = "正在解析…"
-            resultCard.visibility = View.GONE
+            // Keep the last successful result on screen while the new URL is loading.
+            // Success replaces it; failure is reported by the normal parse error state.
             say("", sub)
             onParseClicked(target)
         }
