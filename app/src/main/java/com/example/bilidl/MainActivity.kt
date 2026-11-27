@@ -124,7 +124,8 @@ class MainActivity : ComponentActivity() {
                     BiliDownloadWorker.KEY_CID to spec.video.cid,
                     BiliDownloadWorker.KEY_TITLE to spec.video.title,
                     BiliDownloadWorker.KEY_QUALITY to spec.qualityId,
-                    BiliDownloadWorker.KEY_AUDIO_ONLY to spec.audioOnly
+                    BiliDownloadWorker.KEY_AUDIO_ONLY to spec.audioOnly,
+                    BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[prefs.getInt("concurrent", 1).coerceIn(0, 3)]
                 )
             )
             .addTag(DOWNLOAD_TAG)
