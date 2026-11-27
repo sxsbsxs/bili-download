@@ -235,28 +235,7 @@ class BiliRepository(
 
     private fun directPlaySource(data: JSONObject, defaultFormat: String): BiliPlaySource? {
         val durl = data.optJSONArray("durl") ?: return null
-        val direct = BiliDurlParser.normalize(
-            (0 until durl.length()).mapNotNull { index ->
-                val item = durl.optJSONObject(index) ?: return@mapNotNull null
-                val urls = ArrayList<String>()
-                item.optString("url").takeIf(String::isNotBlank)?.let(urls::add)
-                val backups = item.optJSONArray("backup_url")
-                    ?: item.optJSONArray("backupUrl")
-                for (backupIndex in 0 until (backups?.length() ?: 0)) {
-                    backups?.optString(backupIndex)
-                        ?.takeIf(String::isNotBlank)
-                        ?.let(urls::add)
-                }
-                if (urls.isEmpty()) return@mapNotNull null
-                val apiOrder = item.optInt("order", index + 1).takeIf { it > 0 } ?: index + 1
-                BiliDirectSegment(
-                    urls = urls,
-                    lengthMs = item.optLong("length").coerceAtLeast(0L),
-                    sizeBytes = item.optLong("size").coerceAtLeast(0L),
-                    order = apiOrder
-                )
-            }
-        )
+        val direct = BiliDurlParser.parse(durl)
         if (direct.isEmpty()) return null
         return BiliPlaySource(
             emptyList(),
