@@ -168,7 +168,11 @@ object BiliDownloadEngine {
                 )
                 progress(100, completionDetail("下载完成", sidecars))
                 completed = true
-                saved.copy(additionalFiles = sidecars.files, warnings = sidecars.warnings)
+                saved.copy(
+                    additionalFiles = sidecars.resources.map { it.displayName },
+                    additionalResources = sidecars.resources,
+                    warnings = sidecars.warnings
+                )
             }
         } finally {
             audioOutputTemp.delete()
@@ -333,8 +337,8 @@ object BiliDownloadEngine {
         return when {
             sidecars.resources.isNotEmpty() && sidecars.warnings.isNotEmpty() ->
                 "$label · 已保存 ${sidecars.resources.size} 个附加文件，部分资源未能获取"
-            sidecars.files.isNotEmpty() ->
-                "$label · 已保存 ${sidecars.files.size} 个附加文件"
+            sidecars.resources.isNotEmpty() ->
+                "$label · 已保存 ${sidecars.resources.size} 个附加文件"
             sidecars.warnings.isNotEmpty() ->
                 "$label · 附加资源未能获取"
             else -> label
