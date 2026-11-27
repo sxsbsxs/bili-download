@@ -15,6 +15,17 @@ class BiliDownloadRetryPolicyTest {
     }
 
     @Test
+    fun findsHttpStatusThroughDownloaderWrappers() {
+        val wrapped = IOException(
+            "分段下载失败",
+            IOException("CDN failure", BiliHttpException(403, "CDN"))
+        )
+
+        assertTrue(BiliDownloadRetryPolicy.httpStatus(wrapped) == 403)
+        assertTrue(BiliDownloadRetryPolicy.httpStatus(SocketTimeoutException("timeout")) == null)
+    }
+
+    @Test
     fun retriesNetworkInterruptions() {
         assertTrue(BiliDownloadRetryPolicy.isRetryable(SocketTimeoutException("read timed out")))
         assertTrue(BiliDownloadRetryPolicy.isRetryable(RetryableDownloadException("partial response")))
