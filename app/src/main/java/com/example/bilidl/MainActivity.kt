@@ -67,7 +67,7 @@ class MainActivity : ComponentActivity() {
                 val video = BiliRepository { SecureCookieStore.load(this) }.inspect(text)
                 runOnUiThread {
                     parsedVideo = video
-                    selectedQualityId = video.qualities.firstOrNull()?.id ?: 80
+                    selectedQualityId = preferredQualityId(video.qualities)
                     showVideo(
                         video.title,
                         video.uploader,
@@ -272,6 +272,18 @@ class MainActivity : ComponentActivity() {
     private fun formatDuration(seconds: Int): String {
         val safe = seconds.coerceAtLeast(0)
         return String.format(java.util.Locale.US, "%02d:%02d", safe / 60, safe % 60)
+    }
+
+    private fun preferredQualityId(qualities: List<BiliQuality>): Int {
+        if (qualities.isEmpty()) return 80
+        val target = when (prefs.getInt("quality", 0)) {
+            1 -> 80
+            2 -> 64
+            3 -> 32
+            4 -> 16
+            else -> return qualities.first().id
+        }
+        return qualities.firstOrNull { it.id <= target }?.id ?: qualities.last().id
     }
 
     private fun qualityLabelForSelection(video: BiliVideo): String {
