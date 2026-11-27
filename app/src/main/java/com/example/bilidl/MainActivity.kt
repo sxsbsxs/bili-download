@@ -397,7 +397,7 @@ class MainActivity : ComponentActivity() {
         backgroundExecutor.execute {
             runCatching {
                 runBlocking(Dispatchers.IO) {
-                    BiliDownloadTaskRepository.getInstance(applicationContext).deleteTerminalTasks()
+                    BiliDownloadTaskRepository.getInstance(applicationContext).deleteCompletedTasks()
                 }
             }
         }
