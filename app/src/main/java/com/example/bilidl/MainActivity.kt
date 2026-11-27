@@ -39,15 +39,15 @@ import com.example.bilidl.data.local.entity.DownloadTaskEntity
 import com.example.bilidl.data.local.entity.DownloadTaskStatus
 import com.example.bilidl.data.repository.DownloadTaskRecoveryAction
 import com.example.bilidl.data.repository.DownloadTaskRecoveryPolicy
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /*
- * ===== 给后端开发者（GPT）的说明 =====
- * 本文件只负责界面。网络/解析/下载/登录逻辑请写在别的文件里，然后在下面
- * “交给后端实现”区域的函数中调用。所有 public 函数可在任意线程调用。
- * 当前文件仅包含 UI；解析、下载、扫码登录和文件访问仍需由业务层实现。
+ * Activity entry point and legacy View-based screen host.
+ * Parsing and Room-backed task history are delegated to lifecycle ViewModels;
+ * WorkManager remains the durable execution scheduler for actual transfers.
  *
  * 首页：   showVideo(title, uploader, cover, meta) / showError(msg)
  * 下载页： addDownload(id,title,cover) / updateDownload(id,progress,info)
