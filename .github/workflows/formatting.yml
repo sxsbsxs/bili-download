@@ -1,0 +1,20 @@
+name: Source checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  source-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check whitespace
+        run: git diff --check
+      - name: Check project layout and dependencies
+        run: bash scripts/check-project.sh
