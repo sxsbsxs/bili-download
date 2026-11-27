@@ -202,7 +202,7 @@ object BiliDownloadEngine {
                         "该视频没有可导出的弹幕"
                     }
                 } else {
-                    val temp = File(workDir, "\${prefix}_danmaku.xml")
+                    val temp = File(workDir, "${prefix}_danmaku.xml")
                     try {
                         temp.writeText(
                             BiliContentExporter.danmakuToXml(video.cid, comments),
@@ -219,7 +219,7 @@ object BiliDownloadEngine {
                         temp.delete()
                     }
                     if (failedSegments > 0) {
-                        warnings += "弹幕部分导出：\${failedSegments}/$segmentCount 个分段获取失败"
+                        warnings += "弹幕部分导出：${failedSegments}/$segmentCount 个分段获取失败"
                     }
                 }
                 if (requestedSegments > MAX_DANMAKU_SEGMENTS) {
@@ -247,7 +247,7 @@ object BiliDownloadEngine {
                         try {
                             val cues = repository.getSubtitleCues(track)
                             if (cues.isNotEmpty()) {
-                                val temp = File(workDir, "\${prefix}_subtitle_$index.srt")
+                                val temp = File(workDir, "${prefix}_subtitle_$index.srt")
                                 try {
                                     temp.writeText(BiliContentExporter.subtitlesToSrt(cues), Charsets.UTF_8)
                                     val baseName = video.title + "_" + track.languageName
@@ -266,7 +266,7 @@ object BiliDownloadEngine {
                         } catch (cancelled: CancellationException) {
                             throw cancelled
                         } catch (error: Exception) {
-                            warnings += "字幕 \${track.languageName} 导出失败：" +
+                            warnings += "字幕 ${track.languageName} 导出失败：" +
                                 (error.message ?: "未知错误")
                         }
                     }
@@ -290,9 +290,9 @@ object BiliDownloadEngine {
     private fun completionDetail(label: String, sidecars: SidecarSummary): String {
         return when {
             sidecars.files.isNotEmpty() && sidecars.warnings.isNotEmpty() ->
-                "$label · 已保存 \${sidecars.files.size} 个附加文件，部分资源未能获取"
+                "$label · 已保存 ${sidecars.files.size} 个附加文件，部分资源未能获取"
             sidecars.files.isNotEmpty() ->
-                "$label · 已保存 \${sidecars.files.size} 个附加文件"
+                "$label · 已保存 ${sidecars.files.size} 个附加文件"
             sidecars.warnings.isNotEmpty() ->
                 "$label · 附加资源未能获取"
             else -> label
