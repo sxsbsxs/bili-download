@@ -9,6 +9,15 @@ import org.robolectric.RobolectricTestRunner
 @RunWith(RobolectricTestRunner::class)
 class BiliDurlParserTest {
     @Test
+    fun legacyDurlCannotSilentlyExceedRequestedQuality() {
+        assertTrue(BiliDirectQualityPolicy.canUse(80, 80))
+        assertTrue(BiliDirectQualityPolicy.canUse(80, 64))
+        assertTrue(BiliDirectQualityPolicy.canUse(0, 120))
+        assertTrue(BiliDirectQualityPolicy.canUse(80, 0))
+        org.junit.Assert.assertFalse(BiliDirectQualityPolicy.canUse(64, 80))
+    }
+
+    @Test
     fun parsesBilibiliDurlJsonIncludingOrderLengthSizeAndBackupUrls() {
         val durl = org.json.JSONArray().put(
             org.json.JSONObject()
