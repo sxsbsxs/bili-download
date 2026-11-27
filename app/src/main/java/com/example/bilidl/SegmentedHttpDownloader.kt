@@ -134,7 +134,7 @@ internal object SegmentedHttpDownloader {
             val status = connection.responseCode
             if (status == HttpURLConnection.HTTP_OK) return null
             if (status != HttpURLConnection.HTTP_PARTIAL) {
-                throw BiliHttpException(status, "CDN 探测")
+                throw httpFailure(connection, status, "CDN 探测")
             }
             val contentRange = connection.getHeaderField("Content-Range").orEmpty()
             val total = Regex("""bytes\s+\d+-\d+/(\d+)""", RegexOption.IGNORE_CASE)
@@ -330,7 +330,7 @@ internal object SegmentedHttpDownloader {
         try {
             val status = connection.responseCode
             if (status != HttpURLConnection.HTTP_PARTIAL) {
-                throw BiliHttpException(status, "CDN 分段请求")
+                throw httpFailure(connection, status, "CDN 分段请求")
             }
             val range = connection.getHeaderField("Content-Range").orEmpty()
             val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+)""", RegexOption.IGNORE_CASE)
@@ -411,7 +411,7 @@ internal object SegmentedHttpDownloader {
         try {
             val status = connection.responseCode
             if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_PARTIAL) {
-                throw BiliHttpException(status, "下载服务器请求")
+                throw httpFailure(connection, status, "下载服务器请求")
             }
             val total = connection.contentLengthLong
             var copied = 0L
@@ -446,6 +446,17 @@ internal object SegmentedHttpDownloader {
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun httpFailure(
+        connection: HttpURLConnection,
+        status: Int,
+        operation: String
+    ): BiliHttpException {
+        val detail = runCatching {
+            connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+        }.getOrNull().orEmpty().take(160)
+        return BiliHttpException(status, operation, detail)
     }
 
     private fun openConnection(url: String, cookie: String?, referer: String): HttpURLConnection {
