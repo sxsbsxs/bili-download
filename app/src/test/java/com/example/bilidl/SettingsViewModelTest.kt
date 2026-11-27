@@ -1,6 +1,7 @@
 package com.example.bilidl
 
 import android.app.Application
+import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -15,7 +16,7 @@ class SettingsViewModelTest {
     @Before
     fun clearPreferences() {
         application = ApplicationProvider.getApplicationContext()
-        application.getSharedPreferences("ui", Application.MODE_PRIVATE)
+        application.getSharedPreferences("ui", Context.MODE_PRIVATE)
             .edit()
             .clear()
             .commit()
