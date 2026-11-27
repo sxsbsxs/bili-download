@@ -93,12 +93,17 @@ class MainActivity : ComponentActivity() {
                         } else {
                             ""
                         }
+                        val qualityHint = if (video.qualities.isEmpty()) {
+                            " · 画质将在下载时自动确认（无需先登录）"
+                        } else {
+                            " · " + video.qualities.size + " 种可用画质"
+                        }
                         showVideo(
                             video.title,
                             video.uploader,
                             video.cover,
                             "第 " + video.page + " P · " + formatDuration(video.durationSeconds) +
-                                " · " + video.qualities.size + " 种可用画质" + pageHint
+                                qualityHint + pageHint
                         )
                         homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
                     }
@@ -564,7 +569,7 @@ class MainActivity : ComponentActivity() {
     private fun qualityLabelForSelection(video: BiliVideo): String {
         return video.qualities.firstOrNull { it.id == selectedQualityId }?.label
             ?: video.qualities.firstOrNull()?.label
-            ?: "自动"
+            ?: if (video.qualities.isEmpty()) "自动（下载时确认）" else "自动"
     }
 
     private fun pageUrl(video: BiliVideo, page: BiliPage): String {
@@ -643,8 +648,12 @@ class MainActivity : ComponentActivity() {
 
     private fun showAvailableQualities() {
         val video = parsedVideo
-        if (video == null || video.qualities.isEmpty()) {
-            toast("请先解析视频，获取这条视频实际提供的画质")
+        if (video == null) {
+            toast("请先解析视频")
+            return
+        }
+        if (video.qualities.isEmpty()) {
+            toast("B站暂未返回画质列表；仍可直接下载，应用会在下载时重新获取，不要求先登录")
             return
         }
         val labels = video.qualities.map { it.label }.toTypedArray()
@@ -673,7 +682,8 @@ class MainActivity : ComponentActivity() {
         metaTv.isClickable = hasMultiplePages
         metaTv.setTextColor(if (hasMultiplePages) pink else sub)
         metaTv.setOnClickListener { if (hasMultiplePages) showAvailablePages() }
-        if (cover != null) coverIv.setImageBitmap(cover) else coverIv.setImageDrawable(null)
+        if (cover != null) coverIv.setImageBitmap(cover)
+        else coverIv.setImageResource(R.drawable.ic_video_placeholder)
         resultCard.visibility = View.VISIBLE
         parsedVideo?.let { homeQualityTv.text = qualityLabelForSelection(it) + "  ›" }
         say("", sub)
@@ -1195,11 +1205,11 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(16), dp(10), dp(10), dp(10))
         }
         tip.addView(TextView(this).apply {
-            text = "登录可能影响可选画质；最终以视频实际提供的清晰度为准"
+            text = "不登录也能解析和尝试下载公开内容；登录只影响部分受限画质"
             textSize = 12f
             setTextColor(Color.parseColor("#A83F62"))
         }, LinearLayout.LayoutParams(0, wrap, 1f))
-        val goLogin = chip("账号登录", true)
+        val goLogin = chip("可选登录", true)
         goLogin.setOnClickListener { showLogin() }
         tip.addView(goLogin)
         loginTip = tip
@@ -1481,7 +1491,8 @@ class MainActivity : ComponentActivity() {
         r.selection.setTextColor(if (selected) Color.WHITE else pink)
         r.selection.background = if (selected) shape(pink, 24) else null
         val c = item.cover
-        if (c != null) r.cover.setImageBitmap(c) else r.cover.setImageDrawable(null)
+        if (c != null) r.cover.setImageBitmap(c)
+        else r.cover.setImageResource(R.drawable.ic_video_placeholder)
         r.bar.progress = item.progress
         r.resources.visibility = if (item.state == ST_DONE) View.VISIBLE else View.GONE
         when (item.state) {
@@ -1868,7 +1879,7 @@ class MainActivity : ComponentActivity() {
             }
         } else {
             nameTv.text = "未登录"
-            subTv.text = "登录后可下载高清画质"
+            subTv.text = "未登录 · 可解析并下载公开内容"
             accountBtn.text = "登录"
             avatarTv.text = "?"
             avatarIv.setImageDrawable(null)
