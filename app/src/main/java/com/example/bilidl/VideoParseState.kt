@@ -6,7 +6,7 @@ package com.example.bilidl
  * Keeping the resolved BiliVideo in the state lets the Activity render the
  * result without owning network work or coordinating parse callbacks.
  */
-internal sealed interface VideoParseState {
+sealed interface VideoParseState {
     data object Idle : VideoParseState
     data object Loading : VideoParseState
     data class Success(val video: BiliVideo) : VideoParseState
