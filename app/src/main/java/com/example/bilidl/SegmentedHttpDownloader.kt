@@ -64,7 +64,12 @@ internal object SegmentedHttpDownloader {
         onProgress: (Int) -> Unit
     ) {
         val probe = probe(url, cookie)
-        if (probe == null) {
+        if (
+            probe == null ||
+            !TransferCheckpointPolicy.supportsVerifiedRanges(probe.etag, probe.lastModified)
+        ) {
+            // Without a stable validator, parallel ranges could mix bytes from
+            // different CDN representations. Use a clean sequential response.
             downloadSequential(url, target, cookie, isCancelled, onProgress)
             return
         }
