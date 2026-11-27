@@ -157,15 +157,20 @@ class BiliRepository(
             val videos = dash.optJSONArray("video") ?: JSONArray()
             val audios = dash.optJSONArray("audio") ?: JSONArray()
             val videoCandidates = (0 until videos.length()).mapNotNull { videos.optJSONObject(it) }
-            val atOrBelowRequested = if (requestedQuality > 0) {
+            val eligible = if (requestedQuality > 0) {
                 videoCandidates.filter { it.optInt("id") <= requestedQuality }
             } else {
                 videoCandidates
             }
-            val eligible = atOrBelowRequested.ifEmpty { videoCandidates }
-            val videoItem = eligible.firstOrNull {
-                it.optString("codecs").contains("avc", ignoreCase = true)
-            } ?: eligible.maxByOrNull { it.optInt("id") }
+            if (eligible.isEmpty()) {
+                throw IOException("B站没有返回所选画质或更低画质，已停止下载以避免超出你的画质选择")
+            }
+            val videoItem = eligible
+                .sortedWith(
+                    compareByDescending<JSONObject> { it.optInt("id") }
+                        .thenByDescending { it.optString("codecs").contains("avc", ignoreCase = true) }
+                )
+                .firstOrNull()
             val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
             val audioItem = audioCandidates.firstOrNull {
                 it.optString("codecs").contains("mp4a", ignoreCase = true)
