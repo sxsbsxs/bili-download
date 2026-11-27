@@ -18,7 +18,7 @@ internal object BiliDurlParser {
             .mapNotNull { segment ->
                 val urls = segment.urls
                     .asSequence()
-                    .map(String::trim)
+                    .map { it.trim() }
                     .filter { it.startsWith("https://", ignoreCase = true) ||
                         it.startsWith("http://", ignoreCase = true) }
                     .distinct()
