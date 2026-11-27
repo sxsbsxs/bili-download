@@ -377,7 +377,7 @@ internal object SegmentedHttpDownloader {
         val connection = openConnection(url, cookie)
         try {
             val status = connection.responseCode
-            if (status != HttpURLConnection.HTTP_OK) {
+            if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_PARTIAL) {
                 throw BiliHttpException(status, "下载服务器请求")
             }
             val total = connection.contentLengthLong
