@@ -17,6 +17,7 @@ class BiliWbiKeyPolicyTest {
         val normalKey = BiliWbiKeyPolicy.createMixinKey(0, imgUrl, subUrl)
 
         assertEquals(32, anonymousKey.length)
+        assertEquals("1022a87ffdaf532cb45ee953dce8c96d", anonymousKey)
         assertEquals(normalKey, anonymousKey)
     }
 
