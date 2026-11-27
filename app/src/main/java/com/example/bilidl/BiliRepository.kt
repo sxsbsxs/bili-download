@@ -201,7 +201,7 @@ class BiliRepository(
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
-        val data = data.optJSONObject("data") ?: play
+        val data = play.optJSONObject("data") ?: play
         val labels = linkedMapOf<Int, String>()
         val support = data.optJSONArray("support_formats") ?: JSONArray()
         for (i in 0 until support.length()) {
@@ -221,7 +221,7 @@ class BiliRepository(
         }
 
         if (labels.isEmpty()) {
-            val dash = play.optJSONObject("dash")?.optJSONArray("video") ?: JSONArray()
+            val dash = data.optJSONObject("dash")?.optJSONArray("video") ?: JSONArray()
             for (i in 0 until dash.length()) {
                 val id = dash.optJSONObject(i)?.optInt("id") ?: continue
                 labels[id] = qualityLabel(id)
