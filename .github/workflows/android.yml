@@ -2,9 +2,9 @@ name: Android build
 
 on:
   push:
-    branches: [main, feat/real-bilibili-download]
+    branches: [main, feat/real-bilibili-download, feature/anonymous-playurl-storage-http-tests]
   pull_request:
-    branches: [main]
+    branches: [main, refactor/nonblocking-download-progress]
   workflow_dispatch:
 
 permissions:
