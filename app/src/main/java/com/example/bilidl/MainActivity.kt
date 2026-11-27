@@ -24,6 +24,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.io.IOException
 import android.text.TextUtils
 import android.text.TextWatcher
@@ -32,6 +33,13 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import org.json.JSONObject
+import com.example.bilidl.data.local.entity.DownloadTaskEntity
+import com.example.bilidl.data.local.entity.DownloadTaskStatus
+import com.example.bilidl.data.repository.BiliDownloadTaskRepository
+import com.example.bilidl.data.repository.DownloadTaskRecoveryAction
+import com.example.bilidl.data.repository.DownloadTaskRecoveryPolicy
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 
 /*
  * ===== 给后端开发者（GPT）的说明 =====
@@ -54,11 +62,11 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
-        const val ST_DOWNLOADING = 0
-        const val ST_WAITING = 1
-        const val ST_PAUSED = 2
-        const val ST_FAILED = 3
-        const val ST_DONE = 4
+        const val ST_DOWNLOADING = DownloadTaskStatus.RUNNING
+        const val ST_WAITING = DownloadTaskStatus.QUEUED
+        const val ST_PAUSED = DownloadTaskStatus.PAUSED
+        const val ST_FAILED = DownloadTaskStatus.FAILED
+        const val ST_DONE = DownloadTaskStatus.COMPLETED
     }
 
     // ===================== 真实业务接入 =====================
@@ -177,6 +185,41 @@ class MainActivity : ComponentActivity() {
             .put("downloadDanmaku", spec.downloadDanmaku)
             .put("downloadSubtitles", spec.downloadSubtitles)
         taskPrefs.edit().putString(id, value.toString()).apply()
+
+        // Keep SharedPreferences readable for upgrades, while Room becomes the
+        // durable index used by task history, retry and resource management.
+        val entity = DownloadTaskEntity(
+            taskId = id,
+            bvid = spec.video.bvid,
+            aid = spec.video.aid,
+            cid = spec.video.cid,
+            pageNumber = spec.video.page,
+            title = spec.video.title,
+            uploader = spec.video.uploader,
+            durationSeconds = spec.video.durationSeconds,
+            coverUrl = spec.video.coverUrl,
+            qualityId = spec.qualityId,
+            audioOnly = spec.audioOnly,
+            downloadDanmaku = spec.downloadDanmaku,
+            downloadSubtitles = spec.downloadSubtitles
+        )
+        backgroundExecutor.execute {
+            runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).registerTask(entity)
+                }
+            }
+        }
+    }
+
+    private fun persistTaskPause(id: String, reason: String) {
+        backgroundExecutor.execute {
+            runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).markPaused(id, reason)
+                }
+            }
+        }
     }
 
     private fun handleWorkInfo(id: String, info: WorkInfo) {
@@ -198,7 +241,10 @@ class MainActivity : ComponentActivity() {
                 id,
                 info.outputData.getString(BiliDownloadWorker.KEY_ERROR) ?: "下载失败"
             )
-            WorkInfo.State.CANCELLED -> setDownloadState(id, ST_PAUSED, "已取消 · 可继续下载")
+            WorkInfo.State.CANCELLED -> {
+                persistTaskPause(id, "已取消 · 可继续下载")
+                setDownloadState(id, ST_PAUSED, "已取消 · 可继续下载")
+            }
         }
     }
 
@@ -233,12 +279,85 @@ class MainActivity : ComponentActivity() {
             )
             downloadSpecs[id] = spec
             if (!items.containsKey(id)) addDownload(id, video.title, null)
+            persistDownloadSpec(id, spec) // one-time migration for installations using the old task store
             observeUniqueWork(id)
+        }
+    }
+
+    private fun restoreRoomTasks() {
+        backgroundExecutor.execute {
+            val repository = BiliDownloadTaskRepository.getInstance(applicationContext)
+            val records = runCatching {
+                runBlocking(Dispatchers.IO) { repository.getAllTasks() }
+            }.getOrElse { emptyList() }
+
+            // Reconcile durable task metadata with WorkManager before touching the UI.
+            // A missing WorkInfo means the process/task scheduler lost the execution
+            // record; only then do we enqueue again. Existing work is observed, never
+            // replaced, so process recovery cannot accidentally restart a live transfer.
+            val recoveryPlan = records.map { task ->
+                val needsExecution = task.status == DownloadTaskStatus.QUEUED ||
+                    task.status == DownloadTaskStatus.RUNNING
+                val workInfos = if (needsExecution) {
+                    runCatching {
+                        workManager.getWorkInfosForUniqueWork("bilidl_" + task.taskId)
+                            .get(15, TimeUnit.SECONDS)
+                    }.getOrNull()
+                } else {
+                    null
+                }
+                task to DownloadTaskRecoveryPolicy.decide(task.status, workInfos?.size)
+            }
+
+            runOnUiThread {
+                recoveryPlan.forEach { (task, shouldRequeue) ->
+                    val video = BiliVideo(
+                        bvid = task.bvid,
+                        aid = task.aid,
+                        cid = task.cid,
+                        page = task.pageNumber,
+                        title = task.title,
+                        uploader = task.uploader,
+                        durationSeconds = task.durationSeconds,
+                        coverUrl = task.coverUrl,
+                        cover = null,
+                        qualities = emptyList()
+                    )
+                    val spec = DownloadSpec(
+                        video = video,
+                        qualityId = task.qualityId,
+                        audioOnly = task.audioOnly,
+                        downloadDanmaku = task.downloadDanmaku,
+                        downloadSubtitles = task.downloadSubtitles
+                    )
+                    downloadSpecs[task.taskId] = spec
+                    if (!items.containsKey(task.taskId)) addDownload(task.taskId, task.title, null)
+                    when (task.status) {
+                        DownloadTaskStatus.QUEUED, DownloadTaskStatus.RUNNING -> {
+                            when (shouldRequeue) {
+                                DownloadTaskRecoveryAction.ENQUEUE_MISSING_WORK -> enqueueDownload(task.taskId, spec)
+                                DownloadTaskRecoveryAction.OBSERVE_EXISTING_WORK -> observeUniqueWork(task.taskId)
+                                DownloadTaskRecoveryAction.RESTORE_TERMINAL_STATE -> Unit
+                            }
+                        }
+                        DownloadTaskStatus.PAUSED -> setDownloadState(task.taskId, ST_PAUSED, task.detail)
+                        DownloadTaskStatus.FAILED -> failDownload(task.taskId, task.errorMessage ?: task.detail)
+                        DownloadTaskStatus.COMPLETED -> {
+                            task.outputUri?.let { savedFileUris[task.taskId] = Uri.parse(it) }
+                            finishDownload(
+                                task.taskId,
+                                task.outputSizeBytes?.let(BiliDownloadEngine::formatSize) ?: "已保存"
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
     private fun onPauseClicked(id: String) {
         workManager.cancelUniqueWork("bilidl_" + id)
+        persistTaskPause(id, "已取消，可重新下载")
         setDownloadState(id, ST_PAUSED, "已取消，可重新下载")
     }
 
@@ -261,8 +380,88 @@ class MainActivity : ComponentActivity() {
             ?.filter { it.name.startsWith("task_" + safeId) }
             ?.forEach { it.delete() }
         val savedUri = savedFileUris.remove(id)
-        if (deleteFile) {
-            savedUri?.let { contentResolver.delete(it, null, null) }
+        backgroundExecutor.execute {
+            runCatching {
+                runBlocking(Dispatchers.IO) {
+                    val repository = BiliDownloadTaskRepository.getInstance(applicationContext)
+                    val resourceUris = repository.getResources(id).map { it.contentUri } +
+                        listOfNotNull(savedUri?.toString())
+                    if (deleteFile) {
+                        resourceUris.distinct().forEach { value ->
+                            runCatching { contentResolver.delete(Uri.parse(value), null, null) }
+                        }
+                    }
+                    repository.deleteTask(id)
+                }
+            }
+        }
+    }
+
+    private fun showTaskHistory(id: String) {
+        backgroundExecutor.execute {
+            val events = runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).getRecentEvents(id, 50)
+                }
+            }.getOrElse { emptyList() }
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                if (events.isEmpty()) {
+                    toast("暂时没有任务状态记录")
+                    return@runOnUiThread
+                }
+                val lines = events.map { event ->
+                    val time = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                        .format(java.util.Date(event.createdAt))
+                    time + "  ·  " + event.stage + "\n" + event.message
+                }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle("任务执行记录")
+                    .setItems(lines, null)
+                    .setPositiveButton("关闭", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun showTaskResources(id: String) {
+        backgroundExecutor.execute {
+            val resources = runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).getResources(id)
+                }
+            }.getOrElse { emptyList() }
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                if (resources.isEmpty()) {
+                    toast("没有找到已保存的资源记录")
+                    return@runOnUiThread
+                }
+                val labels = resources.map { resource ->
+                    val size = BiliDownloadEngine.formatSize(resource.sizeBytes)
+                    resource.displayName + "  ·  " + size
+                }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle("已保存的资源")
+                    .setItems(labels) { _, index ->
+                        val resource = resources[index]
+                        openSavedResource(Uri.parse(resource.contentUri), resource.mimeType)
+                    }
+                    .setNegativeButton("关闭", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun openSavedResource(uri: Uri, mimeType: String) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeType.ifBlank { contentResolver.getType(uri) ?: "*/*" })
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            toast("没有可打开该资源的应用")
         }
     }
 
@@ -289,6 +488,13 @@ class MainActivity : ComponentActivity() {
         downloadSpecs.keys.toList().filter { it !in activeIds }.forEach(downloadSpecs::remove)
         savedFileUris.keys.toList().filter { it !in activeIds }.forEach(savedFileUris::remove)
         workManager.pruneWork()
+        backgroundExecutor.execute {
+            runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).deleteCompletedTasks()
+                }
+            }
+        }
     }
 
     @Volatile private var qrLoginGeneration = 0
@@ -700,7 +906,8 @@ class MainActivity : ComponentActivity() {
     }
     private class Row(
         val root: LinearLayout, val cover: ImageView, val title: TextView,
-        val info: TextView, val bar: ProgressBar, val primary: TextView
+        val info: TextView, val bar: ProgressBar, val primary: TextView,
+        val selection: TextView, val resources: TextView, val history: TextView
     )
     private val items = LinkedHashMap<String, DlItem>()
     private val rows = HashMap<String, Row>()
@@ -708,8 +915,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var dlSegs: List<TextView>
     private lateinit var listBox: LinearLayout
     private lateinit var clearTv: TextView
+    private lateinit var batchTv: TextView
+    private lateinit var batchBar: LinearLayout
+    private lateinit var batchCountTv: TextView
     private lateinit var downloadSearch: EditText
     private var downloadQuery = ""
+    private var batchMode = false
+    private val selectedDownloadIds = LinkedHashSet<String>()
 
     // 设置页
     private lateinit var avatarIv: ImageView
@@ -941,6 +1153,7 @@ class MainActivity : ComponentActivity() {
         refreshAccountUi()
         refreshDownloadList()
         restoreDownloadTasks()
+        restoreRoomTasks()
         setDownloadPathText("Download/BiliDl")
         backgroundExecutor.execute {
             val cookie = SecureCookieStore.load(this)
@@ -1195,6 +1408,18 @@ class MainActivity : ComponentActivity() {
         hdr.addView(clearTv, FrameLayout.LayoutParams(wrap, wrap, Gravity.TOP or Gravity.END).apply {
             topMargin = dp(28); rightMargin = dp(20)
         })
+        batchTv = TextView(this).apply {
+            text = "批量选择"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = shape(Color.parseColor("#33FFFFFF"), 16)
+            setOnClickListener { setBatchMode(!batchMode) }
+        }
+        hdr.addView(batchTv, FrameLayout.LayoutParams(wrap, wrap, Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(28); rightMargin = dp(112)
+        })
         page.addView(hdr, match, wrap)
 
         val (segBox, segs) = buildSegmented(listOf("进行中", "已完成", "失败")) { i ->
@@ -1203,6 +1428,29 @@ class MainActivity : ComponentActivity() {
         }
         dlSegs = segs
         page.addView(segBox, sideMargins().apply { topMargin = -dp(26) })
+
+        batchBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = shape(Color.WHITE, 14)
+        }
+        batchCountTv = TextView(this).apply {
+            text = "已选 0 项"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }
+        batchBar.addView(batchCountTv, LinearLayout.LayoutParams(0, wrap, 1f))
+        val selectAllButton = chip("全选", false).apply { setOnClickListener { selectVisibleDownloads() } }
+        val pauseButton = chip("暂停", false).apply { setOnClickListener { pauseSelectedDownloads() } }
+        val retryButton = chip("重试", true).apply { setOnClickListener { retrySelectedDownloads() } }
+        val deleteButton = chip("删除", false).apply { setOnClickListener { confirmDeleteSelected() } }
+        listOf(selectAllButton, pauseButton, retryButton, deleteButton).forEach { button ->
+            batchBar.addView(button, LinearLayout.LayoutParams(wrap, wrap).apply { leftMargin = dp(5) })
+        }
+        page.addView(batchBar, sideMargins(8))
 
         downloadSearch = EditText(this).apply {
             hint = "搜索任务名称或状态信息"
@@ -1255,6 +1503,14 @@ class MainActivity : ComponentActivity() {
             background = shape(Color.parseColor("#E8EAF0"), 12)
             clipToOutline = true
         }
+        val selection = TextView(this).apply {
+            text = "○"
+            textSize = 21f
+            gravity = Gravity.CENTER
+            setTextColor(pink)
+            visibility = View.GONE
+            minWidth = dp(28)
+        }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val title = TextView(this).apply {
             textSize = 15f
@@ -1266,6 +1522,7 @@ class MainActivity : ComponentActivity() {
         val info = TextView(this).apply { textSize = 12f; setTextColor(sub) }
         col.addView(title, match, wrap)
         col.addView(info, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
+        top.addView(selection, LinearLayout.LayoutParams(dp(28), dp(70)))
         top.addView(cover, LinearLayout.LayoutParams(dp(112), dp(70)))
         top.addView(col, LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(12) })
 
@@ -1275,8 +1532,12 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.END
         }
         val primary = chip("暂停", true)
+        val resources = chip("资源", false)
+        val history = chip("记录", false)
         val delete = chip("删除", false)
         actions.addView(delete, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
+        actions.addView(history, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
+        actions.addView(resources, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
         actions.addView(primary)
 
         root.addView(top, match, wrap)
@@ -1285,15 +1546,29 @@ class MainActivity : ComponentActivity() {
 
         primary.setOnClickListener { onPrimary(item.id) }
         delete.setOnClickListener { confirmDelete(item.id) }
-        return Row(root, cover, title, info, progress, primary)
+        selection.setOnClickListener { toggleDownloadSelection(item.id) }
+        resources.setOnClickListener { showTaskResources(item.id) }
+        history.setOnClickListener { showTaskHistory(item.id) }
+        root.setOnLongClickListener {
+            if (!batchMode) setBatchMode(true)
+            if (item.id !in selectedDownloadIds) toggleDownloadSelection(item.id)
+            true
+        }
+        return Row(root, cover, title, info, progress, primary, selection, resources, history)
     }
 
     private fun bindRow(item: DlItem) {
         val r = rows[item.id] ?: return
         r.title.text = item.title
+        r.selection.visibility = if (batchMode) View.VISIBLE else View.GONE
+        val selected = item.id in selectedDownloadIds
+        r.selection.text = if (selected) "✓" else "○"
+        r.selection.setTextColor(if (selected) Color.WHITE else pink)
+        r.selection.background = if (selected) shape(pink, 24) else null
         val c = item.cover
         if (c != null) r.cover.setImageBitmap(c) else r.cover.setImageDrawable(null)
         r.bar.progress = item.progress
+        r.resources.visibility = if (item.state == ST_DONE) View.VISIBLE else View.GONE
         when (item.state) {
             ST_DOWNLOADING -> {
                 r.bar.visibility = View.VISIBLE
@@ -1324,8 +1599,120 @@ class MainActivity : ComponentActivity() {
                 r.info.text = item.sizeText
                 r.info.setTextColor(ok)
                 r.primary.text = "打开"
+                r.resources.visibility = View.VISIBLE
             }
         }
+    }
+
+    private fun visibleDownloadItems(): List<DlItem> = items.values.filter { item ->
+        val matchesState = when (dlFilter) {
+            0 -> item.state == ST_DOWNLOADING || item.state == ST_WAITING || item.state == ST_PAUSED
+            1 -> item.state == ST_DONE
+            else -> item.state == ST_FAILED
+        }
+        val matchesQuery = downloadQuery.isBlank() ||
+            item.title.contains(downloadQuery, ignoreCase = true) ||
+            item.info.contains(downloadQuery, ignoreCase = true) ||
+            item.sizeText.contains(downloadQuery, ignoreCase = true)
+        matchesState && matchesQuery
+    }.sortedByDescending { item ->
+        item.id.substringAfterLast('_').toLongOrNull() ?: 0L
+    }
+
+    private fun setBatchMode(enabled: Boolean) {
+        batchMode = enabled
+        if (!enabled) selectedDownloadIds.clear()
+        batchTv.text = if (enabled) "退出选择" else "批量选择"
+        batchBar.visibility = if (enabled) View.VISIBLE else View.GONE
+        refreshDownloadList()
+    }
+
+    private fun toggleDownloadSelection(id: String) {
+        if (!batchMode) return
+        if (!selectedDownloadIds.add(id)) selectedDownloadIds.remove(id)
+        refreshDownloadList()
+    }
+
+    private fun selectVisibleDownloads() {
+        val visible = visibleDownloadItems().map { it.id }
+        if (visible.isNotEmpty() && visible.all { it in selectedDownloadIds }) {
+            selectedDownloadIds.removeAll(visible.toSet())
+        } else {
+            selectedDownloadIds.addAll(visible)
+        }
+        refreshDownloadList()
+    }
+
+    private fun pauseSelectedDownloads() {
+        val targets = selectedDownloadIds.mapNotNull { items[it] }
+            .filter { it.state == ST_DOWNLOADING || it.state == ST_WAITING }
+        targets.forEach { onPauseClicked(it.id) }
+        toast("已暂停 " + targets.size + " 个任务")
+    }
+
+    private fun retrySelectedDownloads() {
+        val targets = selectedDownloadIds.mapNotNull { id ->
+            val item = items[id] ?: return@mapNotNull null
+            val spec = downloadSpecs[id] ?: return@mapNotNull null
+            if (item.state == ST_FAILED || item.state == ST_PAUSED) id to spec else null
+        }
+        if (targets.isEmpty()) {
+            toast("所选任务中没有可重试的项目")
+            return
+        }
+        backgroundExecutor.execute {
+            val repository = BiliDownloadTaskRepository.getInstance(applicationContext)
+            var submitted = 0
+            targets.forEach { (id, spec) ->
+                val eligible = runCatching {
+                    runBlocking(Dispatchers.IO) {
+                        val task = repository.getTask(id) ?: return@runBlocking false
+                        if (task.status == DownloadTaskStatus.FAILED ||
+                            task.status == DownloadTaskStatus.PAUSED
+                        ) {
+                            repository.retry(id)
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                }.getOrDefault(false)
+                if (eligible) {
+                    submitted++
+                    runOnUiThread {
+                        if (!isFinishing) enqueueDownload(id, spec)
+                    }
+                }
+            }
+            runOnUiThread {
+                toast("已提交 " + submitted + " 个重试任务")
+            }
+        }
+    }
+
+    private fun confirmDeleteSelected() {
+        val ids = selectedDownloadIds.filter { items.containsKey(it) }
+        if (ids.isEmpty()) {
+            toast("请先选择任务")
+            return
+        }
+        val deleteFiles = booleanArrayOf(false)
+        AlertDialog.Builder(this)
+            .setTitle("删除 " + ids.size + " 个任务？")
+            .setMultiChoiceItems(arrayOf("同时删除已保存的视频、弹幕和字幕文件"), deleteFiles) { _, index, checked ->
+                deleteFiles[index] = checked
+            }
+            .setPositiveButton("删除") { _, _ ->
+                ids.forEach { id ->
+                    removeDownload(id)
+                    onDeleteClicked(id, deleteFiles[0])
+                }
+                selectedDownloadIds.clear()
+                setBatchMode(false)
+                toast("已删除 " + ids.size + " 个任务记录")
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun refreshDownloadList() {
@@ -1338,19 +1725,10 @@ class MainActivity : ComponentActivity() {
         styleSegs(dlSegs, dlFilter)
         clearTv.visibility = if (dlFilter == 1 && done > 0) View.VISIBLE else View.GONE
 
+        selectedDownloadIds.retainAll(items.keys)
+        batchCountTv.text = "已选 " + selectedDownloadIds.size + " 项"
         listBox.removeAllViews()
-        val shown = items.values.filter { item ->
-            val matchesState = when (dlFilter) {
-                0 -> item.state == ST_DOWNLOADING || item.state == ST_WAITING || item.state == ST_PAUSED
-                1 -> item.state == ST_DONE
-                else -> item.state == ST_FAILED
-            }
-            val matchesQuery = downloadQuery.isBlank() ||
-                item.title.contains(downloadQuery, ignoreCase = true) ||
-                item.info.contains(downloadQuery, ignoreCase = true) ||
-                item.sizeText.contains(downloadQuery, ignoreCase = true)
-            matchesState && matchesQuery
-        }.reversed()
+        val shown = visibleDownloadItems()
 
         if (shown.isEmpty()) {
             listBox.addView(emptyView(), match, wrap)
