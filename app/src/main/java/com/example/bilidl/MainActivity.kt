@@ -371,6 +371,47 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showTaskResources(id: String) {
+        backgroundExecutor.execute {
+            val resources = runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).getResources(id)
+                }
+            }.getOrElse { emptyList() }
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                if (resources.isEmpty()) {
+                    toast("没有找到已保存的资源记录")
+                    return@runOnUiThread
+                }
+                val labels = resources.map { resource ->
+                    val size = BiliDownloadEngine.formatSize(resource.sizeBytes)
+                    resource.displayName + "  ·  " + size
+                }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle("已保存的资源")
+                    .setItems(labels) { _, index ->
+                        val resource = resources[index]
+                        openSavedResource(Uri.parse(resource.contentUri), resource.mimeType)
+                    }
+                    .setNegativeButton("关闭", null)
+                    .show()
+            }
+        }
+    }
+
+    private fun openSavedResource(uri: Uri, mimeType: String) {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, mimeType.ifBlank { contentResolver.getType(uri) ?: "*/*" })
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(intent)
+        } catch (_: Exception) {
+            toast("没有可打开该资源的应用")
+        }
+    }
+
     private fun onOpenClicked(id: String) {
         val uri = savedFileUris[id]
         if (uri == null) {
@@ -813,7 +854,7 @@ class MainActivity : ComponentActivity() {
     private class Row(
         val root: LinearLayout, val cover: ImageView, val title: TextView,
         val info: TextView, val bar: ProgressBar, val primary: TextView,
-        val selection: TextView
+        val selection: TextView, val resources: TextView
     )
     private val items = LinkedHashMap<String, DlItem>()
     private val rows = HashMap<String, Row>()
@@ -1438,8 +1479,10 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.END
         }
         val primary = chip("暂停", true)
+        val resources = chip("资源", false)
         val delete = chip("删除", false)
         actions.addView(delete, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
+        actions.addView(resources, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
         actions.addView(primary)
 
         root.addView(top, match, wrap)
@@ -1449,12 +1492,13 @@ class MainActivity : ComponentActivity() {
         primary.setOnClickListener { onPrimary(item.id) }
         delete.setOnClickListener { confirmDelete(item.id) }
         selection.setOnClickListener { toggleDownloadSelection(item.id) }
+        resources.setOnClickListener { showTaskResources(item.id) }
         root.setOnLongClickListener {
             if (!batchMode) setBatchMode(true)
             if (item.id !in selectedDownloadIds) toggleDownloadSelection(item.id)
             true
         }
-        return Row(root, cover, title, info, progress, primary, selection)
+        return Row(root, cover, title, info, progress, primary, selection, resources)
     }
 
     private fun bindRow(item: DlItem) {
@@ -1468,6 +1512,7 @@ class MainActivity : ComponentActivity() {
         val c = item.cover
         if (c != null) r.cover.setImageBitmap(c) else r.cover.setImageDrawable(null)
         r.bar.progress = item.progress
+        r.resources.visibility = if (item.state == ST_DONE) View.VISIBLE else View.GONE
         when (item.state) {
             ST_DOWNLOADING -> {
                 r.bar.visibility = View.VISIBLE
@@ -1498,6 +1543,7 @@ class MainActivity : ComponentActivity() {
                 r.info.text = item.sizeText
                 r.info.setTextColor(ok)
                 r.primary.text = "打开"
+                r.resources.visibility = View.VISIBLE
             }
         }
     }
