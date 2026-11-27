@@ -175,6 +175,7 @@ class BiliRepository(
         val root = getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality)
         val data = checkedData(root)
         val dash = data.optJSONObject("dash")
+        var dashQualityUnavailable = false
         if (dash != null) {
             val videos = dash.optJSONArray("video") ?: JSONArray()
             val audios = dash.optJSONArray("audio") ?: JSONArray()
@@ -183,23 +184,25 @@ class BiliRepository(
                 videoCandidates.map { it.optInt("id") },
                 videoCandidates.map { it.optString("codecs") },
                 requestedQuality
-            ) ?: throw IOException(
-                "B站没有返回所选画质或更低画质，已停止下载以避免超出你的画质选择"
             )
-            val videoItem = videoCandidates[selectedIndex]
-            val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
-            val audioItem = audioCandidates.firstOrNull {
-                it.optString("codecs").contains("mp4a", ignoreCase = true)
-            } ?: audioCandidates.maxByOrNull { it.optInt("id") }
+            if (selectedIndex != null) {
+                val videoItem = videoCandidates[selectedIndex]
+                val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
+                val audioItem = audioCandidates.firstOrNull {
+                    it.optString("codecs").contains("mp4a", ignoreCase = true)
+                } ?: audioCandidates.maxByOrNull { it.optInt("id") }
 
-            val videoUrls = videoItem?.let { streamUrls(it) }.orEmpty()
-            val audioUrls = audioItem?.let { streamUrls(it) }.orEmpty()
-            if (videoUrls.isNotEmpty()) {
-                return BiliPlaySource(
-                    videoUrls, audioUrls, emptyList(),
-                    "dash", videoItem?.optString("mimeType").orEmpty(),
-                    audioItem?.optString("mimeType").orEmpty()
-                )
+                val videoUrls = streamUrls(videoItem)
+                val audioUrls = audioItem?.let { streamUrls(it) }.orEmpty()
+                if (videoUrls.isNotEmpty()) {
+                    return BiliPlaySource(
+                        videoUrls, audioUrls, emptyList(),
+                        "dash", videoItem.optString("mimeType"),
+                        audioItem?.optString("mimeType").orEmpty()
+                    )
+                }
+            } else {
+                dashQualityUnavailable = videoCandidates.isNotEmpty()
             }
         }
 
@@ -231,6 +234,9 @@ class BiliRepository(
                 emptyList(), emptyList(), direct,
                 data.optString("format", "mp4"), "video/mp4", ""
             )
+        }
+        if (dashQualityUnavailable) {
+            throw IOException("B站没有返回所选画质或更低画质，且没有可用的旧式直连流")
         }
         throw IOException("B站没有返回可下载的音视频流；可能需要登录或该视频限制下载")
     }
