@@ -72,6 +72,7 @@ internal object SegmentedHttpDownloader {
         referer: String = DEFAULT_REFERER
     ) = withContext(Dispatchers.IO) {
         var lastError: Exception? = null
+        var accessDeniedError: Exception? = null
         for (url in urls) {
             try {
                 downloadOne(url, target, cookie, concurrency, isCancelled, onProgress, writerFactory, referer)
@@ -80,9 +81,13 @@ internal object SegmentedHttpDownloader {
                 throw cancelled
             } catch (error: Exception) {
                 lastError = error
+                if (BiliDownloadRetryPolicy.httpStatus(error) == 403) {
+                    accessDeniedError = error
+                }
             }
         }
-        throw IOException("分段下载失败：" + (lastError?.message ?: "没有可用 CDN 地址"), lastError)
+        val finalError = accessDeniedError ?: lastError
+        throw IOException("分段下载失败：" + (finalError?.message ?: "没有可用 CDN 地址"), finalError)
     }
 
     private suspend fun downloadOne(
