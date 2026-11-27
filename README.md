@@ -12,7 +12,7 @@ BiliDl is a Bilibili-focused Android downloader. The project uses its own Bilibi
 - Mux DASH video/audio into MP4, interleaving samples by presentation timestamp without re-encoding. AAC audio-only downloads are packaged as M4A.
 - Include an original adaptive launcher icon (down arrow + open frame) and bundled cover placeholder.
 - Support optional Bilibili web QR authorization and optional SESSDATA entry. Credentials are validated against Bilibili and encrypted locally with Android Keystore AES-GCM. Login is not required for parsing public metadata or queueing a download; it only changes what Bilibili permits the account to access.
-- Handle multipart video selection, batch task creation, WorkManager background tasks, foreground progress notifications, and task restoration.
+- Show a direct download-all-parts action for multipart videos. Paste up to 50 Bilibili links at once to create independent tasks; one failed link does not block the rest.
 - Optionally export segmented Bilibili danmaku as XML and BCC subtitles as SRT. The two options are controlled separately in Settings and are saved with each task.
 - Save finished media and sidecar files in Download/BiliDl through MediaStore without requesting broad storage access. Check free space before muxing and publication, then release validated DASH source tracks before copying the final MP4 to reduce peak temporary storage.
 - Include an original C++/JNI core for positional writes, durable file sync, and structural MP4 inspection. The inspector checks box boundaries, track/sample tables, timing-table counts, chunk mappings, and verifies that each media chunk points into an actual mdat payload.

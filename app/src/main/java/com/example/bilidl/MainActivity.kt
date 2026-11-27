@@ -70,6 +70,7 @@ class MainActivity : ComponentActivity() {
         const val ST_PAUSED = DownloadTaskStatus.PAUSED
         const val ST_FAILED = DownloadTaskStatus.FAILED
         const val ST_DONE = DownloadTaskStatus.COMPLETED
+        private const val MAX_BATCH_LINKS = 50
     }
 
     // ===================== 真实业务接入 =====================
@@ -121,6 +122,67 @@ class MainActivity : ComponentActivity() {
         mainViewModel.parse(text)
     }
 
+    /** Resolve links independently so one bad URL cannot block the batch. */
+    private fun downloadBatchLinks(targets: List<String>) {
+        val audioOnly = settingsViewModel.getBoolean("audio_only", false)
+        val downloadDanmaku = settingsViewModel.getBoolean("danmaku", false)
+        val downloadSubtitles = settingsViewModel.getBoolean("subtitles", false)
+
+        backgroundExecutor.execute {
+            val repository = BiliRepository { SecureCookieStore.load(applicationContext) }
+            val prepared = ArrayList<DownloadSpec>()
+            val failures = ArrayList<String>()
+
+            targets.forEach { target ->
+                try {
+                    val video = repository.inspect(target)
+                    prepared += DownloadSpec(
+                        video = video,
+                        qualityId = preferredQualityId(video.qualities),
+                        audioOnly = audioOnly,
+                        downloadDanmaku = downloadDanmaku,
+                        downloadSubtitles = downloadSubtitles
+                    )
+                } catch (error: Exception) {
+                    failures += target.take(100) + "\n" +
+                        (error.message ?: "解析失败").take(120)
+                }
+            }
+
+            runOnUiThread {
+                setBusy(parseBtn, false)
+                parseBtn.text = "解析"
+
+                prepared.forEach { spec ->
+                    val id = "bili_batch_" + java.util.UUID.randomUUID()
+                    downloadSpecs[id] = spec
+                    persistDownloadSpec(id, spec)
+                    addDownload(id, spec.video.title, spec.video.cover)
+                    enqueueDownload(id, spec)
+                }
+                if (prepared.isNotEmpty()) selectTab(1)
+
+                if (failures.isEmpty()) {
+                    toast("已加入 " + prepared.size + " 个下载任务")
+                } else {
+                    val details = failures.take(6).joinToString("\n\n")
+                    val more = if (failures.size > 6) "\n\n另有 " + (failures.size - 6) + " 项失败" else ""
+                    AlertDialog.Builder(this)
+                        .setTitle("批量导入完成")
+                        .setMessage(
+                            "成功加入 " + prepared.size + "/" + targets.size + " 个任务。" +
+                                "\n失败项已跳过，不影响其他下载。\n\n" + details + more
+                        )
+                        .setPositiveButton(if (prepared.isNotEmpty()) "查看下载" else "知道了") { _, _ ->
+                            if (prepared.isNotEmpty()) selectTab(1)
+                        }
+                        .setNegativeButton("关闭", null)
+                        .show()
+                }
+            }
+        }
+    }
+
     private fun onDownloadClicked() {
         val video = parsedVideo
         if (video == null) {
@@ -134,7 +196,7 @@ class MainActivity : ComponentActivity() {
             downloadDanmaku = settingsViewModel.getBoolean("danmaku", false),
             downloadSubtitles = settingsViewModel.getBoolean("subtitles", false)
         )
-        val id = "bili_" + System.currentTimeMillis()
+        val id = "bili_" + java.util.UUID.randomUUID()
         downloadSpecs[id] = spec
         persistDownloadSpec(id, spec)
         addDownload(id, video.title, video.cover)
@@ -624,9 +686,8 @@ class MainActivity : ComponentActivity() {
             }
 
             runOnUiThread {
-                val batchId = System.currentTimeMillis()
-                prepared.forEachIndexed { index, spec ->
-                    val id = "bili_" + batchId + "_" + spec.video.page + "_" + index
+                prepared.forEach { spec ->
+                    val id = "bili_batch_" + java.util.UUID.randomUUID()
                     downloadSpecs[id] = spec
                     persistDownloadSpec(id, spec)
                     addDownload(id, spec.video.title, spec.video.cover)
@@ -678,7 +739,10 @@ class MainActivity : ComponentActivity() {
         upTv.text = "UP主 · $uploader"
         metaTv.text = meta
         metaTv.visibility = if (meta.isEmpty()) View.GONE else View.VISIBLE
-        val hasMultiplePages = (parsedVideo?.pages?.size ?: 0) > 1
+        val pageCount = parsedVideo?.pages?.size ?: 0
+        val hasMultiplePages = pageCount > 1
+        dlAllPagesBtn.visibility = if (hasMultiplePages) View.VISIBLE else View.GONE
+        dlAllPagesBtn.text = "下载全部 " + pageCount + " P"
         metaTv.isClickable = hasMultiplePages
         metaTv.setTextColor(if (hasMultiplePages) pink else sub)
         metaTv.setOnClickListener { if (hasMultiplePages) showAvailablePages() }
@@ -830,6 +894,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var metaTv: TextView
     private lateinit var homeQualityTv: TextView
     private lateinit var dlBtn: Button
+    private lateinit var dlAllPagesBtn: Button
     private lateinit var statusTv: TextView
 
     // 下载页
@@ -1169,7 +1234,7 @@ class MainActivity : ComponentActivity() {
 
         val inputCard = card()
         input = EditText(this).apply {
-            hint = "粘贴 B站链接、BV / av / ep / ss 号"
+            hint = "粘贴 B站链接（多条按行粘贴）或 BV / av / ep / ss 号"
             setHintTextColor(sub)
             setTextColor(ink)
             textSize = 15f
@@ -1191,7 +1256,7 @@ class MainActivity : ComponentActivity() {
         inputCard.addView(input, match, wrap)
         inputCard.addView(btnRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(14) })
         inputCard.addView(TextView(this).apply {
-            text = "支持视频 BV / av、番剧 ep / ss，以及 b23.tv 分享短链接"
+            text = "支持视频 / 番剧链接；多条链接按行粘贴后点解析即可批量下载"
             textSize = 12f
             setTextColor(sub)
             setPadding(dp(2), dp(10), dp(2), 0)
@@ -1248,9 +1313,17 @@ class MainActivity : ComponentActivity() {
         qualityRow.addView(homeQualityTv)
         qualityRow.setOnClickListener { showAvailableQualities() }
 
-        dlBtn = pillButton("加入下载任务", true)
+        dlBtn = pillButton("下载当前视频", true)
         dlBtn.setOnClickListener {
             onDownloadClicked()
+        }
+        dlAllPagesBtn = pillButton("下载全部分P", false).apply {
+            visibility = View.GONE
+            setOnClickListener {
+                val current = parsedVideo
+                if (current == null) toast("请先解析视频")
+                else downloadAllPages(current, current.pages)
+            }
         }
 
         resultCard.addView(coverIv, LinearLayout.LayoutParams(match, dp(190)))
@@ -1259,6 +1332,7 @@ class MainActivity : ComponentActivity() {
         resultCard.addView(metaTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(2) })
         resultCard.addView(qualityRow, LinearLayout.LayoutParams(match, dp(46)).apply { topMargin = dp(14) })
         resultCard.addView(dlBtn, LinearLayout.LayoutParams(match, dp(50)).apply { topMargin = dp(12) })
+        resultCard.addView(dlAllPagesBtn, LinearLayout.LayoutParams(match, dp(46)).apply { topMargin = dp(8) })
         col.addView(resultCard, sideMargins())
 
         statusTv = TextView(this).apply {
@@ -1298,7 +1372,22 @@ class MainActivity : ComponentActivity() {
             override fun afterTextChanged(s: android.text.Editable?) {}
         })
         parseBtn.setOnClickListener {
-            val target = normalizeBiliInput(input.text.toString())
+            val rawInput = input.text.toString()
+            val batchTargets = BiliLinkParser.extractAll(rawInput)
+            if (batchTargets.size > 1) {
+                if (batchTargets.size > MAX_BATCH_LINKS) {
+                    say("一次最多批量添加 " + MAX_BATCH_LINKS + " 个链接", err)
+                    return@setOnClickListener
+                }
+                resultCard.visibility = View.GONE
+                setBusy(parseBtn, true)
+                parseBtn.text = "批量准备中…"
+                say("正在逐条解析 " + batchTargets.size + " 个链接，失败项不会影响其他任务", sub)
+                downloadBatchLinks(batchTargets)
+                return@setOnClickListener
+            }
+
+            val target = normalizeBiliInput(rawInput)
             if (target == null) {
                 say("请粘贴有效的 B站链接，或输入 BV / av / ep / ss 编号", err)
                 return@setOnClickListener
