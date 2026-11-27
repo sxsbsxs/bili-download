@@ -52,6 +52,7 @@ internal object SegmentedHttpDownloader {
     private const val MAX_SEQUENTIAL_ATTEMPTS = 3
     private const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36"
+    private const val DEFAULT_REFERER = "https://www.bilibili.com/"
 
     private data class Probe(
         val totalBytes: Long,
@@ -67,12 +68,13 @@ internal object SegmentedHttpDownloader {
         concurrency: Int,
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit,
-        writerFactory: PositionalFileWriterFactory = NativePositionalFileWriterFactory
+        writerFactory: PositionalFileWriterFactory = NativePositionalFileWriterFactory,
+        referer: String = DEFAULT_REFERER
     ) = withContext(Dispatchers.IO) {
         var lastError: Exception? = null
         for (url in urls) {
             try {
-                downloadOne(url, target, cookie, concurrency, isCancelled, onProgress, writerFactory)
+                downloadOne(url, target, cookie, concurrency, isCancelled, onProgress, writerFactory, referer)
                 return@withContext
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -90,26 +92,27 @@ internal object SegmentedHttpDownloader {
         concurrency: Int,
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit,
-        writerFactory: PositionalFileWriterFactory
+        writerFactory: PositionalFileWriterFactory,
+        referer: String
     ) {
-        val probe = probeWithRetry(url, cookie)
+        val probe = probeWithRetry(url, cookie, referer)
         if (
             probe == null ||
             !TransferCheckpointPolicy.supportsVerifiedRanges(probe.etag, probe.lastModified)
         ) {
             // Without a stable validator, parallel ranges could mix bytes from
             // different CDN representations. Use a clean sequential response.
-            downloadSequentialWithRetry(url, target, cookie, isCancelled, onProgress)
+            downloadSequentialWithRetry(url, target, cookie, isCancelled, onProgress, referer)
             return
         }
-        downloadRanges(url, target, cookie, probe, concurrency, isCancelled, onProgress, writerFactory)
+        downloadRanges(url, target, cookie, probe, concurrency, isCancelled, onProgress, writerFactory, referer)
     }
 
-    private suspend fun probeWithRetry(url: String, cookie: String?): Probe? {
+    private suspend fun probeWithRetry(url: String, cookie: String?, referer: String): Probe? {
         var lastError: Exception? = null
         for (attempt in 0 until MAX_RANGE_ATTEMPTS) {
             try {
-                return probe(url, cookie)
+                return probe(url, cookie, referer)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -123,8 +126,8 @@ internal object SegmentedHttpDownloader {
         throw lastError ?: IOException("CDN 探测失败")
     }
 
-    private fun probe(url: String, cookie: String?): Probe? {
-        val connection = openConnection(url, cookie).apply {
+    private fun probe(url: String, cookie: String?, referer: String): Probe? {
+        val connection = openConnection(url, cookie, referer).apply {
             setRequestProperty("Range", "bytes=0-0")
         }
         try {
@@ -162,7 +165,8 @@ internal object SegmentedHttpDownloader {
         concurrency: Int,
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit,
-        writerFactory: PositionalFileWriterFactory
+        writerFactory: PositionalFileWriterFactory,
+        referer: String
     ) = coroutineScope {
         target.parentFile?.mkdirs()
         val mapFile = File(target.absolutePath + ".ranges")
@@ -229,7 +233,8 @@ internal object SegmentedHttpDownloader {
                             completedBytes = completedBytes,
                             inFlightBytes = inFlightBytes,
                             totalBytes = total,
-                            onProgress = onProgress
+                            onProgress = onProgress,
+                            referer = referer
                         )
                         synchronized(lock) {
                             if (!writer.sync()) {
@@ -263,7 +268,8 @@ internal object SegmentedHttpDownloader {
         completedBytes: AtomicLong,
         inFlightBytes: AtomicLong,
         totalBytes: Long,
-        onProgress: (Int) -> Unit
+        onProgress: (Int) -> Unit,
+        referer: String
     ): Long {
         val expected = end - start + 1L
         var lastError: Exception? = null
@@ -272,7 +278,7 @@ internal object SegmentedHttpDownloader {
             val attemptBytes = AtomicLong(0L)
             try {
                 val received = downloadRange(
-                    url, cookie, probe, writer, start, end, isCancelled
+                    url, cookie, probe, writer, start, end, isCancelled, referer
                 ) { bytes ->
                     attemptBytes.addAndGet(bytes)
                     inFlightBytes.addAndGet(bytes)
@@ -313,9 +319,10 @@ internal object SegmentedHttpDownloader {
         start: Long,
         end: Long,
         isCancelled: () -> Boolean,
+        referer: String,
         onBytes: (Long) -> Unit
     ): Long = withContext(Dispatchers.IO) {
-        val connection = openConnection(url, cookie).apply {
+        val connection = openConnection(url, cookie, referer).apply {
             setRequestProperty("Range", "bytes=$start-$end")
             val validator = probe.etag.ifBlank { probe.lastModified }
             if (validator.isNotBlank()) setRequestProperty("If-Range", validator)
@@ -367,7 +374,8 @@ internal object SegmentedHttpDownloader {
         target: File,
         cookie: String?,
         isCancelled: () -> Boolean,
-        onProgress: (Int) -> Unit
+        onProgress: (Int) -> Unit,
+        referer: String
     ) {
         var lastError: Exception? = null
         for (attempt in 0 until MAX_SEQUENTIAL_ATTEMPTS) {
@@ -375,7 +383,7 @@ internal object SegmentedHttpDownloader {
             File(target.absolutePath + ".ranges").delete()
             File(target.absolutePath + ".meta").delete()
             try {
-                downloadSequential(url, target, cookie, isCancelled, onProgress)
+                downloadSequential(url, target, cookie, isCancelled, onProgress, referer)
                 return
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -396,9 +404,10 @@ internal object SegmentedHttpDownloader {
         target: File,
         cookie: String?,
         isCancelled: () -> Boolean,
-        onProgress: (Int) -> Unit
+        onProgress: (Int) -> Unit,
+        referer: String
     ) {
-        val connection = openConnection(url, cookie)
+        val connection = openConnection(url, cookie, referer)
         try {
             val status = connection.responseCode
             if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_PARTIAL) {
@@ -439,13 +448,13 @@ internal object SegmentedHttpDownloader {
         }
     }
 
-    private fun openConnection(url: String, cookie: String?): HttpURLConnection {
+    private fun openConnection(url: String, cookie: String?, referer: String): HttpURLConnection {
         return (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
             readTimeout = 45_000
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", USER_AGENT)
-            setRequestProperty("Referer", "https://www.bilibili.com/")
+            setRequestProperty("Referer", referer.ifBlank { DEFAULT_REFERER })
             setRequestProperty("Origin", "https://www.bilibili.com")
             setRequestProperty("Accept", "*/*")
             setRequestProperty("Accept-Encoding", "identity")
