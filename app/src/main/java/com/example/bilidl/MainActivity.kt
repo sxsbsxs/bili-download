@@ -209,6 +209,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun persistTaskPause(id: String, reason: String) {
+        backgroundExecutor.execute {
+            runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).markPaused(id, reason)
+                }
+            }
+        }
+    }
+
     private fun handleWorkInfo(id: String, info: WorkInfo) {
         if (!items.containsKey(id)) return
         when (info.state) {
@@ -228,7 +238,10 @@ class MainActivity : ComponentActivity() {
                 id,
                 info.outputData.getString(BiliDownloadWorker.KEY_ERROR) ?: "下载失败"
             )
-            WorkInfo.State.CANCELLED -> setDownloadState(id, ST_PAUSED, "已取消 · 可继续下载")
+            WorkInfo.State.CANCELLED -> {
+                persistTaskPause(id, "已取消 · 可继续下载")
+                setDownloadState(id, ST_PAUSED, "已取消 · 可继续下载")
+            }
         }
     }
 
@@ -318,6 +331,7 @@ class MainActivity : ComponentActivity() {
 
     private fun onPauseClicked(id: String) {
         workManager.cancelUniqueWork("bilidl_" + id)
+        persistTaskPause(id, "已取消，可重新下载")
         setDownloadState(id, ST_PAUSED, "已取消，可重新下载")
     }
 
@@ -380,6 +394,13 @@ class MainActivity : ComponentActivity() {
         downloadSpecs.keys.toList().filter { it !in activeIds }.forEach(downloadSpecs::remove)
         savedFileUris.keys.toList().filter { it !in activeIds }.forEach(savedFileUris::remove)
         workManager.pruneWork()
+        backgroundExecutor.execute {
+            runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).deleteTerminalTasks()
+                }
+            }
+        }
     }
 
     @Volatile private var qrLoginGeneration = 0
