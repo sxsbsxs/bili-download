@@ -50,7 +50,7 @@ object BiliDownloadEngine {
                 if (audioOnly) {
                     if (source.audioUrls.isEmpty()) throw IOException("这个视频没有独立音频流")
                     progress(3, "正在下载音频")
-                    downloadStream(source.audioUrls, audioTemp, isCancelled) { value ->
+                    downloadStream(source.audioUrls, audioTemp, cookie, isCancelled) { value ->
                         progress(3 + value * 94 / 100, "音频流")
                     }
                     val ext = extensionForMime(source.audioMime, "m4a")
@@ -59,12 +59,12 @@ object BiliDownloadEngine {
                     saved
                 } else {
                     progress(2, "正在下载视频流")
-                    downloadStream(source.videoUrls, videoTemp, isCancelled) { value ->
+                    downloadStream(source.videoUrls, videoTemp, cookie, isCancelled) { value ->
                         progress(2 + (value * if (source.audioUrls.isEmpty()) 92 else 45) / 100, "视频流")
                     }
                     if (source.audioUrls.isNotEmpty()) {
                         progress(49, "正在下载音频流")
-                        downloadStream(source.audioUrls, audioTemp, isCancelled) { value ->
+                        downloadStream(source.audioUrls, audioTemp, cookie, isCancelled) { value ->
                             progress(49 + value * 44 / 100, "音频流")
                         }
                     }
@@ -80,7 +80,7 @@ object BiliDownloadEngine {
                     throw IOException("B站仅返回多段旧式 FLV 流；为避免生成损坏文件，本版暂不拼接此格式")
                 }
                 progress(2, "正在下载视频")
-                downloadStream(source.directUrls, directTemp, isCancelled) { value ->
+                downloadStream(source.directUrls, directTemp, cookie, isCancelled) { value ->
                     progress(value, "视频流")
                 }
                 val ext = if (source.format.contains("flv", true)) "flv" else "mp4"
@@ -100,13 +100,14 @@ object BiliDownloadEngine {
     private fun downloadStream(
         candidates: List<String>,
         target: File,
+        cookie: String?,
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit
     ) {
         var lastError: Exception? = null
         for (candidate in candidates) {
             try {
-                downloadOne(candidate, target, isCancelled, onProgress)
+                downloadOne(candidate, target, cookie, isCancelled, onProgress)
                 return
             } catch (cancelled: kotlinx.coroutines.CancellationException) {
                 target.delete()
@@ -135,6 +136,9 @@ object BiliDownloadEngine {
             setRequestProperty("Accept", "*/*")
             setRequestProperty("Accept-Encoding", "identity")
             setRequestProperty("Connection", "keep-alive")
+            if (!cookie.isNullOrBlank()) {
+                setRequestProperty("Cookie", "SESSDATA=" + cookie)
+            }
         }
         try {
             val status = connection.responseCode
