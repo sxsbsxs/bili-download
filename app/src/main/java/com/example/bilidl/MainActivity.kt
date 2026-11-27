@@ -1509,10 +1509,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showLogin() {
-        selectLoginSeg(0)
+        selectLoginSeg(1)
         cookieErrTv.text = ""
         loginPage.visibility = View.VISIBLE
-        refreshQr()
     }
 
     private fun hideLogin() {
