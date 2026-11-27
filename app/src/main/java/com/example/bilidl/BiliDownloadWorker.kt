@@ -192,9 +192,9 @@ class BiliDownloadWorker(
                 Result.retry()
             } else {
                 if (taskId.isNotBlank()) {
-                    taskRepository.markFailed(taskId, error.message ?: "下载失败")
+                    taskRepository.markFailed(taskId, failureMessage(error))
                 }
-                Result.failure(workDataOf(KEY_ERROR to (error.message ?: "下载失败")))
+                Result.failure(workDataOf(KEY_ERROR to failureMessage(error)))
             }
         }
     }
@@ -226,6 +226,16 @@ class BiliDownloadWorker(
             )
         } else {
             ForegroundInfo(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun failureMessage(error: Exception): String {
+        return when (BiliDownloadRetryPolicy.httpStatus(error)) {
+            403 -> "HTTP 403：B站 CDN 拒绝访问。应用已尝试备用地址并刷新视频链接仍失败。" +
+                "公开内容可以不登录使用；若只有这条视频失败，可能是视频权限、地区限制或 CDN 校验导致，请稍后重试或尝试登录后再试。"
+            404 -> "HTTP 404：B站视频地址已失效或资源不可用，请重新解析后下载。"
+            429 -> "HTTP 429：B站请求过于频繁，请稍后再试。"
+            else -> error.message ?: "下载失败"
         }
     }
 
