@@ -38,7 +38,7 @@ internal object BiliWbiKeyPolicy {
 
         val raw = imgKey + subKey
         val mixinKey = buildString(32) {
-            permutation.forEach { index -> append(raw[index]) }
+            permutation.take(32).forEach { index -> append(raw[index]) }
         }
         if (mixinKey.length != 32) {
             throw IOException("B站 WBI 密钥格式异常")
