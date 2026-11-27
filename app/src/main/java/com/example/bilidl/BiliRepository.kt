@@ -573,23 +573,17 @@ class BiliRepository(
             return mixinKeyCache!!
         }
         val root = requestJson("https://api.bilibili.com/x/web-interface/nav")
-        val data = checkedData(root)
-        val image = data.optJSONObject("wbi_img") ?: throw IOException("B站未返回 WBI 图片密钥")
-        val imgKey = image.optString("img_url").substringAfterLast('/').substringBefore('.')
-        val subKey = image.optString("sub_url").substringAfterLast('/').substringBefore('.')
-        val raw = imgKey + subKey
-        val permutation = intArrayOf(
-            46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,
-            27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,
-            37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,
-            22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52
+        // The anonymous nav response can be code=-101 while still containing
+        // data.wbi_img. Those public keys are not tied to the login session;
+        // do not route this response through checkedData(), which rejects every
+        // non-zero code before the WBI keys can be read.
+        val apiCode = root.optInt("code", 0)
+        val image = root.optJSONObject("data")?.optJSONObject("wbi_img")
+        mixinKeyCache = BiliWbiKeyPolicy.createMixinKey(
+            apiCode = apiCode,
+            imgUrl = image?.optString("img_url"),
+            subUrl = image?.optString("sub_url")
         )
-        mixinKeyCache = buildString {
-            permutation.forEach { index ->
-                if (index in raw.indices) append(raw[index])
-            }
-        }.take(32)
-        if (mixinKeyCache!!.length != 32) throw IOException("B站 WBI 密钥格式异常")
         mixinKeyExpiresAt = System.currentTimeMillis() + 60L * 60L * 1000L
         return mixinKeyCache!!
     }
