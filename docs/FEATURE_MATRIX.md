@@ -12,6 +12,8 @@ This file is a status sheet, not a marketing checklist.
 | Segmented HTTP | Implemented | Range scheduler, ETag/Last-Modified checkpoints, bounded retry |
 | QR authorization | Implemented | Bilibili web QR login; SESSDATA stored with Android Keystore |
 | Background tasks | Implemented | WorkManager foreground worker; Room stores task specs and lifecycle snapshots |
+| Presentation state | In progress | Main, Downloads, Login and Settings ViewModels own parse, history, authorization and preference state; View-based screen construction remains hosted by MainActivity |
+| Settings persistence | Implemented | Quality, concurrency, Wi-Fi, audio, danmaku, subtitle and notification preferences are read/written through SettingsViewModel |
 | Persistent task history | Implemented | Room task/resource/event tables; legacy SharedPreferences specifications are migrated |
 | Task search and observation | Implemented | Search title/uploader/BV and observe task/resource/event Flow |
 | Resource history | Implemented | Main media and sidecar content URIs are stored per task |

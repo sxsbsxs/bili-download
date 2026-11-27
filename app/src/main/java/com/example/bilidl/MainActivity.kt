@@ -1,10 +1,11 @@
 package com.example.bilidl
 
 import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
+import androidx.lifecycle.lifecycleScope
 import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -25,7 +26,6 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.io.IOException
 import android.text.TextUtils
 import android.text.TextWatcher
 import android.view.Gravity
@@ -35,17 +35,17 @@ import android.widget.*
 import org.json.JSONObject
 import com.example.bilidl.data.local.entity.DownloadTaskEntity
 import com.example.bilidl.data.local.entity.DownloadTaskStatus
-import com.example.bilidl.data.repository.BiliDownloadTaskRepository
 import com.example.bilidl.data.repository.DownloadTaskRecoveryAction
 import com.example.bilidl.data.repository.DownloadTaskRecoveryPolicy
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /*
- * ===== 给后端开发者（GPT）的说明 =====
- * 本文件只负责界面。网络/解析/下载/登录逻辑请写在别的文件里，然后在下面
- * “交给后端实现”区域的函数中调用。所有 public 函数可在任意线程调用。
- * 当前文件仅包含 UI；解析、下载、扫码登录和文件访问仍需由业务层实现。
+ * Activity entry point and legacy View-based screen host.
+ * Parsing and Room-backed task history are delegated to lifecycle ViewModels;
+ * WorkManager remains the durable execution scheduler for actual transfers.
  *
  * 首页：   showVideo(title, uploader, cover, meta) / showError(msg)
  * 下载页： addDownload(id,title,cover) / updateDownload(id,progress,info)
@@ -54,11 +54,14 @@ import kotlinx.coroutines.runBlocking
  *          状态常量 ST_DOWNLOADING / ST_WAITING / ST_PAUSED / ST_FAILED / ST_DONE
  * 登录页： showQrCode(bitmap) / setQrStatus(msg,isError) / showQrExpired()
  *          loginSuccess(name,avatar,vip) / loginFailed(msg) / logoutDone()
- * 设置：   值保存在 SharedPreferences("ui")，键：quality(Int 0..4 =自动/1080/720/480/360)
- *          concurrent(Int 0..3 =1/2/3/5) wifi_only danmaku audio_only notify(Boolean)
- *          变化时会回调 onSettingChanged(key, value)
+ * 设置状态与持久化由 SettingsViewModel 统一管理；本文件只绑定控件和交互回调。
  */
 class MainActivity : ComponentActivity() {
+
+    private val mainViewModel: MainViewModel by viewModels()
+    private val downloadsViewModel: DownloadsViewModel by viewModels()
+    private val loginViewModel: LoginViewModel by viewModels()
+    private val settingsViewModel: SettingsViewModel by viewModels()
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
@@ -70,33 +73,47 @@ class MainActivity : ComponentActivity() {
     }
 
     // ===================== 真实业务接入 =====================
-    private fun onParseClicked(text: String) {
-        setBusy(parseBtn, true)
-        parseBtn.text = "解析中…"
-        backgroundExecutor.execute {
-            try {
-                val video = BiliRepository { SecureCookieStore.load(this) }.inspect(text)
-                runOnUiThread {
-                    parsedVideo = video
-                    selectedQualityId = preferredQualityId(video.qualities)
-                    val pageHint = if (video.pages.size > 1) {
-                        " · 共 " + video.pages.size + " P，点击选择或全部下载"
-                    } else {
-                        ""
+    private fun observeParseState() {
+        lifecycleScope.launch {
+            mainViewModel.parseState.collect { state ->
+                when (state) {
+                    VideoParseState.Idle -> Unit
+                    VideoParseState.Loading -> {
+                        setBusy(parseBtn, true)
+                        parseBtn.text = "解析中…"
                     }
-                    showVideo(
-                        video.title,
-                        video.uploader,
-                        video.cover,
-                        "第 " + video.page + " P · " + formatDuration(video.durationSeconds) +
-                            " · " + video.qualities.size + " 种可用画质" + pageHint
-                    )
-                    homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
+                    is VideoParseState.Success -> {
+                        val video = state.video
+                        setBusy(parseBtn, false)
+                        parseBtn.text = "解析 / 分析"
+                        parsedVideo = video
+                        selectedQualityId = preferredQualityId(video.qualities)
+                        val pageHint = if (video.pages.size > 1) {
+                            " · 共 " + video.pages.size + " P，点击选择或全部下载"
+                        } else {
+                            ""
+                        }
+                        showVideo(
+                            video.title,
+                            video.uploader,
+                            video.cover,
+                            "第 " + video.page + " P · " + formatDuration(video.durationSeconds) +
+                                " · " + video.qualities.size + " 种可用画质" + pageHint
+                        )
+                        homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
+                    }
+                    is VideoParseState.Error -> {
+                        setBusy(parseBtn, false)
+                        parseBtn.text = "解析 / 分析"
+                        showError(state.message)
+                    }
                 }
-            } catch (error: Exception) {
-                showError(error.message ?: "解析失败，请检查网络后重试")
             }
         }
+    }
+
+    private fun onParseClicked(text: String) {
+        mainViewModel.parse(text)
     }
 
     private fun onDownloadClicked() {
@@ -108,9 +125,9 @@ class MainActivity : ComponentActivity() {
         val spec = DownloadSpec(
             video = video,
             qualityId = selectedQualityId.takeIf { it > 0 } ?: video.qualities.firstOrNull()?.id ?: 80,
-            audioOnly = prefs.getBoolean("audio_only", false),
-            downloadDanmaku = prefs.getBoolean("danmaku", false),
-            downloadSubtitles = prefs.getBoolean("subtitles", false)
+            audioOnly = settingsViewModel.getBoolean("audio_only", false),
+            downloadDanmaku = settingsViewModel.getBoolean("danmaku", false),
+            downloadSubtitles = settingsViewModel.getBoolean("subtitles", false)
         )
         val id = "bili_" + System.currentTimeMillis()
         downloadSpecs[id] = spec
@@ -122,7 +139,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun enqueueDownload(id: String, spec: DownloadSpec) {
-        val networkType = if (prefs.getBoolean("wifi_only", true)) {
+        val networkType = if (settingsViewModel.getBoolean("wifi_only", true)) {
             androidx.work.NetworkType.UNMETERED
         } else {
             androidx.work.NetworkType.CONNECTED
@@ -145,7 +162,7 @@ class MainActivity : ComponentActivity() {
                     BiliDownloadWorker.KEY_AUDIO_ONLY to spec.audioOnly,
                     BiliDownloadWorker.KEY_DOWNLOAD_DANMAKU to spec.downloadDanmaku,
                     BiliDownloadWorker.KEY_DOWNLOAD_SUBTITLES to spec.downloadSubtitles,
-                    BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[prefs.getInt("concurrent", 1).coerceIn(0, 3)]
+                    BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[settingsViewModel.getInt("concurrent", 1).coerceIn(0, 3)]
                 )
             )
             .setBackoffCriteria(
@@ -157,7 +174,8 @@ class MainActivity : ComponentActivity() {
             .build()
 
         setDownloadState(id, ST_WAITING, "等待下载")
-        workManager.enqueueUniqueWork("bilidl_" + id, ExistingWorkPolicy.REPLACE, request)
+        // A duplicate UI action must not cancel an in-flight transfer for the same task.
+        workManager.enqueueUniqueWork("bilidl_" + id, ExistingWorkPolicy.KEEP, request)
         observeUniqueWork(id)
     }
 
@@ -186,40 +204,29 @@ class MainActivity : ComponentActivity() {
             .put("downloadSubtitles", spec.downloadSubtitles)
         taskPrefs.edit().putString(id, value.toString()).apply()
 
-        // Keep SharedPreferences readable for upgrades, while Room becomes the
-        // durable index used by task history, retry and resource management.
-        val entity = DownloadTaskEntity(
-            taskId = id,
-            bvid = spec.video.bvid,
-            aid = spec.video.aid,
-            cid = spec.video.cid,
-            pageNumber = spec.video.page,
-            title = spec.video.title,
-            uploader = spec.video.uploader,
-            durationSeconds = spec.video.durationSeconds,
-            coverUrl = spec.video.coverUrl,
-            qualityId = spec.qualityId,
-            audioOnly = spec.audioOnly,
-            downloadDanmaku = spec.downloadDanmaku,
-            downloadSubtitles = spec.downloadSubtitles
+        // Room writes are owned by DownloadsViewModel; SharedPreferences remains
+        // temporarily readable only for installations upgrading from the legacy store.
+        downloadsViewModel.registerTask(
+            DownloadTaskEntity(
+                taskId = id,
+                bvid = spec.video.bvid,
+                aid = spec.video.aid,
+                cid = spec.video.cid,
+                pageNumber = spec.video.page,
+                title = spec.video.title,
+                uploader = spec.video.uploader,
+                durationSeconds = spec.video.durationSeconds,
+                coverUrl = spec.video.coverUrl,
+                qualityId = spec.qualityId,
+                audioOnly = spec.audioOnly,
+                downloadDanmaku = spec.downloadDanmaku,
+                downloadSubtitles = spec.downloadSubtitles
+            )
         )
-        backgroundExecutor.execute {
-            runCatching {
-                runBlocking(Dispatchers.IO) {
-                    BiliDownloadTaskRepository.getInstance(applicationContext).registerTask(entity)
-                }
-            }
-        }
     }
 
     private fun persistTaskPause(id: String, reason: String) {
-        backgroundExecutor.execute {
-            runCatching {
-                runBlocking(Dispatchers.IO) {
-                    BiliDownloadTaskRepository.getInstance(applicationContext).markPaused(id, reason)
-                }
-            }
-        }
+        downloadsViewModel.markPaused(id, reason)
     }
 
     private fun handleWorkInfo(id: String, info: WorkInfo) {
@@ -285,70 +292,70 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun restoreRoomTasks() {
-        backgroundExecutor.execute {
-            val repository = BiliDownloadTaskRepository.getInstance(applicationContext)
-            val records = runCatching {
-                runBlocking(Dispatchers.IO) { repository.getAllTasks() }
-            }.getOrElse { emptyList() }
-
-            // Reconcile durable task metadata with WorkManager before touching the UI.
-            // A missing WorkInfo means the process/task scheduler lost the execution
-            // record; only then do we enqueue again. Existing work is observed, never
-            // replaced, so process recovery cannot accidentally restart a live transfer.
-            val recoveryPlan = records.map { task ->
-                val needsExecution = task.status == DownloadTaskStatus.QUEUED ||
-                    task.status == DownloadTaskStatus.RUNNING
-                val workInfos = if (needsExecution) {
-                    runCatching {
-                        workManager.getWorkInfosForUniqueWork("bilidl_" + task.taskId)
-                            .get(15, TimeUnit.SECONDS)
-                    }.getOrNull()
-                } else {
-                    null
+        lifecycleScope.launch {
+            val records = runCatching { downloadsViewModel.loadTasks() }
+                .getOrElse { error ->
+                    toast(error.message ?: "读取下载历史失败")
+                    emptyList()
                 }
-                task to DownloadTaskRecoveryPolicy.decide(task.status, workInfos?.size)
+
+            // WorkManager owns execution; the ViewModel supplies durable task metadata.
+            // Resolve scheduler state off the main thread before updating the screen.
+            val recoveryPlan = withContext(Dispatchers.IO) {
+                records.map { task ->
+                    val needsExecution = task.status == DownloadTaskStatus.QUEUED ||
+                        task.status == DownloadTaskStatus.RUNNING
+                    val workInfos = if (needsExecution) {
+                        runCatching {
+                            workManager.getWorkInfosForUniqueWork("bilidl_" + task.taskId)
+                                .get(15, TimeUnit.SECONDS)
+                        }.getOrNull()
+                    } else {
+                        null
+                    }
+                    task to DownloadTaskRecoveryPolicy.decide(task.status, workInfos?.size)
+                }
             }
 
-            runOnUiThread {
-                recoveryPlan.forEach { (task, shouldRequeue) ->
-                    val video = BiliVideo(
-                        bvid = task.bvid,
-                        aid = task.aid,
-                        cid = task.cid,
-                        page = task.pageNumber,
-                        title = task.title,
-                        uploader = task.uploader,
-                        durationSeconds = task.durationSeconds,
-                        coverUrl = task.coverUrl,
-                        cover = null,
-                        qualities = emptyList()
-                    )
-                    val spec = DownloadSpec(
-                        video = video,
-                        qualityId = task.qualityId,
-                        audioOnly = task.audioOnly,
-                        downloadDanmaku = task.downloadDanmaku,
-                        downloadSubtitles = task.downloadSubtitles
-                    )
-                    downloadSpecs[task.taskId] = spec
-                    if (!items.containsKey(task.taskId)) addDownload(task.taskId, task.title, null)
-                    when (task.status) {
-                        DownloadTaskStatus.QUEUED, DownloadTaskStatus.RUNNING -> {
-                            when (shouldRequeue) {
-                                DownloadTaskRecoveryAction.ENQUEUE_MISSING_WORK -> enqueueDownload(task.taskId, spec)
-                                DownloadTaskRecoveryAction.OBSERVE_EXISTING_WORK -> observeUniqueWork(task.taskId)
-                                DownloadTaskRecoveryAction.RESTORE_TERMINAL_STATE -> Unit
-                            }
+            if (isFinishing || isDestroyed) return@launch
+            recoveryPlan.forEach { (task, shouldRequeue) ->
+                val video = BiliVideo(
+                    bvid = task.bvid,
+                    aid = task.aid,
+                    cid = task.cid,
+                    page = task.pageNumber,
+                    title = task.title,
+                    uploader = task.uploader,
+                    durationSeconds = task.durationSeconds,
+                    coverUrl = task.coverUrl,
+                    cover = null,
+                    qualities = emptyList()
+                )
+                val spec = DownloadSpec(
+                    video = video,
+                    qualityId = task.qualityId,
+                    audioOnly = task.audioOnly,
+                    downloadDanmaku = task.downloadDanmaku,
+                    downloadSubtitles = task.downloadSubtitles
+                )
+                downloadSpecs[task.taskId] = spec
+                if (!items.containsKey(task.taskId)) addDownload(task.taskId, task.title, null)
+                when (task.status) {
+                    DownloadTaskStatus.QUEUED, DownloadTaskStatus.RUNNING -> {
+                        when (shouldRequeue) {
+                            DownloadTaskRecoveryAction.ENQUEUE_MISSING_WORK -> enqueueDownload(task.taskId, spec)
+                            DownloadTaskRecoveryAction.OBSERVE_EXISTING_WORK -> observeUniqueWork(task.taskId)
+                            DownloadTaskRecoveryAction.RESTORE_TERMINAL_STATE -> Unit
                         }
-                        DownloadTaskStatus.PAUSED -> setDownloadState(task.taskId, ST_PAUSED, task.detail)
-                        DownloadTaskStatus.FAILED -> failDownload(task.taskId, task.errorMessage ?: task.detail)
-                        DownloadTaskStatus.COMPLETED -> {
-                            task.outputUri?.let { savedFileUris[task.taskId] = Uri.parse(it) }
-                            finishDownload(
-                                task.taskId,
-                                task.outputSizeBytes?.let(BiliDownloadEngine::formatSize) ?: "已保存"
-                            )
-                        }
+                    }
+                    DownloadTaskStatus.PAUSED -> setDownloadState(task.taskId, ST_PAUSED, task.detail)
+                    DownloadTaskStatus.FAILED -> failDownload(task.taskId, task.errorMessage ?: task.detail)
+                    DownloadTaskStatus.COMPLETED -> {
+                        task.outputUri?.let { savedFileUris[task.taskId] = Uri.parse(it) }
+                        finishDownload(
+                            task.taskId,
+                            task.outputSizeBytes?.let(BiliDownloadEngine::formatSize) ?: "已保存"
+                        )
                     }
                 }
             }
@@ -380,76 +387,52 @@ class MainActivity : ComponentActivity() {
             ?.filter { it.name.startsWith("task_" + safeId) }
             ?.forEach { it.delete() }
         val savedUri = savedFileUris.remove(id)
-        backgroundExecutor.execute {
-            runCatching {
-                runBlocking(Dispatchers.IO) {
-                    val repository = BiliDownloadTaskRepository.getInstance(applicationContext)
-                    val resourceUris = repository.getResources(id).map { it.contentUri } +
-                        listOfNotNull(savedUri?.toString())
-                    if (deleteFile) {
-                        resourceUris.distinct().forEach { value ->
-                            runCatching { contentResolver.delete(Uri.parse(value), null, null) }
-                        }
-                    }
-                    repository.deleteTask(id)
-                }
-            }
-        }
+        downloadsViewModel.deleteTask(id, deleteFile, savedUri)
     }
 
     private fun showTaskHistory(id: String) {
-        backgroundExecutor.execute {
-            val events = runCatching {
-                runBlocking(Dispatchers.IO) {
-                    BiliDownloadTaskRepository.getInstance(applicationContext).getRecentEvents(id, 50)
-                }
-            }.getOrElse { emptyList() }
-            runOnUiThread {
-                if (isFinishing) return@runOnUiThread
-                if (events.isEmpty()) {
-                    toast("暂时没有任务状态记录")
-                    return@runOnUiThread
-                }
-                val lines = events.map { event ->
-                    val time = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.getDefault())
-                        .format(java.util.Date(event.createdAt))
-                    time + "  ·  " + event.stage + "\n" + event.message
-                }.toTypedArray()
-                AlertDialog.Builder(this)
-                    .setTitle("任务执行记录")
-                    .setItems(lines, null)
-                    .setPositiveButton("关闭", null)
-                    .show()
+        lifecycleScope.launch {
+            val events = runCatching { downloadsViewModel.loadRecentEvents(id, 50) }
+                .getOrElse { emptyList() }
+            if (isFinishing || isDestroyed) return@launch
+            if (events.isEmpty()) {
+                toast("暂时没有任务状态记录")
+                return@launch
             }
+            val lines = events.map { event ->
+                val time = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                    .format(java.util.Date(event.createdAt))
+                time + "  ·  " + event.stage + "\n" + event.message
+            }.toTypedArray()
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("任务执行记录")
+                .setItems(lines, null)
+                .setPositiveButton("关闭", null)
+                .show()
         }
     }
 
     private fun showTaskResources(id: String) {
-        backgroundExecutor.execute {
-            val resources = runCatching {
-                runBlocking(Dispatchers.IO) {
-                    BiliDownloadTaskRepository.getInstance(applicationContext).getResources(id)
-                }
-            }.getOrElse { emptyList() }
-            runOnUiThread {
-                if (isFinishing) return@runOnUiThread
-                if (resources.isEmpty()) {
-                    toast("没有找到已保存的资源记录")
-                    return@runOnUiThread
-                }
-                val labels = resources.map { resource ->
-                    val size = BiliDownloadEngine.formatSize(resource.sizeBytes)
-                    resource.displayName + "  ·  " + size
-                }.toTypedArray()
-                AlertDialog.Builder(this)
-                    .setTitle("已保存的资源")
-                    .setItems(labels) { _, index ->
-                        val resource = resources[index]
-                        openSavedResource(Uri.parse(resource.contentUri), resource.mimeType)
-                    }
-                    .setNegativeButton("关闭", null)
-                    .show()
+        lifecycleScope.launch {
+            val resources = runCatching { downloadsViewModel.loadResources(id) }
+                .getOrElse { emptyList() }
+            if (isFinishing || isDestroyed) return@launch
+            if (resources.isEmpty()) {
+                toast("没有找到已保存的资源记录")
+                return@launch
             }
+            val labels = resources.map { resource ->
+                val size = BiliDownloadEngine.formatSize(resource.sizeBytes)
+                resource.displayName + "  ·  " + size
+            }.toTypedArray()
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle("已保存的资源")
+                .setItems(labels) { _, index ->
+                    val resource = resources[index]
+                    openSavedResource(Uri.parse(resource.contentUri), resource.mimeType)
+                }
+                .setNegativeButton("关闭", null)
+                .show()
         }
     }
 
@@ -488,126 +471,69 @@ class MainActivity : ComponentActivity() {
         downloadSpecs.keys.toList().filter { it !in activeIds }.forEach(downloadSpecs::remove)
         savedFileUris.keys.toList().filter { it !in activeIds }.forEach(savedFileUris::remove)
         workManager.pruneWork()
-        backgroundExecutor.execute {
-            runCatching {
-                runBlocking(Dispatchers.IO) {
-                    BiliDownloadTaskRepository.getInstance(applicationContext).deleteCompletedTasks()
+        downloadsViewModel.deleteCompletedTasks()
+    }
+
+    private fun observeLoginState() {
+        lifecycleScope.launch {
+            loginViewModel.state.collect { state ->
+                when (state) {
+                    LoginUiState.Idle,
+                    LoginUiState.CheckingSession -> Unit
+                    LoginUiState.RequestingQr -> {
+                        qrIv.setImageDrawable(null)
+                        qrOverlay.text = "正在申请二维码…"
+                        qrOverlay.visibility = View.VISIBLE
+                        setQrStatus("正在连接 B站登录服务…")
+                    }
+                    is LoginUiState.QrReady -> {
+                        showQrCode(state.bitmap)
+                        setQrStatus("请使用哔哩哔哩 App 扫描二维码")
+                    }
+                    LoginUiState.Scanned ->
+                        setQrStatus("已扫描，请在哔哩哔哩 App 中确认登录")
+                    LoginUiState.Expired -> showQrExpired()
+                    LoginUiState.VerifyingCookie -> {
+                        setBusy(cookieBtn, true)
+                        cookieBtn.text = "登录中…"
+                    }
+                    is LoginUiState.Success -> {
+                        setBusy(cookieBtn, false)
+                        loginSuccess(state.username, null, state.vip)
+                    }
+                    is LoginUiState.Error -> {
+                        setBusy(cookieBtn, false)
+                        if (state.source == LoginFailureSource.QR_CODE) {
+                            qrOverlay.text = "登录失败，点击刷新"
+                            qrOverlay.visibility = View.VISIBLE
+                        }
+                        loginFailed(state.message)
+                    }
+                    LoginUiState.LoggedOut -> logoutDone()
                 }
             }
         }
     }
 
-    @Volatile private var qrLoginGeneration = 0
-    @Volatile private var qrLoginActive = false
+
     private var activeLoginSegment = -1
 
     private fun onRequestQrCode() {
-        val generation = ++qrLoginGeneration
-        qrLoginActive = true
-        qrIv.setImageDrawable(null)
-        qrOverlay.text = "正在申请二维码…"
-        qrOverlay.visibility = View.VISIBLE
-        setQrStatus("正在连接 B站登录服务…")
-
-        backgroundExecutor.execute {
-            try {
-                val session = BiliQrLoginClient.generate()
-                val bitmap = BiliQrLoginClient.renderQr(session.url)
-                runOnUiThread {
-                    if (!isFinishing && generation == qrLoginGeneration && qrLoginActive) {
-                        showQrCode(bitmap)
-                        setQrStatus("请使用哔哩哔哩 App 扫描二维码")
-                    }
-                }
-
-                val expiresAt = System.currentTimeMillis() + 180_000L
-                var finished = false
-                while (
-                    !finished &&
-                    qrLoginActive &&
-                    generation == qrLoginGeneration &&
-                    System.currentTimeMillis() < expiresAt
-                ) {
-                    when (val result = BiliQrLoginClient.poll(session)) {
-                        is BiliQrPollResult -> when (result.state) {
-                            BiliQrLoginState.WAITING -> Unit
-                            BiliQrLoginState.SCANNED -> runOnUiThread {
-                                if (generation == qrLoginGeneration && qrLoginActive) {
-                                    setQrStatus("已扫描，请在哔哩哔哩 App 中确认登录")
-                                }
-                            }
-                            BiliQrLoginState.EXPIRED -> {
-                                finished = true
-                                runOnUiThread {
-                                    if (generation == qrLoginGeneration) showQrExpired()
-                                }
-                            }
-                            BiliQrLoginState.SUCCESS -> {
-                                val sessdata = result.sessdata
-                                    ?: throw IOException("扫码成功，但没有获取到登录凭据")
-                                val (name, vip) = BiliRepository().verifyCookie(sessdata)
-                                SecureCookieStore.save(this, sessdata)
-                                finished = true
-                                qrLoginActive = false
-                                runOnUiThread {
-                                    if (generation == qrLoginGeneration && !isFinishing) {
-                                        loginSuccess(name, null, vip)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (!finished) Thread.sleep(2_000L)
-                }
-
-                if (
-                    !finished &&
-                    generation == qrLoginGeneration &&
-                    qrLoginActive
-                ) {
-                    runOnUiThread {
-                        if (generation == qrLoginGeneration) showQrExpired()
-                    }
-                }
-            } catch (error: Exception) {
-                if (generation == qrLoginGeneration && qrLoginActive) {
-                    runOnUiThread {
-                        if (generation == qrLoginGeneration) {
-                            qrOverlay.text = "登录失败，点击刷新"
-                            qrOverlay.visibility = View.VISIBLE
-                            loginFailed(error.message ?: "B站扫码登录失败，请重试")
-                        }
-                    }
-                }
-            } finally {
-                if (generation == qrLoginGeneration) qrLoginActive = false
-            }
-        }
+        loginViewModel.requestQrCode()
     }
 
     private fun stopQrLogin() {
-        qrLoginActive = false
-        qrLoginGeneration++
+        loginViewModel.stopQrLogin()
     }
 
     private fun onCookieLogin(sessdata: String) {
-        backgroundExecutor.execute {
-            try {
-                val (name, vip) = BiliRepository().verifyCookie(sessdata)
-                SecureCookieStore.save(this, sessdata)
-                runOnUiThread { loginSuccess(name, null, vip) }
-            } catch (error: Exception) {
-                loginFailed(error.message ?: "授权验证失败")
-            }
-        }
+        loginViewModel.loginWithSessdata(sessdata)
     }
 
     private fun onLogoutClicked() {
-        SecureCookieStore.clear(this)
-        logoutDone()
+        loginViewModel.logout()
     }
 
-    private fun onSettingChanged(key: String, value: Any) {}
     private fun onChoosePathClicked() {
         toast("视频保存位置：Download/BiliDl")
     }
@@ -625,7 +551,7 @@ class MainActivity : ComponentActivity() {
 
     private fun preferredQualityId(qualities: List<BiliQuality>): Int {
         if (qualities.isEmpty()) return 80
-        val target = when (prefs.getInt("quality", 0)) {
+        val target = when (settingsViewModel.getInt("quality", 0)) {
             1 -> 80
             2 -> 64
             3 -> 32
@@ -670,7 +596,7 @@ class MainActivity : ComponentActivity() {
     private fun downloadAllPages(video: BiliVideo, pages: List<BiliPage>) {
         if (pages.isEmpty()) return
         toast("正在逐P获取画质并准备下载任务…")
-        val audioOnly = prefs.getBoolean("audio_only", false)
+        val audioOnly = settingsViewModel.getBoolean("audio_only", false)
         backgroundExecutor.execute {
             val prepared = ArrayList<DownloadSpec>()
             val skipped = ArrayList<Int>()
@@ -684,8 +610,8 @@ class MainActivity : ComponentActivity() {
                         partVideo,
                         quality,
                         audioOnly,
-                        prefs.getBoolean("danmaku", false),
-                        prefs.getBoolean("subtitles", false)
+                        settingsViewModel.getBoolean("danmaku", false),
+                        settingsViewModel.getBoolean("subtitles", false)
                     )
                 } catch (_: Exception) {
                     skipped += page.pageNumber
@@ -856,7 +782,6 @@ class MainActivity : ComponentActivity() {
     private val concurrentOptions = arrayOf("1 个", "2 个", "3 个", "5 个")
 
     // ---------------- 状态 ----------------
-    private lateinit var prefs: SharedPreferences
     private lateinit var pages: List<View>
     private val tabIcon = ArrayList<TextView>()
     private val tabText = ArrayList<TextView>()
@@ -1129,7 +1054,6 @@ class MainActivity : ComponentActivity() {
     // ---------------- 生命周期 ----------------
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        prefs = getSharedPreferences("ui", Context.MODE_PRIVATE)
         window.statusBarColor = bg
         window.navigationBarColor = Color.WHITE
         window.decorView.systemUiVisibility =
@@ -1149,23 +1073,15 @@ class MainActivity : ComponentActivity() {
         rootFrame.addView(loginPage, FrameLayout.LayoutParams(match, match))
 
         setContentView(rootFrame)
+        observeParseState()
+        observeLoginState()
         selectTab(0)
         refreshAccountUi()
         refreshDownloadList()
         restoreDownloadTasks()
         restoreRoomTasks()
         setDownloadPathText("Download/BiliDl")
-        backgroundExecutor.execute {
-            val cookie = SecureCookieStore.load(this)
-            if (!cookie.isNullOrBlank()) {
-                try {
-                    val (name, vip) = BiliRepository().verifyCookie(cookie)
-                    runOnUiThread { if (!isFinishing) loginSuccess(name, null, vip) }
-                } catch (_: Exception) {
-                    SecureCookieStore.clear(this)
-                }
-            }
-        }
+        loginViewModel.restoreSession()
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -1216,7 +1132,7 @@ class MainActivity : ComponentActivity() {
 
     // ================= 首页 =================
     private fun qualityText() =
-        qualityOptions[prefs.getInt("quality", 0).coerceIn(0, qualityOptions.lastIndex)] + "  ›"
+        qualityOptions[settingsViewModel.getInt("quality", 0).coerceIn(0, qualityOptions.lastIndex)] + "  ›"
 
     private fun refreshQuality() {
         homeQualityTv.text = qualityText()
@@ -1226,9 +1142,8 @@ class MainActivity : ComponentActivity() {
     private fun pickOption(title: String, key: String, options: Array<String>, def: Int, after: () -> Unit) {
         AlertDialog.Builder(this)
             .setTitle(title)
-            .setSingleChoiceItems(options, prefs.getInt(key, def)) { d, which ->
-                prefs.edit().putInt(key, which).apply()
-                onSettingChanged(key, which)
+            .setSingleChoiceItems(options, settingsViewModel.getInt(key, def)) { d, which ->
+                settingsViewModel.setInt(key, which)
                 after()
                 d.dismiss()
             }
@@ -1660,33 +1575,16 @@ class MainActivity : ComponentActivity() {
             toast("所选任务中没有可重试的项目")
             return
         }
-        backgroundExecutor.execute {
-            val repository = BiliDownloadTaskRepository.getInstance(applicationContext)
+        lifecycleScope.launch {
             var submitted = 0
             targets.forEach { (id, spec) ->
-                val eligible = runCatching {
-                    runBlocking(Dispatchers.IO) {
-                        val task = repository.getTask(id) ?: return@runBlocking false
-                        if (task.status == DownloadTaskStatus.FAILED ||
-                            task.status == DownloadTaskStatus.PAUSED
-                        ) {
-                            repository.retry(id)
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                }.getOrDefault(false)
+                val eligible = runCatching { downloadsViewModel.retryTask(id) }.getOrDefault(false)
                 if (eligible) {
+                    enqueueDownload(id, spec)
                     submitted++
-                    runOnUiThread {
-                        if (!isFinishing) enqueueDownload(id, spec)
-                    }
                 }
             }
-            runOnUiThread {
-                toast("已提交 " + submitted + " 个重试任务")
-            }
+            toast("已提交 " + submitted + " 个重试任务")
         }
     }
 
@@ -1812,7 +1710,7 @@ class MainActivity : ComponentActivity() {
     private fun choiceRow(title: String, key: String, options: Array<String>, def: Int): View {
         val value = valueText("")
         fun refresh() {
-            value.text = options[prefs.getInt(key, def).coerceIn(0, options.lastIndex)] + "  ›"
+            value.text = options[settingsViewModel.getInt(key, def).coerceIn(0, options.lastIndex)] + "  ›"
         }
         refresh()
         return settingRow(title, null, value) { pickOption(title, key, options, def) { refresh() } }
@@ -1820,13 +1718,12 @@ class MainActivity : ComponentActivity() {
 
     private fun switchRow(title: String, key: String, def: Boolean, desc: String? = null): View {
         val sw = Switch(this)
-        sw.isChecked = prefs.getBoolean(key, def)
+        sw.isChecked = settingsViewModel.getBoolean(key, def)
         val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
         sw.thumbTintList = ColorStateList(states, intArrayOf(pink, Color.parseColor("#BFC5D0")))
         sw.trackTintList = ColorStateList(states, intArrayOf(Color.parseColor("#FDB9CC"), Color.parseColor("#E3E6EC")))
         sw.setOnCheckedChangeListener { _, checked ->
-            prefs.edit().putBoolean(key, checked).apply()
-            onSettingChanged(key, checked)
+            settingsViewModel.setBoolean(key, checked)
         }
         return settingRow(title, desc, sw) { sw.toggle() }
     }

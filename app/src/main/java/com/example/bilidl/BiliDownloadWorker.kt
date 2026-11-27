@@ -14,9 +14,13 @@ import com.example.bilidl.data.local.entity.DownloadResourceEntity
 import com.example.bilidl.data.local.entity.DownloadTaskEntity
 import com.example.bilidl.data.local.entity.DownloadTaskStatus
 import com.example.bilidl.data.repository.BiliDownloadTaskRepository
+import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class BiliDownloadWorker(
@@ -85,45 +89,51 @@ class BiliDownloadWorker(
                 cover = null,
                 qualities = emptyList()
             )
-            var lastReportedPercent = -1
-            var lastReportedDetail = ""
-            var lastPersistedPercent = -3
-            var lastPersistedStage = ""
-            val progressLock = Any()
-            val saved = BiliDownloadEngine.download(
-                applicationContext,
-                video,
-                quality,
-                audioOnly,
-                transferId.ifBlank { id.toString() },
-                concurrency,
-                SecureCookieStore.load(applicationContext),
-                downloadDanmaku = downloadDanmaku,
-                downloadSubtitles = downloadSubtitles,
-                isCancelled = { isStopped }
-            ) { percent, detail ->
-                synchronized(progressLock) {
-                    // The range engine reports each buffer write; update WorkManager
-                    // only when the visible percentage or stage actually changes.
-                    if (percent != lastReportedPercent || detail != lastReportedDetail) {
-                        lastReportedPercent = percent
-                        lastReportedDetail = detail
-                        val progressData = workDataOf(KEY_PROGRESS to percent, KEY_DETAIL to detail)
-                        setProgressAsync(progressData)
-                        setForegroundAsync(foregroundInfo(percent, detail))
-
-                        // Persist only meaningful progress changes. The byte-level range
-                        // callback can be very chatty; Room stores snapshots, not each buffer.
-                        if (taskId.isNotBlank() &&
-                            (percent - lastPersistedPercent >= 3 || detail != lastPersistedStage || percent >= 100)
-                        ) {
-                            runBlocking(Dispatchers.IO) {
-                                taskRepository.reportProgress(taskId, percent, detail, detail)
-                            }
-                            lastPersistedPercent = percent
-                            lastPersistedStage = detail
+            val progressPolicy = DownloadProgressPolicy()
+            val saved = coroutineScope {
+                // The transfer callback is synchronous. A conflated channel keeps only the
+                // latest snapshot, so slow database writes never block network range workers.
+                val progressUpdates = Channel<Pair<Int, String>>(Channel.CONFLATED)
+                val progressWriter = launch(Dispatchers.IO) {
+                    for ((percent, detail) in progressUpdates) {
+                        try {
+                            taskRepository.reportProgress(taskId, percent, detail, detail)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            // Task history is best-effort; it must not stop a valid media transfer.
+                            Log.w(TAG, "Unable to persist download progress for $taskId", error)
                         }
                     }
+                }
+                try {
+                    BiliDownloadEngine.download(
+                        applicationContext,
+                        video,
+                        quality,
+                        audioOnly,
+                        transferId.ifBlank { id.toString() },
+                        concurrency,
+                        SecureCookieStore.load(applicationContext),
+                        downloadDanmaku = downloadDanmaku,
+                        downloadSubtitles = downloadSubtitles,
+                        isCancelled = { isStopped }
+                    ) { percent, detail ->
+                        synchronized(progressPolicy) {
+                            val decision = progressPolicy.evaluate(percent, detail)
+                            if (decision.publishWorkProgress) {
+                                val progressData = workDataOf(KEY_PROGRESS to percent, KEY_DETAIL to detail)
+                                setProgressAsync(progressData)
+                                setForegroundAsync(foregroundInfo(percent, detail))
+                            }
+                            if (decision.persistSnapshot) {
+                                progressUpdates.trySend(percent to detail)
+                            }
+                        }
+                    }
+                } finally {
+                    progressUpdates.close()
+                    progressWriter.join()
                 }
             }
             if (taskId.isNotBlank()) {
@@ -220,6 +230,7 @@ class BiliDownloadWorker(
     }
 
     companion object {
+        private const val TAG = "BiliDownloadWorker"
         const val KEY_TASK_ID = "task_id"
         const val KEY_BVID = "bvid"
         const val KEY_AID = "aid"
