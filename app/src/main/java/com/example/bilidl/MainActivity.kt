@@ -103,9 +103,19 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun enqueueDownload(id: String, spec: DownloadSpec) {
+        val networkType = if (prefs.getBoolean("wifi_only", true)) {
+            androidx.work.NetworkType.UNMETERED
+        } else {
+            androidx.work.NetworkType.CONNECTED
+        }
+        val constraints = androidx.work.Constraints.Builder()
+            .setRequiredNetworkType(networkType)
+            .build()
         val request = OneTimeWorkRequestBuilder<BiliDownloadWorker>()
+            .setConstraints(constraints)
             .setInputData(
                 workDataOf(
+                    BiliDownloadWorker.KEY_TASK_ID to id,
                     BiliDownloadWorker.KEY_BVID to spec.video.bvid.orEmpty(),
                     BiliDownloadWorker.KEY_AID to spec.video.aid,
                     BiliDownloadWorker.KEY_CID to spec.video.cid,
@@ -120,25 +130,59 @@ class MainActivity : ComponentActivity() {
         setDownloadState(id, ST_WAITING, "等待下载")
         workManager.enqueueUniqueWork("bilidl_" + id, ExistingWorkPolicy.REPLACE, request)
         workManager.getWorkInfoByIdLiveData(request.id).observe(this) { info ->
-            if (info == null || !items.containsKey(id)) return@observe
-            when (info.state) {
-                WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED ->
-                    setDownloadState(id, ST_WAITING, "等待下载")
-                WorkInfo.State.RUNNING -> {
-                    val progress = info.progress.getInt(BiliDownloadWorker.KEY_PROGRESS, 0)
-                    val detail = info.progress.getString(BiliDownloadWorker.KEY_DETAIL).orEmpty()
-                    updateDownload(id, progress, detail)
+            if (info != null) handleWorkInfo(id, info)
+        }
+    }
+
+    private fun handleWorkInfo(id: String, info: WorkInfo) {
+        if (!items.containsKey(id)) return
+        when (info.state) {
+            WorkInfo.State.ENQUEUED, WorkInfo.State.BLOCKED ->
+                setDownloadState(id, ST_WAITING, "等待下载")
+            WorkInfo.State.RUNNING -> {
+                val progress = info.progress.getInt(BiliDownloadWorker.KEY_PROGRESS, 0)
+                val detail = info.progress.getString(BiliDownloadWorker.KEY_DETAIL).orEmpty()
+                updateDownload(id, progress, detail)
+            }
+            WorkInfo.State.SUCCEEDED -> {
+                val uriText = info.outputData.getString(BiliDownloadWorker.KEY_URI)
+                if (!uriText.isNullOrBlank()) savedFileUris[id] = Uri.parse(uriText)
+                finishDownload(id, info.outputData.getString(BiliDownloadWorker.KEY_SIZE_TEXT) ?: "已保存")
+            }
+            WorkInfo.State.FAILED -> failDownload(
+                id,
+                info.outputData.getString(BiliDownloadWorker.KEY_ERROR) ?: "下载失败"
+            )
+            WorkInfo.State.CANCELLED -> setDownloadState(id, ST_PAUSED, "已取消，可重新下载")
+        }
+    }
+
+    private fun restoreDownloadTasks() {
+        workManager.getWorkInfosByTagLiveData(DOWNLOAD_TAG).observe(this) { workInfos ->
+            workInfos.forEach { info ->
+                val id = info.inputData.getString(BiliDownloadWorker.KEY_TASK_ID) ?: return@forEach
+                if (!items.containsKey(id)) {
+                    val bvid = info.inputData.getString(BiliDownloadWorker.KEY_BVID)?.takeIf { it.isNotBlank() }
+                    val video = BiliVideo(
+                        bvid = bvid,
+                        aid = info.inputData.getLong(BiliDownloadWorker.KEY_AID, 0L),
+                        cid = info.inputData.getLong(BiliDownloadWorker.KEY_CID, 0L),
+                        page = 1,
+                        title = info.inputData.getString(BiliDownloadWorker.KEY_TITLE).orEmpty(),
+                        uploader = "",
+                        durationSeconds = 0,
+                        coverUrl = null,
+                        cover = null,
+                        qualities = emptyList()
+                    )
+                    downloadSpecs[id] = DownloadSpec(
+                        video,
+                        info.inputData.getInt(BiliDownloadWorker.KEY_QUALITY, 80),
+                        info.inputData.getBoolean(BiliDownloadWorker.KEY_AUDIO_ONLY, false)
+                    )
+                    addDownload(id, video.title, null)
                 }
-                WorkInfo.State.SUCCEEDED -> {
-                    val uriText = info.outputData.getString(BiliDownloadWorker.KEY_URI)
-                    if (!uriText.isNullOrBlank()) savedFileUris[id] = Uri.parse(uriText)
-                    finishDownload(id, info.outputData.getString(BiliDownloadWorker.KEY_SIZE_TEXT) ?: "已保存")
-                }
-                WorkInfo.State.FAILED -> failDownload(
-                    id,
-                    info.outputData.getString(BiliDownloadWorker.KEY_ERROR) ?: "下载失败"
-                )
-                WorkInfo.State.CANCELLED -> setDownloadState(id, ST_PAUSED, "已取消，可重新下载")
+                handleWorkInfo(id, info)
             }
         }
     }
@@ -159,6 +203,7 @@ class MainActivity : ComponentActivity() {
 
     private fun onDeleteClicked(id: String, deleteFile: Boolean) {
         workManager.cancelUniqueWork("bilidl_" + id)
+        workManager.pruneWork()
         downloadSpecs.remove(id)
         if (deleteFile) {
             savedFileUris.remove(id)?.let { contentResolver.delete(it, null, null) }
@@ -182,7 +227,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun onClearFinishedClicked() {}
+    private fun onClearFinishedClicked() {
+        val activeIds = items.keys
+        downloadSpecs.keys.toList().filter { it !in activeIds }.forEach(downloadSpecs::remove)
+        savedFileUris.keys.toList().filter { it !in activeIds }.forEach(savedFileUris::remove)
+        workManager.pruneWork()
+    }
 
     private fun onRequestQrCode() {
         setQrStatus("扫码登录暂未接入；当前可使用本机 SESSDATA 授权", true)
@@ -650,6 +700,7 @@ class MainActivity : ComponentActivity() {
         selectTab(0)
         refreshAccountUi()
         refreshDownloadList()
+        restoreDownloadTasks()
         setDownloadPathText("Download/BiliDl")
         backgroundExecutor.execute {
             val cookie = SecureCookieStore.load(this)
