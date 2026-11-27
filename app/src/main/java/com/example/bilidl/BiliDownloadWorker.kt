@@ -10,6 +10,12 @@ import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.example.bilidl.data.local.entity.DownloadResourceEntity
+import com.example.bilidl.data.repository.BiliDownloadTaskRepository
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 
 class BiliDownloadWorker(
     context: Context,
@@ -17,6 +23,8 @@ class BiliDownloadWorker(
 ) : CoroutineWorker(context, parameters) {
 
     override suspend fun doWork(): Result {
+        val taskId = inputData.getString(KEY_TASK_ID).orEmpty()
+        val taskRepository = BiliDownloadTaskRepository.getInstance(applicationContext)
         return try {
             setForeground(foregroundInfo())
             val bvid = inputData.getString(KEY_BVID)
@@ -32,8 +40,10 @@ class BiliDownloadWorker(
             val transferId = inputData.getString(KEY_TASK_ID).orEmpty()
             val concurrency = inputData.getInt(KEY_CONCURRENT, 2)
             if (cid <= 0L || (bvid.isNullOrBlank() && aid <= 0L)) {
+                if (taskId.isNotBlank()) taskRepository.markFailed(taskId, "下载参数无效")
                 return Result.failure(workDataOf(KEY_ERROR to "下载参数无效"))
             }
+            if (taskId.isNotBlank()) taskRepository.markRunning(taskId)
 
             val video = BiliVideo(
                 bvid = bvid,
@@ -49,6 +59,8 @@ class BiliDownloadWorker(
             )
             var lastReportedPercent = -1
             var lastReportedDetail = ""
+            var lastPersistedPercent = -3
+            var lastPersistedStage = ""
             val progressLock = Any()
             val saved = BiliDownloadEngine.download(
                 applicationContext,
@@ -71,8 +83,41 @@ class BiliDownloadWorker(
                         val progressData = workDataOf(KEY_PROGRESS to percent, KEY_DETAIL to detail)
                         setProgressAsync(progressData)
                         setForegroundAsync(foregroundInfo(percent, detail))
+
+                        // Persist only meaningful progress changes. The byte-level range
+                        // callback can be very chatty; Room stores snapshots, not each buffer.
+                        if (taskId.isNotBlank() &&
+                            (percent - lastPersistedPercent >= 3 || detail != lastPersistedStage || percent >= 100)
+                        ) {
+                            runBlocking(Dispatchers.IO) {
+                                taskRepository.reportProgress(taskId, percent, detail, detail)
+                            }
+                            lastPersistedPercent = percent
+                            lastPersistedStage = detail
+                        }
                     }
                 }
+            }
+            if (taskId.isNotBlank()) {
+                val sidecarEntities = saved.additionalResources.mapIndexed { index, resource ->
+                    DownloadResourceEntity(
+                        resourceId = "$taskId:sidecar:$index:${resource.resourceType}",
+                        taskId = taskId,
+                        resourceType = resource.resourceType,
+                        displayName = resource.displayName,
+                        mimeType = resource.mimeType,
+                        contentUri = resource.uri.toString(),
+                        sizeBytes = resource.sizeBytes
+                    )
+                }
+                taskRepository.markCompleted(
+                    taskId = taskId,
+                    outputUri = saved.uri.toString(),
+                    outputName = saved.displayName,
+                    mimeType = saved.mimeType,
+                    sizeBytes = saved.sizeBytes,
+                    additionalResources = sidecarEntities
+                )
             }
             Result.success(
                 workDataOf(
@@ -95,11 +140,22 @@ class BiliDownloadWorker(
                 )
             )
         } catch (error: kotlinx.coroutines.CancellationException) {
+            if (taskId.isNotBlank()) {
+                withContext(NonCancellable + Dispatchers.IO) {
+                    taskRepository.markPaused(taskId, "任务已取消")
+                }
+            }
             throw error
         } catch (error: Exception) {
             if (BiliDownloadRetryPolicy.shouldRetry(error, runAttemptCount, MAX_WORK_RETRIES)) {
+                if (taskId.isNotBlank()) {
+                    taskRepository.markQueued(taskId, "网络暂时不可用，等待自动重试", countAttempt = true)
+                }
                 Result.retry()
             } else {
+                if (taskId.isNotBlank()) {
+                    taskRepository.markFailed(taskId, error.message ?: "下载失败")
+                }
                 Result.failure(workDataOf(KEY_ERROR to (error.message ?: "下载失败")))
             }
         }
