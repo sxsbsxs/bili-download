@@ -179,7 +179,7 @@ class MainActivity : ComponentActivity() {
                 id,
                 info.outputData.getString(BiliDownloadWorker.KEY_ERROR) ?: "下载失败"
             )
-            WorkInfo.State.CANCELLED -> setDownloadState(id, ST_PAUSED, "已取消，可重新下载")
+            WorkInfo.State.CANCELLED -> setDownloadState(id, ST_PAUSED, "已取消 · 可继续下载")
         }
     }
 
@@ -235,6 +235,10 @@ class MainActivity : ComponentActivity() {
         workManager.pruneWork()
         downloadSpecs.remove(id)
         taskPrefs.edit().remove(id).apply()
+        val safeId = id.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
+        java.io.File(filesDir, "bilidl_transfers").listFiles()
+            ?.filter { it.name.startsWith("task_" + safeId) }
+            ?.forEach { it.delete() }
         val savedUri = savedFileUris.remove(id)
         if (deleteFile) {
             savedUri?.let { contentResolver.delete(it, null, null) }
@@ -295,8 +299,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onClearCacheClicked() {
-        val cache = java.io.File(cacheDir, "bilidl")
-        cache.deleteRecursively()
+        java.io.File(cacheDir, "bilidl").deleteRecursively()
+        java.io.File(filesDir, "bilidl_transfers").deleteRecursively()
         toast("临时下载缓存已清理")
     }
 
