@@ -650,7 +650,7 @@ class MainActivity : ComponentActivity() {
         selectTab(0)
         refreshAccountUi()
         refreshDownloadList()
-        setDownloadPathText("Download/BiliDl  ›")
+        setDownloadPathText("Download/BiliDl")
         backgroundExecutor.execute {
             val cookie = SecureCookieStore.load(this)
             if (!cookie.isNullOrBlank()) {
@@ -1002,7 +1002,7 @@ class MainActivity : ComponentActivity() {
                 r.bar.visibility = View.VISIBLE
                 r.info.text = if (item.info.isEmpty()) "${item.progress}%" else "${item.progress}%  ·  ${item.info}"
                 r.info.setTextColor(sub)
-                r.primary.text = "暂停"
+                r.primary.text = "取消"
             }
             ST_WAITING -> {
                 r.bar.visibility = View.VISIBLE
