@@ -27,7 +27,8 @@ This file is a status sheet, not a marketing checklist.
 | Batch task management | Implemented | Select multiple tasks to pause, retry, or delete; batch retry updates Room before WorkManager enqueue |
 | Saved resource browser | Implemented | Completed task rows open saved MP4, danmaku XML, and subtitle SRT resources |
 | Task execution history | Implemented | View timestamped status changes and failure/retry messages per task |
-| Live CDN/device QA | Not verified by CI | CI validates FLV tag merging with generated fixtures and HTTP transport against a local range server; it cannot prove Bilibili's current `try_look` entitlement, real CDN responses, danmaku/subtitle availability, or playback on every phone |
+| Anonymous playurl live probe | Implemented, manual | `scripts/probe-anonymous-playurl.py` resolves a public BV/part and checks whether the live anonymous WBI DASH response contains quality id 80; the manual workflow requires a real BV input |
+| Live CDN/device QA | Not verified by normal CI | Automated tests validate FLV tag merging with generated fixtures and HTTP transport against a local range server; manual live probe validates a selected public video. Danmaku/subtitle availability and playback on physical phones still require representative live content/device runs |
 
 ## Release gate
 
