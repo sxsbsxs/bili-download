@@ -4,8 +4,7 @@ This file is a status sheet, not a marketing checklist.
 
 | Area | Current state | Notes |
 |---|---|---|
-| Bilibili links | Implemented | b23.tv, BV, av, ep, ss; paste up to 50 links for batch import with per-link error isolation |
-| Multipart batch download | Implemented | A visible action queues all P parts; each part is inspected independently |
+| Bilibili links | Implemented | b23.tv, BV, av, ep, ss; paste up to 50 links for batch import with per-link error isolation |\n| Multipart batch download | Implemented | A visible action queues all P parts; each part is inspected independently |
 | Video metadata | Implemented | Public view/season metadata is shown even if anonymous playurl quality discovery is denied; CID, page list, title and uploader are independent of login |
 | Cover art | Implemented with fallback | Protocol-relative/http cover URLs are upgraded to HTTPS, downloaded with image headers and sampled decoding; missing/blocked covers use a bundled placeholder instead of a blank panel |
 | Available qualities | Implemented with anonymous fallback | Read only from Bilibili playurl data; an empty anonymous quality list no longer blocks parsing or queue creation, and the worker resolves fresh playurl data at download time. Login only affects Bilibili's account-specific entitlements |

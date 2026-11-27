@@ -81,12 +81,12 @@ class MainActivity : ComponentActivity() {
                     VideoParseState.Idle -> Unit
                     VideoParseState.Loading -> {
                         setBusy(parseBtn, true)
-                        parseBtn.text = "解析中…"
+                        parseBtn.text = "正在解析…"
                     }
                     is VideoParseState.Success -> {
                         val video = state.video
                         setBusy(parseBtn, false)
-                        parseBtn.text = "解析 / 分析"
+                        parseBtn.text = "解析视频"
                         parsedVideo = video
                         selectedQualityId = preferredQualityId(video.qualities)
                         val pageHint = if (video.pages.size > 1) {
@@ -110,7 +110,7 @@ class MainActivity : ComponentActivity() {
                     }
                     is VideoParseState.Error -> {
                         setBusy(parseBtn, false)
-                        parseBtn.text = "解析 / 分析"
+                        parseBtn.text = "解析视频"
                         showError(state.message)
                     }
                 }
@@ -161,7 +161,7 @@ class MainActivity : ComponentActivity() {
 
             runOnUiThread {
                 setBusy(parseBtn, false)
-                parseBtn.text = "解析"
+                parseBtn.text = "解析视频"
 
                 prepared.forEach { spec ->
                     val id = "bili_batch_" + java.util.UUID.randomUUID()
@@ -744,7 +744,7 @@ class MainActivity : ComponentActivity() {
 
     // ===================== 供后端调用的界面方法 =====================
     fun showVideo(title: String, uploader: String, cover: Bitmap?, meta: String = "") = runOnUiThread {
-        setBusy(parseBtn, false); parseBtn.text = "解析"
+        setBusy(parseBtn, false); parseBtn.text = "解析视频"
         titleTv.text = title
         upTv.text = "UP主 · $uploader"
         metaTv.text = meta
@@ -764,7 +764,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun showError(message: String) = runOnUiThread {
-        setBusy(parseBtn, false); parseBtn.text = "解析"
+        setBusy(parseBtn, false); parseBtn.text = "解析视频"
         parsedVideo = null
         resultCard.visibility = View.GONE
         say(message, err)
@@ -867,7 +867,7 @@ class MainActivity : ComponentActivity() {
 
     // ---------------- 状态 ----------------
     private lateinit var pages: List<View>
-    private val tabIcon = ArrayList<TextView>()
+    private val tabIcon = ArrayList<ImageView>()
     private val tabText = ArrayList<TextView>()
 
     private var loggedIn = false
@@ -897,7 +897,6 @@ class MainActivity : ComponentActivity() {
     // 首页
     private lateinit var input: EditText
     private lateinit var parseBtn: Button
-    private lateinit var loginTip: View
     private lateinit var resultCard: LinearLayout
     private lateinit var coverIv: ImageView
     private lateinit var titleTv: TextView
@@ -916,9 +915,14 @@ class MainActivity : ComponentActivity() {
         var sizeText = ""
     }
     private class Row(
-        val root: LinearLayout, val cover: ImageView, val title: TextView,
-        val info: TextView, val bar: ProgressBar, val primary: TextView,
-        val selection: TextView, val resources: TextView, val history: TextView
+        val root: LinearLayout,
+        val cover: ImageView,
+        val title: TextView,
+        val info: TextView,
+        val bar: ProgressBar,
+        val primary: TextView,
+        val selection: TextView,
+        val more: TextView
     )
     private val items = LinkedHashMap<String, DlItem>()
     private val rows = HashMap<String, Row>()
@@ -979,9 +983,9 @@ class MainActivity : ComponentActivity() {
 
     private fun card() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = shape(Color.WHITE, 20)
-        setPadding(dp(18), dp(18), dp(18), dp(18))
-        elevation = dp(2).toFloat()
+        background = shape(Color.WHITE, 18, Color.parseColor("#E8EBF0"))
+        setPadding(dp(16), dp(16), dp(16), dp(16))
+        elevation = 0f
     }
 
     private fun sideMargins(top: Int = 16) = LinearLayout.LayoutParams(match, wrap).apply {
@@ -991,30 +995,35 @@ class MainActivity : ComponentActivity() {
     private fun pillButton(label: String, filled: Boolean) = Button(this).apply {
         text = label
         isAllCaps = false
-        textSize = 15f
+        textSize = 14f
         typeface = Typeface.DEFAULT_BOLD
         stateListAnimator = null
+        minHeight = dp(48)
+        minimumHeight = dp(48)
+        setPadding(dp(18), 0, dp(18), 0)
+        backgroundTintList = null
         if (filled) {
             setTextColor(Color.WHITE)
-            background = rippleShape(pink, 24)
+            background = rippleShape(pink, 14)
         } else {
-            setTextColor(pink)
-            background = rippleShape(Color.WHITE, 24, pink)
+            setTextColor(ink)
+            background = rippleShape(Color.WHITE, 14, Color.parseColor("#E1E5EB"))
         }
     }
 
     private fun chip(label: String, filled: Boolean) = TextView(this).apply {
         text = label
-        textSize = 13f
+        textSize = 12f
         typeface = Typeface.DEFAULT_BOLD
         gravity = Gravity.CENTER
-        setPadding(dp(16), dp(8), dp(16), dp(8))
+        minHeight = dp(36)
+        setPadding(dp(12), dp(8), dp(12), dp(8))
         if (filled) {
             setTextColor(Color.WHITE)
-            background = rippleShape(pink, 18)
+            background = rippleShape(pink, 12)
         } else {
-            setTextColor(sub)
-            background = rippleShape(field, 18)
+            setTextColor(ink)
+            background = rippleShape(Color.WHITE, 12, Color.parseColor("#E5E8ED"))
         }
     }
 
@@ -1037,26 +1046,22 @@ class MainActivity : ComponentActivity() {
     private fun header(title: String, subtitle: String, bottom: Int): LinearLayout {
         val h = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(26), dp(24), dp(bottom))
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TL_BR, intArrayOf(pink, pinkLight)
-            ).apply {
-                val r = dp(32).toFloat()
-                cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
-            }
+            setPadding(dp(22), dp(22), dp(22), dp(bottom.coerceAtMost(22)))
+            setBackgroundColor(Color.TRANSPARENT)
         }
         h.addView(TextView(this).apply {
             text = title
-            textSize = 26f
+            textSize = 23f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
+            setTextColor(ink)
+            includeFontPadding = false
         })
-        if (subtitle.isNotEmpty()) {
+        if (subtitle.isNotBlank()) {
             h.addView(TextView(this).apply {
                 text = subtitle
-                textSize = 13f
-                setTextColor(Color.parseColor("#CCFFFFFF"))
-                setPadding(0, dp(6), 0, 0)
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(5), 0, 0)
             })
         }
         return h
@@ -1067,9 +1072,8 @@ class MainActivity : ComponentActivity() {
     ): Pair<LinearLayout, List<TextView>> {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = shape(Color.WHITE, 26)
-            elevation = dp(4).toFloat()
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = shape(field, 12)
+            setPadding(dp(3), dp(3), dp(3), dp(3))
         }
         val tvs = labels.mapIndexed { i, l ->
             val t = TextView(this).apply {
@@ -1088,7 +1092,7 @@ class MainActivity : ComponentActivity() {
     private fun styleSegs(tvs: List<TextView>, selected: Int) {
         tvs.forEachIndexed { i, t ->
             if (i == selected) {
-                t.background = shape(pink, 22); t.setTextColor(Color.WHITE)
+                t.background = shape(Color.WHITE, 10, Color.parseColor("#E7EAF0")); t.setTextColor(ink)
             } else {
                 t.background = null; t.setTextColor(sub)
             }
@@ -1187,33 +1191,53 @@ class MainActivity : ComponentActivity() {
         val navBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.WHITE)
-            elevation = dp(8).toFloat()
+            setPadding(0, dp(5), 0, dp(3))
+            elevation = dp(2).toFloat()
         }
         val names = listOf("首页", "下载", "设置")
-        val icons = listOf("🏠", "📥", "⚙️")
-        for (i in 0..2) {
+        val icons = listOf(
+            R.drawable.ic_nav_home,
+            R.drawable.ic_nav_download,
+            R.drawable.ic_nav_settings
+        )
+        for (i in names.indices) {
             val tab = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { selectTab(i) }
             }
-            val ic = TextView(this).apply { text = icons[i]; textSize = 20f; gravity = Gravity.CENTER }
-            val tx = TextView(this).apply { text = names[i]; textSize = 11f; gravity = Gravity.CENTER }
-            tab.addView(ic)
-            tab.addView(tx)
-            tab.setOnClickListener { selectTab(i) }
-            tabIcon.add(ic); tabText.add(tx)
+            val icon = ImageView(this).apply {
+                setImageResource(icons[i])
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                contentDescription = names[i]
+            }
+            val label = TextView(this).apply {
+                text = names[i]
+                textSize = 11f
+                gravity = Gravity.CENTER
+                setPadding(0, dp(3), 0, 0)
+            }
+            tab.addView(icon, LinearLayout.LayoutParams(dp(22), dp(22)))
+            tab.addView(label)
+            tabIcon.add(icon)
+            tabText.add(label)
             navBar.addView(tab, LinearLayout.LayoutParams(0, match, 1f))
         }
         return navBar
     }
 
     private fun selectTab(i: Int) {
-        pages.forEachIndexed { idx, p -> p.visibility = if (idx == i) View.VISIBLE else View.GONE }
-        for (k in 0 until 3) {
-            val on = k == i
-            tabIcon[k].alpha = if (on) 1f else 0.4f
-            tabText[k].setTextColor(if (on) pink else sub)
-            tabText[k].typeface = if (on) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        pages.forEachIndexed { idx, page ->
+            page.visibility = if (idx == i) View.VISIBLE else View.GONE
+        }
+        for (index in 0 until 3) {
+            val selected = index == i
+            val tint = if (selected) pink else sub
+            tabIcon[index].imageTintList = ColorStateList.valueOf(tint)
+            tabText[index].setTextColor(tint)
+            tabText[index].typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         }
     }
 
@@ -1239,73 +1263,128 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun buildHome(): View {
-        val scroll = ScrollView(this).apply { setBackgroundColor(bg); isVerticalScrollBarEnabled = false }
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(bg)
+            isVerticalScrollBarEnabled = false
+            clipToPadding = false
+        }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(col, match, wrap)
-        col.addView(header("B站下载器", "简单、清晰的 Bilibili 视频保存工具", 56), match, wrap)
+
+        val brand = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(22), dp(22), dp(22), dp(18))
+        }
+        val brandIcon = ImageView(this).apply {
+            setImageResource(R.mipmap.ic_launcher)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+        brand.addView(brandIcon, LinearLayout.LayoutParams(dp(40), dp(40)))
+        val brandCopy = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        brandCopy.addView(TextView(this).apply {
+            text = "BiliDl"
+            textSize = 21f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            includeFontPadding = false
+        })
+        brandCopy.addView(TextView(this).apply {
+            text = "B站视频下载"
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(0, dp(3), 0, 0)
+        })
+        brand.addView(brandCopy, LinearLayout.LayoutParams(wrap, wrap).apply {
+            leftMargin = dp(11)
+        })
+        col.addView(brand, match, wrap)
 
         val inputCard = card()
         input = EditText(this).apply {
-            hint = "粘贴 B站链接（多条按行粘贴）或 BV / av / ep / ss 号"
+            hint = "粘贴 B 站视频或番剧链接"
             setHintTextColor(sub)
             setTextColor(ink)
             textSize = 15f
-            minLines = 3
-            maxLines = 5
-            gravity = Gravity.TOP
-            background = shape(field, 14)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
+            minLines = 2
+            maxLines = 4
+            gravity = Gravity.TOP or Gravity.START
+            background = shape(Color.WHITE, 13, Color.parseColor("#E1E5EB"))
+            setPadding(dp(14), dp(13), dp(14), dp(13))
             setSelectAllOnFocus(false)
+            includeFontPadding = false
         }
+        inputCard.addView(input, LinearLayout.LayoutParams(match, wrap))
 
-        val pasteBtn = pillButton("粘贴", false)
-        val clearBtn = pillButton("清空", false)
-        parseBtn = pillButton("解析", true)
-        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        btnRow.addView(pasteBtn, LinearLayout.LayoutParams(0, dp(48), 1f).apply { rightMargin = dp(8) })
-        btnRow.addView(clearBtn, LinearLayout.LayoutParams(0, dp(48), 0.9f).apply { rightMargin = dp(8) })
-        btnRow.addView(parseBtn, LinearLayout.LayoutParams(0, dp(48), 1.2f))
-        inputCard.addView(input, match, wrap)
-        inputCard.addView(btnRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(14) })
-        inputCard.addView(TextView(this).apply {
-            text = "支持视频 / 番剧链接；多条链接按行粘贴后点解析即可批量下载"
-            textSize = 12f
-            setTextColor(sub)
-            setPadding(dp(2), dp(10), dp(2), 0)
-        }, match, wrap)
-        col.addView(inputCard, sideMargins().apply { topMargin = -dp(32) })
-
-        val tip = LinearLayout(this).apply {
+        val inputActions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = shape(Color.parseColor("#FFF3F6"), 16)
-            setPadding(dp(16), dp(10), dp(10), dp(10))
         }
-        tip.addView(TextView(this).apply {
-            text = "不登录也能解析和尝试下载公开内容；登录只影响部分受限画质"
+        val helper = TextView(this).apply {
+            text = "支持多条链接批量导入"
             textSize = 12f
-            setTextColor(Color.parseColor("#A83F62"))
-        }, LinearLayout.LayoutParams(0, wrap, 1f))
-        val goLogin = chip("可选登录", true)
-        goLogin.setOnClickListener { showLogin() }
-        tip.addView(goLogin)
-        loginTip = tip
-        col.addView(tip, sideMargins(16))
+            setTextColor(sub)
+        }
+        inputActions.addView(helper, LinearLayout.LayoutParams(0, wrap, 1f))
+        val pasteBtn = chip("粘贴", false)
+        inputActions.addView(pasteBtn, LinearLayout.LayoutParams(wrap, dp(38)))
+        inputCard.addView(inputActions, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(10)
+        })
+
+        parseBtn = pillButton("解析视频", true)
+        inputCard.addView(parseBtn, LinearLayout.LayoutParams(match, dp(48)).apply {
+            topMargin = dp(12)
+        })
+        col.addView(inputCard, sideMargins(4))
 
         resultCard = card().apply { visibility = View.GONE }
+        val previewRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         coverIv = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            background = shape(Color.parseColor("#E8EAF0"), 14)
+            background = shape(Color.parseColor("#E8EAF0"), 12)
             clipToOutline = true
         }
+        previewRow.addView(coverIv, LinearLayout.LayoutParams(dp(112), dp(76)))
+        val videoCopy = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
         titleTv = TextView(this).apply {
-            textSize = 17f
+            textSize = 15f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(ink)
-            setLineSpacing(0f, 1.15f)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            setLineSpacing(0f, 1.12f)
+            includeFontPadding = false
         }
-        upTv = TextView(this).apply { textSize = 13f; setTextColor(sub) }
-        metaTv = TextView(this).apply { textSize = 12f; setTextColor(sub) }
+        upTv = TextView(this).apply {
+            textSize = 12f
+            setTextColor(sub)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        metaTv = TextView(this).apply {
+            textSize = 11f
+            setTextColor(sub)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        videoCopy.addView(titleTv, match, wrap)
+        videoCopy.addView(upTv, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(5)
+        })
+        videoCopy.addView(metaTv, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(3)
+        })
+        previewRow.addView(videoCopy, LinearLayout.LayoutParams(0, wrap, 1f).apply {
+            leftMargin = dp(12)
+        })
+        resultCard.addView(previewRow, match, wrap)
 
         val qualityRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1314,10 +1393,12 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(14), 0, dp(14), 0)
         }
         qualityRow.addView(TextView(this).apply {
-            text = "优先画质"; textSize = 14f; setTextColor(ink)
+            text = "下载画质"
+            textSize = 13f
+            setTextColor(ink)
         }, LinearLayout.LayoutParams(0, wrap, 1f))
         homeQualityTv = TextView(this).apply {
-            textSize = 14f
+            textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(pink)
             text = qualityText()
@@ -1326,9 +1407,7 @@ class MainActivity : ComponentActivity() {
         qualityRow.setOnClickListener { showAvailableQualities() }
 
         dlBtn = pillButton("下载当前视频", true)
-        dlBtn.setOnClickListener {
-            onDownloadClicked()
-        }
+        dlBtn.setOnClickListener { onDownloadClicked() }
         dlAllPagesBtn = pillButton("下载全部分P", false).apply {
             visibility = View.GONE
             setOnClickListener {
@@ -1337,44 +1416,45 @@ class MainActivity : ComponentActivity() {
                 else downloadAllPages(current, current.pages)
             }
         }
-
-        resultCard.addView(coverIv, LinearLayout.LayoutParams(match, dp(190)))
-        resultCard.addView(titleTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(14) })
-        resultCard.addView(upTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(4) })
-        resultCard.addView(metaTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(2) })
-        resultCard.addView(qualityRow, LinearLayout.LayoutParams(match, dp(46)).apply { topMargin = dp(14) })
-        resultCard.addView(dlBtn, LinearLayout.LayoutParams(match, dp(50)).apply { topMargin = dp(12) })
-        resultCard.addView(dlAllPagesBtn, LinearLayout.LayoutParams(match, dp(46)).apply { topMargin = dp(8) })
-        col.addView(resultCard, sideMargins())
+        resultCard.addView(qualityRow, LinearLayout.LayoutParams(match, dp(44)).apply {
+            topMargin = dp(14)
+        })
+        resultCard.addView(dlBtn, LinearLayout.LayoutParams(match, dp(48)).apply {
+            topMargin = dp(10)
+        })
+        resultCard.addView(dlAllPagesBtn, LinearLayout.LayoutParams(match, dp(44)).apply {
+            topMargin = dp(8)
+        })
+        col.addView(resultCard, sideMargins(12))
 
         statusTv = TextView(this).apply {
-            textSize = 14f
+            textSize = 13f
             gravity = Gravity.CENTER
             visibility = View.GONE
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setLineSpacing(0f, 1.15f)
         }
         col.addView(statusTv, LinearLayout.LayoutParams(match, wrap).apply {
-            topMargin = dp(16); leftMargin = dp(24); rightMargin = dp(24); bottomMargin = dp(32)
+            topMargin = dp(8)
+            leftMargin = dp(20)
+            rightMargin = dp(20)
+            bottomMargin = dp(28)
         })
 
         pasteBtn.setOnClickListener {
-            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val t = cm.primaryClip?.takeIf { it.itemCount > 0 }
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val text = clipboard.primaryClip?.takeIf { it.itemCount > 0 }
                 ?.getItemAt(0)?.coerceToText(this)?.toString()
-            if (t.isNullOrBlank()) {
+            if (text.isNullOrBlank()) {
                 say("剪贴板是空的", sub)
             } else {
-                input.setText(t)
+                input.setText(text)
                 input.setSelection(input.text.length)
                 resultCard.visibility = View.GONE
-                say("已粘贴剪贴板内容，点击解析继续", sub)
+                say("已粘贴链接", sub)
             }
         }
-        clearBtn.setOnClickListener {
-            input.setText("")
-            resultCard.visibility = View.GONE
-            say("", sub)
-            input.requestFocus()
-        }
+
         input.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -1383,6 +1463,7 @@ class MainActivity : ComponentActivity() {
             }
             override fun afterTextChanged(s: android.text.Editable?) {}
         })
+
         parseBtn.setOnClickListener {
             val rawInput = input.text.toString()
             val batchTargets = BiliLinkParser.extractAll(rawInput)
@@ -1393,21 +1474,21 @@ class MainActivity : ComponentActivity() {
                 }
                 resultCard.visibility = View.GONE
                 setBusy(parseBtn, true)
-                parseBtn.text = "批量准备中…"
-                say("正在逐条解析 " + batchTargets.size + " 个链接，失败项不会影响其他任务", sub)
+                parseBtn.text = "正在准备批量任务…"
+                say("正在逐条解析，失败项不会影响其他任务", sub)
                 downloadBatchLinks(batchTargets)
                 return@setOnClickListener
             }
 
             val target = normalizeBiliInput(rawInput)
             if (target == null) {
-                say("请粘贴有效的 B站链接，或输入 BV / av / ep / ss 编号", err)
+                say("请粘贴有效的 B 站链接，或输入 BV / av / ep / ss 编号", err)
                 return@setOnClickListener
             }
             input.setText(target)
             input.setSelection(input.text.length)
             setBusy(parseBtn, true)
-            parseBtn.text = "解析中…"
+            parseBtn.text = "正在解析…"
             resultCard.visibility = View.GONE
             say("", sub)
             onParseClicked(target)
@@ -1420,14 +1501,14 @@ class MainActivity : ComponentActivity() {
         val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
 
         val hdr = FrameLayout(this)
-        hdr.addView(header("下载管理", "任务进度会实时显示在这里", 52), FrameLayout.LayoutParams(match, wrap))
+        hdr.addView(header("下载管理", "管理当前下载与已保存的视频", 18), FrameLayout.LayoutParams(match, wrap))
         clearTv = TextView(this).apply {
             text = "清空已完成"
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            background = shape(Color.parseColor("#33FFFFFF"), 16)
+            setTextColor(pink)
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            background = shape(Color.WHITE, 12, Color.parseColor("#E5E8ED"))
             visibility = View.GONE
             setOnClickListener { confirmClear() }
         }
@@ -1438,9 +1519,9 @@ class MainActivity : ComponentActivity() {
             text = "批量选择"
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            background = shape(Color.parseColor("#33FFFFFF"), 16)
+            setTextColor(pink)
+            setPadding(dp(12), dp(7), dp(12), dp(7))
+            background = shape(Color.WHITE, 12, Color.parseColor("#E5E8ED"))
             setOnClickListener { setBatchMode(!batchMode) }
         }
         hdr.addView(batchTv, FrameLayout.LayoutParams(wrap, wrap, Gravity.TOP or Gravity.END).apply {
@@ -1453,7 +1534,7 @@ class MainActivity : ComponentActivity() {
             refreshDownloadList()
         }
         dlSegs = segs
-        page.addView(segBox, sideMargins().apply { topMargin = -dp(26) })
+        page.addView(segBox, sideMargins(8))
 
         batchBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1484,8 +1565,9 @@ class MainActivity : ComponentActivity() {
             setTextColor(ink)
             textSize = 14f
             isSingleLine = true
-            background = shape(Color.WHITE, 14, Color.parseColor("#E8EAF0"))
-            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = shape(Color.WHITE, 12, Color.parseColor("#E1E5EB"))
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            minHeight = dp(46)
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -1509,29 +1591,29 @@ class MainActivity : ComponentActivity() {
 
     private fun emptyView(): View = TextView(this).apply {
         text = when {
-            downloadQuery.isNotBlank() -> "🔎\n\n没有找到匹配的任务\n试试其他关键词"
-            dlFilter == 0 -> "📭\n\n暂无进行中的任务\n去首页粘贴 B站链接开始下载"
-            dlFilter == 1 -> "📂\n\n还没有已完成的下载"
-            else -> "✨\n\n目前没有失败任务"
+            downloadQuery.isNotBlank() -> "没有找到匹配的任务\n试试其他关键词"
+            dlFilter == 0 -> "暂无下载任务\n粘贴 B 站链接即可开始"
+            dlFilter == 1 -> "这里会显示已完成的视频"
+            else -> "暂无失败任务"
         }
         textSize = 14f
         setTextColor(sub)
         gravity = Gravity.CENTER
-        setLineSpacing(0f, 1.2f)
-        setPadding(0, dp(64), 0, 0)
+        setLineSpacing(0f, 1.25f)
+        setPadding(dp(16), dp(64), dp(16), dp(24))
     }
 
     private fun buildRow(item: DlItem): Row {
-        val root = card().apply { setPadding(dp(14), dp(14), dp(14), dp(12)) }
+        val root = card()
         val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val cover = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            background = shape(Color.parseColor("#E8EAF0"), 12)
+            background = shape(Color.parseColor("#E8EAF0"), 10)
             clipToOutline = true
         }
         val selection = TextView(this).apply {
             text = "○"
-            textSize = 21f
+            textSize = 20f
             gravity = Gravity.CENTER
             setTextColor(pink)
             visibility = View.GONE
@@ -1539,49 +1621,51 @@ class MainActivity : ComponentActivity() {
         }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val title = TextView(this).apply {
-            textSize = 15f
+            textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(ink)
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
+            includeFontPadding = false
         }
-        val info = TextView(this).apply { textSize = 12f; setTextColor(sub) }
+        val info = TextView(this).apply {
+            textSize = 12f
+            setTextColor(sub)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }
         col.addView(title, match, wrap)
-        col.addView(info, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
-        top.addView(selection, LinearLayout.LayoutParams(dp(28), dp(70)))
-        top.addView(cover, LinearLayout.LayoutParams(dp(112), dp(70)))
-        top.addView(col, LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(12) })
+        col.addView(info, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(5) })
+        top.addView(selection, LinearLayout.LayoutParams(dp(28), dp(68)))
+        top.addView(cover, LinearLayout.LayoutParams(dp(104), dp(68)))
+        top.addView(col, LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(11) })
 
         val progress = bar()
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
+            gravity = Gravity.CENTER_VERTICAL
         }
         val primary = chip("暂停", true)
-        val resources = chip("资源", false)
-        val history = chip("记录", false)
-        val delete = chip("删除", false)
-        actions.addView(delete, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
-        actions.addView(history, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
-        actions.addView(resources, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
-        actions.addView(primary)
+        val more = chip("更多", false)
+        actions.addView(primary, LinearLayout.LayoutParams(0, dp(38), 1f))
+        actions.addView(more, LinearLayout.LayoutParams(wrap, dp(38)).apply { leftMargin = dp(8) })
 
         root.addView(top, match, wrap)
-        root.addView(progress, LinearLayout.LayoutParams(match, dp(6)).apply { topMargin = dp(12) })
+        root.addView(progress, LinearLayout.LayoutParams(match, dp(5)).apply { topMargin = dp(12) })
         root.addView(actions, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(10) })
 
         primary.setOnClickListener { onPrimary(item.id) }
-        delete.setOnClickListener { confirmDelete(item.id) }
+        more.setOnClickListener { showTaskActions(item.id) }
         selection.setOnClickListener { toggleDownloadSelection(item.id) }
-        resources.setOnClickListener { showTaskResources(item.id) }
-        history.setOnClickListener { showTaskHistory(item.id) }
         root.setOnLongClickListener {
             if (!batchMode) setBatchMode(true)
             if (item.id !in selectedDownloadIds) toggleDownloadSelection(item.id)
             true
         }
-        return Row(root, cover, title, info, progress, primary, selection, resources, history)
+        return Row(root, cover, title, info, progress, primary, selection, more)
     }
+
+
 
     private fun bindRow(item: DlItem) {
         val r = rows[item.id] ?: return
@@ -1591,11 +1675,11 @@ class MainActivity : ComponentActivity() {
         r.selection.text = if (selected) "✓" else "○"
         r.selection.setTextColor(if (selected) Color.WHITE else pink)
         r.selection.background = if (selected) shape(pink, 24) else null
+        r.more.visibility = if (batchMode) View.GONE else View.VISIBLE
         val c = item.cover
         if (c != null) r.cover.setImageBitmap(c)
         else r.cover.setImageResource(R.drawable.ic_video_placeholder)
         r.bar.progress = item.progress
-        r.resources.visibility = if (item.state == ST_DONE) View.VISIBLE else View.GONE
         when (item.state) {
             ST_DOWNLOADING -> {
                 r.bar.visibility = View.VISIBLE
@@ -1626,7 +1710,6 @@ class MainActivity : ComponentActivity() {
                 r.info.text = item.sizeText
                 r.info.setTextColor(ok)
                 r.primary.text = "打开"
-                r.resources.visibility = View.VISIBLE
             }
         }
     }
@@ -1720,6 +1803,24 @@ class MainActivity : ComponentActivity() {
                 selectedDownloadIds.clear()
                 setBatchMode(false)
                 toast("已删除 " + ids.size + " 个任务记录")
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showTaskActions(id: String) {
+        val item = items[id] ?: return
+        val actions = mutableListOf("查看任务记录")
+        if (item.state == ST_DONE) actions += "打开已保存资源"
+        actions += "删除任务"
+        AlertDialog.Builder(this)
+            .setTitle("任务操作")
+            .setItems(actions.toTypedArray()) { _, index ->
+                when (actions[index]) {
+                    "查看任务记录" -> showTaskHistory(id)
+                    "打开已保存资源" -> showTaskResources(id)
+                    "删除任务" -> confirmDelete(id)
+                }
             }
             .setNegativeButton("取消", null)
             .show()
@@ -1851,9 +1952,9 @@ class MainActivity : ComponentActivity() {
         })
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = shape(Color.WHITE, 20)
+            background = shape(Color.WHITE, 18, Color.parseColor("#E8EBF0"))
             clipToOutline = true
-            elevation = dp(2).toFloat()
+            elevation = 0f
         }
         rowViews.forEachIndexed { i, r ->
             if (i > 0) {
@@ -1870,7 +1971,7 @@ class MainActivity : ComponentActivity() {
         val scroll = ScrollView(this).apply { setBackgroundColor(bg); isVerticalScrollBarEnabled = false }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(col, match, wrap)
-        col.addView(header("设置", "", 56), match, wrap)
+        col.addView(header("设置", "下载偏好与账号", 18), match, wrap)
 
         // 账号卡片
         avatarIv = ImageView(this).apply {
@@ -1986,7 +2087,6 @@ class MainActivity : ComponentActivity() {
             avatarIv.setImageDrawable(null)
             avatarTv.visibility = View.VISIBLE
         }
-        loginTip.visibility = if (loggedIn) View.GONE else View.VISIBLE
     }
 
     // ================= 登录页 =================
@@ -1999,11 +2099,11 @@ class MainActivity : ComponentActivity() {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         page.addView(col, match, wrap)
 
-        val h = header("登录哔哩哔哩", "授权后尝试获取账号可访问的画质", 56)
+        val h = header("登录哔哩哔哩", "登录是可选的，只影响账号可访问的内容", 18)
         h.addView(TextView(this).apply {
             text = "←  返回"
             textSize = 15f
-            setTextColor(Color.WHITE)
+            setTextColor(pink)
             setPadding(0, 0, dp(16), dp(14))
             setOnClickListener { hideLogin() }
         }, 0)
@@ -2011,7 +2111,7 @@ class MainActivity : ComponentActivity() {
 
         val (segBox, segs) = buildSegmented(listOf("扫码登录", "Cookie 登录")) { i -> selectLoginSeg(i) }
         loginSegs = segs
-        col.addView(segBox, sideMargins().apply { topMargin = -dp(26) })
+        col.addView(segBox, sideMargins(8))
 
         // 扫码面板
         qrPanel = card()
