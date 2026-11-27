@@ -8,6 +8,7 @@ BiliDl is a Bilibili-specific Android application. It does not embed a generic v
 - app/src/main/java/com/example/bilidl/MainViewModel.kt and VideoParseState.kt: lifecycle-owned link parsing and typed home-screen state.
 - app/src/main/java/com/example/bilidl/LoginViewModel.kt and LoginUiState.kt: QR polling, SESSDATA verification/storage and cancellation-aware authorization state.
 - app/src/main/java/com/example/bilidl/DownloadsViewModel.kt: durable task, retry, resource-history and deletion commands for the download-management screen.
+- app/src/main/java/com/example/bilidl/SettingsViewModel.kt: the persisted settings snapshot and the only UI-facing owner of download preference reads/writes.
 - app/src/main/java/com/example/bilidl/common/content: Bilibili-native content models, segmented-danmaku protobuf decoding, and XML/SRT exporters.
 - app/src/main/java/com/example/bilidl/BiliMediaMuxer.kt: Android MediaExtractor/MediaMuxer sample interleaving and native MP4 structural validation.
 - app/src/main/java/com/example/bilidl/DownloadProgressPolicy.kt: pure progress publication and durable-snapshot throttling policy.
