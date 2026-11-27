@@ -2,7 +2,7 @@ name: Source checks
 
 on:
   push:
-    branches: [main, feature/anonymous-playurl-storage-http-tests]
+    branches: [main, feature/anonymous-playurl-storage-http-tests, feature/multisegment-durl-flv-merge]
   pull_request:
     branches: [main, refactor/nonblocking-download-progress]
 
@@ -27,3 +27,7 @@ jobs:
         run: git show --check --oneline --format= HEAD
       - name: Check project layout and dependencies
         run: bash scripts/check-project.sh
+      - name: Test anonymous playurl probe helpers
+        run: |
+          python3 -m py_compile scripts/probe-anonymous-playurl.py
+          python3 -m unittest discover -s scripts/tests -v

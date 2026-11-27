@@ -15,7 +15,25 @@ import java.io.IOException
  * Android MediaMuxer output and native structural validation.
  */
 internal object BiliMediaMuxer {
+    fun isValidMp4(file: File): Boolean =
+        file.isFile && file.length() > 0L &&
+            runCatching {
+                inspectMp4OrThrow(file, "MP4")
+                containsTrack(file, "video/")
+            }.getOrDefault(false)
+
+    fun isValidM4a(file: File): Boolean =
+        file.isFile && file.length() > 0L &&
+            runCatching {
+                inspectMp4OrThrow(file, "M4A")
+                containsTrack(file, "audio/mp4a-latm")
+            }.getOrDefault(false)
+
     fun muxToMp4(videoFile: File, audioFile: File?, output: File) {
+        output.parentFile?.mkdirs()
+        if (output.exists() && !output.delete()) {
+            throw IOException("无法清理上一次未完成的 MP4 临时文件")
+        }
         val videoExtractor = MediaExtractor()
         val audioExtractor = if (audioFile != null) MediaExtractor() else null
         var muxer: MediaMuxer? = null
@@ -118,6 +136,19 @@ internal object BiliMediaMuxer {
         val report = NativeTransfer.inspectMp4(file.absolutePath)
         if (!report.startsWith("OK:")) {
             throw IOException("$formatLabel 容器结构校验失败：$report")
+        }
+    }
+
+    private fun containsTrack(file: File, mimePrefix: String): Boolean {
+        val extractor = MediaExtractor()
+        return try {
+            extractor.setDataSource(file.absolutePath)
+            (0 until extractor.trackCount).any { index ->
+                extractor.getTrackFormat(index).getString(MediaFormat.KEY_MIME)
+                    .orEmpty().startsWith(mimePrefix, ignoreCase = true)
+            }
+        } finally {
+            try { extractor.release() } catch (_: Exception) {}
         }
     }
 

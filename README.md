@@ -6,8 +6,8 @@ BiliDl is a Bilibili-focused Android downloader. The project uses its own Bilibi
 
 - Parse Bilibili b23.tv, BV, av, ep, and ss links.
 - Resolve video metadata, all multipart page CIDs, cover art, and the quality options returned by Bilibili for each page.
-- Use Bilibili's WBI-signed playurl endpoint to request DASH streams and show only qualities actually returned by the API. Anonymous playurl requests include the observed `try_look=1` preview parameter; whether Bilibili grants 720P/1080P still depends on the video and the live API response.
-- Download video and audio streams with BiliDl's own HTTP Range scheduler: parallel chunks, per-chunk checkpoints, validator-aware resume, bounded retry, and sequential fallback.
+- Use Bilibili's WBI-signed playurl endpoint to request DASH streams and show only qualities actually returned by the API. Anonymous playurl requests use the observed `try_look=1` preview parameter and probe the 1080P tier when discovering qualities; if DASH has no usable source, the repository retries the legacy direct format. Anonymous playurl requests include the observed `try_look=1` preview parameter; whether Bilibili grants 720P/1080P still depends on the video and the live API response.
+- Download video and audio streams with BiliDl's own HTTP Range scheduler: parallel chunks, per-chunk checkpoints, validator-aware resume, bounded retry, backup CDN fallback, and sequential fallback. Legacy multi-part DURL FLV streams are downloaded per segment and merged at the FLV tag/timestamp level.
 - Mux DASH video/audio into MP4, interleaving samples by presentation timestamp without re-encoding. AAC audio-only downloads are packaged as M4A.
 - Support Bilibili web QR authorization and optional SESSDATA entry. Credentials are validated against Bilibili and encrypted locally with Android Keystore AES-GCM.
 - Handle multipart video selection, batch task creation, WorkManager background tasks, foreground progress notifications, and task restoration.
@@ -28,6 +28,14 @@ BiliDl is a Bilibili-focused Android downloader. The project uses its own Bilibi
 
 The application remains a single Gradle app module for now; package boundaries are being established before any independent module split.
 
+## Live API verification
+
+To verify anonymous preview quality against a specific public video without sending a Cookie:
+
+    python3 scripts/probe-anonymous-playurl.py --bvid BV1xxxxxxxxx --page 1 --require-1080p
+
+The probe resolves the selected part CID, obtains the current WBI key, signs a `try_look=1` / `qn=80` DASH request, and reports the actual video track IDs returned by Bilibili. It does not download or publish the video. The same check is available as the manually triggered **Bilibili anonymous playurl smoke test** GitHub Actions workflow. For a fuller Android-side run, trigger **Live Bilibili Android pipeline smoke test** with a public BV number; it downloads the selected DASH stream on an Android emulator, remuxes and inspects the MP4, then exercises the live danmaku and subtitle endpoints and the production XML/SRT exporters.
+
 ## Build
 
 Open the repository in Android Studio with JDK 17 and Gradle 8.13 support, or run:
@@ -39,7 +47,7 @@ The Android workflow also builds the native C++ inspector tests, verifies the pa
 
 ## Current limits
 
-- Multi-segment legacy DURL/FLV streams are reported as unsupported rather than concatenated unsafely.
+- Multi-segment legacy DURL is supported for FLV: segment order, alternate CDN URLs, FLV tag sizes, timestamps, and duplicate metadata are handled during merge. Multi-segment non-FLV direct streams remain rejected until their container boundaries are identified.
 - DASH remuxing still uses Android MediaExtractor/MediaMuxer. Device codec availability and behavior may vary.
 - Danmaku/subtitle export is implemented but still needs live Bilibili CDN and on-device validation across representative public and account-authorized videos.
 - The native MP4 inspector validates the container and sample-table references; it does not decode frames or prove audio/video perceptual quality.

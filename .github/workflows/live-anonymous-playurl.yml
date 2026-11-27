@@ -1,0 +1,39 @@
+name: Bilibili anonymous playurl smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      bvid:
+        description: Public Bilibili BV number to test (no Cookie is sent)
+        required: true
+        type: string
+      page:
+        description: 1-based part number
+        required: true
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  anonymous-playurl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate probe script
+        run: python -m py_compile scripts/probe-anonymous-playurl.py
+      - name: Test WBI signing and probe parameters
+        run: python -m unittest discover -s scripts/tests -v
+      - name: Probe anonymous DASH 1080P
+        env:
+          BVID: ${{ inputs.bvid }}
+          PAGE: ${{ inputs.page }}
+        run: |
+          python scripts/probe-anonymous-playurl.py \
+            --bvid "$BVID" \
+            --page "$PAGE" \
+            --require-1080p

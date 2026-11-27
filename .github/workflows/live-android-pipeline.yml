@@ -1,0 +1,59 @@
+name: Live Bilibili Android pipeline smoke test
+
+on:
+  workflow_dispatch:
+    inputs:
+      bvid:
+        description: Public Bilibili BV number (no Cookie is sent)
+        required: true
+        type: string
+      quality:
+        description: Maximum requested quality ID (64 = 720P, 80 = 1080P)
+        required: true
+        default: "64"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  android-emulator-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BVID: ${{ inputs.bvid }}
+      QUALITY: ${{ inputs.quality }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+      - name: Install NDK and CMake
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "cmake;3.22.1"
+      - name: Run live API, HTTP transfer, MediaMuxer and sidecar smoke test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: |
+            gradle --no-daemon :app:connectedDebugAndroidTest \
+              -Pandroid.testInstrumentationRunnerArguments.bvid="$BVID" \
+              -Pandroid.testInstrumentationRunnerArguments.quality="$QUALITY"
+      - name: Upload Android instrumentation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bili-live-android-smoke-report
+          path: |
+            app/build/reports/androidTests/
+            app/build/outputs/androidTest-results/
+          if-no-files-found: ignore

@@ -19,6 +19,7 @@ class BiliPlayUrlRequestPolicyTest {
         assertEquals("1", parameters["try_look"])
         assertEquals("80", parameters["qn"])
         assertEquals("4048", parameters["fnval"])
+        assertEquals("pc", parameters["platform"])
         assertEquals("BV1xx411c7mD", parameters["bvid"])
         assertFalse(parameters.containsKey("avid"))
     }
@@ -50,6 +51,23 @@ class BiliPlayUrlRequestPolicyTest {
         assertFalse(parameters.containsKey("try_look"))
         assertEquals("123", parameters["avid"])
         assertEquals("80", parameters["qn"])
+    }
+
+    @Test
+    fun legacyFallbackCanRequestDirectFlvWithoutLosingAnonymousPreviewFlag() {
+        val parameters = BiliPlayUrlRequestPolicy.createParameters(
+            bvid = "BV1xx411c7mD",
+            aid = 1L,
+            cid = 100L,
+            quality = 80,
+            hasSessionCookie = false,
+            fnval = "0"
+        )
+
+        assertEquals("0", parameters["fnval"])
+        assertEquals("pc", parameters["platform"])
+        assertEquals("80", parameters["qn"])
+        assertEquals("1", parameters["try_look"])
     }
 
     @Test

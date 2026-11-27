@@ -44,7 +44,7 @@ data class BiliVideo(
 data class BiliPlaySource(
     val videoUrls: List<String>,
     val audioUrls: List<String>,
-    val directUrls: List<String>,
+    val directSegments: List<BiliDirectSegment>,
     val format: String,
     val videoMime: String,
     val audioMime: String
@@ -133,7 +133,7 @@ class BiliRepository(
         val owner = data.optJSONObject("owner")?.optString("name").orEmpty().ifBlank { "未知 UP 主" }
         val duration = page?.optInt("duration") ?: data.optInt("duration")
         val coverUrl = data.optString("pic").takeIf { it.startsWith("http") }
-        val play = getPlayInfo(actualBvid, aid, cid, 0)
+        val play = getPlayInfoForInspection(actualBvid, aid, cid)
         val qualities = parseQualities(play)
         return BiliVideo(
             actualBvid, aid, cid, pageIndex + 1, title, owner, duration,
@@ -163,7 +163,7 @@ class BiliRepository(
         val coverUrl = selected.optString("cover")
             .takeIf { it.startsWith("http") }
             ?: result.optString("cover").takeIf { it.startsWith("http") }
-        val play = getPlayInfo(bvid, aid, cid, 0)
+        val play = getPlayInfoForInspection(bvid, aid, cid)
         return BiliVideo(
             bvid, aid, cid, 1, title,
             result.optJSONObject("up_info")?.optString("uname") ?: "番剧",
@@ -172,47 +172,93 @@ class BiliRepository(
     }
 
     fun getPlaySource(video: BiliVideo, requestedQuality: Int): BiliPlaySource {
-        val root = getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality)
-        val data = checkedData(root)
-        val dash = data.optJSONObject("dash")
-        if (dash != null) {
-            val videos = dash.optJSONArray("video") ?: JSONArray()
-            val audios = dash.optJSONArray("audio") ?: JSONArray()
-            val videoCandidates = (0 until videos.length()).mapNotNull { videos.optJSONObject(it) }
-            val selectedIndex = BiliQualitySelector.chooseIndex(
-                videoCandidates.map { it.optInt("id") },
-                videoCandidates.map { it.optString("codecs") },
-                requestedQuality
-            ) ?: throw IOException(
-                "B站没有返回所选画质或更低画质，已停止下载以避免超出你的画质选择"
-            )
-            val videoItem = videoCandidates[selectedIndex]
-            val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
-            val audioItem = audioCandidates.firstOrNull {
-                it.optString("codecs").contains("mp4a", ignoreCase = true)
-            } ?: audioCandidates.maxByOrNull { it.optInt("id") }
+        // DASH is the preferred format. Older videos may expose only the
+        // legacy DURL response, which requires fnval=0 rather than fnval=4048.
+        val dashAttempt = runCatching {
+            checkedData(getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality))
+        }
+        val dashData = dashAttempt.getOrNull()
+        var dashQualityUnavailable = false
 
-            val videoUrls = videoItem?.let { streamUrls(it) }.orEmpty()
-            val audioUrls = audioItem?.let { streamUrls(it) }.orEmpty()
-            if (videoUrls.isNotEmpty()) {
-                return BiliPlaySource(
-                    videoUrls, audioUrls, emptyList(),
-                    "dash", videoItem?.optString("mimeType").orEmpty(),
-                    audioItem?.optString("mimeType").orEmpty()
+        if (dashData != null) {
+            val dash = dashData.optJSONObject("dash")
+            if (dash != null) {
+                val videos = dash.optJSONArray("video") ?: JSONArray()
+                val audios = dash.optJSONArray("audio") ?: JSONArray()
+                val videoCandidates = (0 until videos.length()).mapNotNull { videos.optJSONObject(it) }
+                val selectedIndex = BiliQualitySelector.chooseIndex(
+                    videoCandidates.map { it.optInt("id") },
+                    videoCandidates.map { it.optString("codecs") },
+                    requestedQuality
                 )
+                if (selectedIndex != null) {
+                    val videoItem = videoCandidates[selectedIndex]
+                    val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
+                    val audioItem = audioCandidates.firstOrNull {
+                        it.optString("codecs").contains("mp4a", ignoreCase = true)
+                    } ?: audioCandidates.maxByOrNull { it.optInt("id") }
+
+                    val videoUrls = streamUrls(videoItem)
+                    val audioUrls = audioItem?.let { streamUrls(it) }.orEmpty()
+                    if (videoUrls.isNotEmpty()) {
+                        return BiliPlaySource(
+                            videoUrls, audioUrls, emptyList(),
+                            "dash", videoItem.optString("mimeType"),
+                            audioItem?.optString("mimeType").orEmpty()
+                        )
+                    }
+                } else {
+                    dashQualityUnavailable = videoCandidates.isNotEmpty()
+                }
             }
+
+            directPlaySource(
+                dashData,
+                defaultFormat = "mp4",
+                requestedQuality = requestedQuality
+            )?.let { return it }
         }
 
-        val durl = data.optJSONArray("durl") ?: JSONArray()
-        val direct = (0 until durl.length()).mapNotNull { durl.optJSONObject(it) }
-            .mapNotNull { it.optString("url").takeIf(String::isNotBlank) }
-        if (direct.isNotEmpty()) {
-            return BiliPlaySource(
-                emptyList(), emptyList(), direct,
-                data.optString("format", "mp4"), "video/mp4", ""
-            )
+        // Do not strand older multi-part FLV videos merely because a DASH
+        // response exists but contains no usable video track or no durl field.
+        val legacyAttempt = runCatching {
+            checkedData(getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality, fnval = "0"))
         }
+        val legacyData = legacyAttempt.getOrNull()
+        if (legacyData != null) {
+            directPlaySource(
+                legacyData,
+                defaultFormat = "flv",
+                requestedQuality = requestedQuality
+            )?.let { return it }
+        }
+
+        if (dashQualityUnavailable) {
+            throw IOException("B站没有返回所选画质或更低画质，且旧式 DURL 接口也没有可用视频流")
+        }
+        dashAttempt.exceptionOrNull()?.let { throw it }
+        legacyAttempt.exceptionOrNull()?.let { throw it }
         throw IOException("B站没有返回可下载的音视频流；可能需要登录或该视频限制下载")
+    }
+
+    private fun directPlaySource(
+        data: JSONObject,
+        defaultFormat: String,
+        requestedQuality: Int
+    ): BiliPlaySource? {
+        val durl = data.optJSONArray("durl") ?: return null
+        val returnedQuality = data.optInt("quality", 0)
+        if (!BiliDirectQualityPolicy.canUse(requestedQuality, returnedQuality)) return null
+        val direct = BiliDurlParser.parse(durl)
+        if (direct.isEmpty()) return null
+        return BiliPlaySource(
+            emptyList(),
+            emptyList(),
+            direct,
+            data.optString("format").ifBlank { defaultFormat },
+            "video/mp4",
+            ""
+        )
     }
 
     /**
@@ -357,7 +403,13 @@ class BiliRepository(
         }
     }
 
-    private fun getPlayInfo(bvid: String?, aid: Long, cid: Long, quality: Int): JSONObject {
+    private fun getPlayInfo(
+        bvid: String?,
+        aid: Long,
+        cid: Long,
+        quality: Int,
+        fnval: String = "4048"
+    ): JSONObject {
         // Capture the credential once so the anonymous preview flag and the
         // Cookie header cannot disagree if the session changes mid-request.
         val sessionCookie = cookieProvider()
@@ -366,7 +418,8 @@ class BiliRepository(
             aid = aid,
             cid = cid,
             quality = quality,
-            hasSessionCookie = !sessionCookie.isNullOrBlank()
+            hasSessionCookie = !sessionCookie.isNullOrBlank(),
+            fnval = fnval
         )
 
         // try_look is included before WBI signing. It is an undocumented
@@ -376,6 +429,24 @@ class BiliRepository(
             "https://api.bilibili.com/x/player/wbi/playurl?$signedQuery",
             sessionCookie
         )
+    }
+
+    private fun getPlayInfoForInspection(bvid: String?, aid: Long, cid: Long): JSONObject {
+        val dashAttempt = runCatching { getPlayInfo(bvid, aid, cid, 0) }
+        val dash = dashAttempt.getOrNull()
+        if (dash != null && runCatching { parseQualities(dash).isNotEmpty() }.getOrDefault(false)) {
+            return dash
+        }
+
+        val legacyAttempt = runCatching { getPlayInfo(bvid, aid, cid, 0, fnval = "0") }
+        val legacy = legacyAttempt.getOrNull()
+        if (legacy != null && runCatching { parseQualities(legacy).isNotEmpty() }.getOrDefault(false)) {
+            return legacy
+        }
+
+        return dash ?: legacy ?: throw (dashAttempt.exceptionOrNull()
+            ?: legacyAttempt.exceptionOrNull()
+            ?: IOException("B站没有返回播放信息"))
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
@@ -396,6 +467,13 @@ class BiliRepository(
             val id = accepted.optInt(i)
             val label = descriptions.optString(i).ifBlank { qualityLabel(id) }
             if (id > 0) labels.putIfAbsent(id, label)
+        }
+
+        if (labels.isEmpty()) {
+            // Legacy fnval=0 playurl responses may only expose the selected
+            // direct-stream quality at the top level.
+            val actualQuality = data.optInt("quality")
+            if (actualQuality > 0) labels[actualQuality] = qualityLabel(actualQuality)
         }
 
         if (labels.isEmpty()) {

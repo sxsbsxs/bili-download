@@ -71,17 +71,24 @@ object BiliDownloadEngine {
         val videoTemp = File(workDir, prefix + "_video.m4s")
         val audioTemp = File(workDir, prefix + "_audio.m4s")
         val directTemp = File(workDir, prefix + "_direct")
+        val directSegmentTemps = source.directSegments.mapIndexed { index, _ ->
+            File(workDir, prefix + "_durl_${index.toString().padStart(3, '0')}.flv")
+        }
         try {
             if (source.videoUrls.isNotEmpty()) {
                 if (audioOnly) {
                     if (source.audioUrls.isEmpty()) throw IOException("这个视频没有独立音频流")
-                    progress(3, "正在下载音频流")
-                    downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
-                        progress(3 + value * 78 / 100, "音频流")
+                    if (BiliMediaMuxer.isValidM4a(audioOutputTemp)) {
+                        progress(84, "恢复已封装的 M4A")
+                    } else {
+                        progress(3, "正在下载音频流")
+                        downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
+                            progress(3 + value * 78 / 100, "音频流")
+                        }
+                        progress(84, "正在封装 M4A")
+                        DownloadStoragePolicy.ensureAvailable(workDir, audioTemp.length())
+                        BiliMediaMuxer.muxAudioToM4a(audioTemp, audioOutputTemp)
                     }
-                    progress(84, "正在封装 M4A")
-                    DownloadStoragePolicy.ensureAvailable(workDir, audioTemp.length())
-                    BiliMediaMuxer.muxAudioToM4a(audioTemp, audioOutputTemp)
                     val saved = publishFile(
                         context,
                         audioOutputTemp,
@@ -111,26 +118,33 @@ object BiliDownloadEngine {
                         warnings = sidecars.warnings
                     )
                 } else {
-                    progress(2, "正在下载视频流")
-                    downloadStream(source.videoUrls, videoTemp, cookie, concurrency, isCancelled) { value ->
-                        progress(2 + (value * if (source.audioUrls.isEmpty()) 92 else 45) / 100, "视频流")
-                    }
-                    if (source.audioUrls.isNotEmpty()) {
-                        progress(49, "正在下载音频流")
-                        downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
-                            progress(49 + value * 44 / 100, "音频流")
+                    // Do not accidentally mux an audio fragment left by an earlier
+                    // audio-capable attempt when the current playurl is video-only.
+                    if (source.audioUrls.isEmpty()) deleteTransferArtifact(audioTemp)
+                    if (BiliMediaMuxer.isValidMp4(finalTemp)) {
+                        progress(95, "恢复已封装的 MP4")
+                    } else {
+                        progress(2, "正在下载视频流")
+                        downloadStream(source.videoUrls, videoTemp, cookie, concurrency, isCancelled) { value ->
+                            progress(2 + (value * if (source.audioUrls.isEmpty()) 92 else 45) / 100, "视频流")
                         }
+                        if (source.audioUrls.isNotEmpty()) {
+                            progress(49, "正在下载音频流")
+                            downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
+                                progress(49 + value * 44 / 100, "音频流")
+                            }
+                        }
+                        progress(95, "正在封装 MP4")
+                        val sourceTrackBytes = videoTemp.length() +
+                            audioTemp.takeIf { it.exists() }?.length().orZero()
+                        DownloadStoragePolicy.ensureAvailable(workDir, sourceTrackBytes)
+                        BiliMediaMuxer.muxToMp4(videoTemp, audioTemp.takeIf { it.exists() }, finalTemp)
+                        // Only discard resumable source tracks after muxing succeeded.
+                        // If MediaStore publication fails, the validated MP4 remains
+                        // and is reused by the next worker attempt.
+                        deleteTransferArtifact(videoTemp)
+                        deleteTransferArtifact(audioTemp)
                     }
-                    progress(95, "正在封装 MP4")
-                    val sourceTrackBytes = videoTemp.length() +
-                        audioTemp.takeIf { it.exists() }?.length().orZero()
-                    DownloadStoragePolicy.ensureAvailable(workDir, sourceTrackBytes)
-                    BiliMediaMuxer.muxToMp4(videoTemp, audioTemp.takeIf { it.exists() }, finalTemp)
-                    // Only discard resumable source tracks after muxing succeeded.
-                    // This frees the largest temporary files before MediaStore's
-                    // publication copy, reducing peak storage pressure.
-                    deleteTransferArtifact(videoTemp)
-                    deleteTransferArtifact(audioTemp)
                     val saved = publishFile(context, finalTemp, video.title, "mp4", "video/mp4")
                     val sidecars = exportSidecars(
                         context = context,
@@ -153,14 +167,83 @@ object BiliDownloadEngine {
                 }
             } else {
                 if (audioOnly) throw IOException("当前视频接口只返回完整视频流，暂不支持单独提取音频")
-                if (source.directUrls.size != 1) {
-                    throw IOException("B站仅返回多段旧式 FLV 流；为避免生成损坏文件，本版暂不拼接此格式")
+                val segments = source.directSegments
+                if (segments.isEmpty()) throw IOException("B站没有返回可下载的直连分段")
+                val isFlv = source.format.contains("flv", true)
+                if (segments.size > 1 && !isFlv) {
+                    throw IOException("B站返回了多段非 FLV 直连流；当前尚未确认其分段容器边界，已停止以避免损坏文件")
                 }
-                progress(2, "正在下载视频")
-                downloadStream(source.directUrls, directTemp, cookie, concurrency, isCancelled) { value ->
-                    progress(value, "视频流")
+
+                progress(2, if (segments.size > 1) "正在下载旧式视频分段" else "正在下载视频")
+                if (segments.size == 1) {
+                    val reusableDirect = directTemp.isFile && if (isFlv) {
+                        BiliFlvSegmentMerger.isValid(directTemp)
+                    } else {
+                        BiliMediaMuxer.isValidMp4(directTemp)
+                    }
+                    if (reusableDirect) {
+                        progress(96, "恢复已下载的视频文件")
+                    } else {
+                        downloadStream(
+                            segments.single().urls,
+                            directTemp,
+                            cookie,
+                            concurrency,
+                            isCancelled
+                        ) { value ->
+                            progress(value.coerceIn(0, 99), "视频流")
+                        }
+                    }
+                } else {
+                    val alreadyMerged = directTemp.isFile && BiliFlvSegmentMerger.isValid(directTemp)
+                    if (!alreadyMerged) {
+                        directTemp.delete()
+                        val weights = segments.map { segment ->
+                            when {
+                                segment.sizeBytes > 0L -> segment.sizeBytes.toDouble()
+                                segment.lengthMs > 0L -> segment.lengthMs.toDouble()
+                                else -> 1.0
+                            }
+                        }
+                        val totalWeight = weights.sum().coerceAtLeast(1.0)
+                        var completedWeight = 0.0
+                        segments.forEachIndexed { index, segment ->
+                            if (isCancelled()) throw CancellationException("下载已取消")
+                            val target = directSegmentTemps[index]
+                            downloadStream(
+                                segment.urls,
+                                target,
+                                cookie,
+                                concurrency,
+                                isCancelled
+                            ) { value ->
+                                val combined = (completedWeight + weights[index] * value.coerceIn(0, 100) / 100.0) /
+                                    totalWeight
+                                progress((2 + combined * 86).toInt().coerceIn(2, 89),
+                                    "旧式视频分段 ${index + 1}/${segments.size}")
+                            }
+                            completedWeight += weights[index]
+                        }
+
+                        val mergedSourceBytes = directSegmentTemps.sumOf { it.length() }
+                        DownloadStoragePolicy.ensureAvailable(workDir, mergedSourceBytes)
+                        progress(90, "正在合并旧式 FLV 分段")
+                        BiliFlvSegmentMerger.merge(
+                            segments.mapIndexed { index, segment ->
+                                BiliFlvSegmentInput(
+                                    file = directSegmentTemps[index],
+                                    declaredDurationMs = segment.lengthMs
+                                )
+                            },
+                            directTemp
+                        )
+                        // The merged FLV is structurally verified and durable. Source
+                        // fragments can now be released before the MediaStore copy.
+                        directSegmentTemps.forEach(::deleteTransferArtifact)
+                    }
                 }
-                val ext = if (source.format.contains("flv", true)) "flv" else "mp4"
+
+                val ext = if (isFlv) "flv" else "mp4"
                 val mime = if (ext == "flv") "video/x-flv" else "video/mp4"
                 val saved = publishFile(context, directTemp, video.title, ext, mime)
                 val sidecars = exportSidecars(
@@ -183,11 +266,14 @@ object BiliDownloadEngine {
                 )
             }
         } finally {
-            audioOutputTemp.delete()
+            if (completed || !BiliMediaMuxer.isValidM4a(audioOutputTemp)) {
+                audioOutputTemp.delete()
+            }
             if (completed) {
                 deleteTransferArtifact(videoTemp)
                 deleteTransferArtifact(audioTemp)
                 deleteTransferArtifact(directTemp)
+                directSegmentTemps.forEach(::deleteTransferArtifact)
                 finalTemp.delete()
             }
         }

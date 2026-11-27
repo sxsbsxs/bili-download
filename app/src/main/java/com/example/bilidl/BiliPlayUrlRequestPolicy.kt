@@ -13,7 +13,8 @@ internal object BiliPlayUrlRequestPolicy {
         aid: Long,
         cid: Long,
         quality: Int,
-        hasSessionCookie: Boolean
+        hasSessionCookie: Boolean,
+        fnval: String = "4048"
     ): LinkedHashMap<String, String> {
         val parameters = linkedMapOf<String, String>()
         if (!bvid.isNullOrBlank()) {
@@ -26,7 +27,10 @@ internal object BiliPlayUrlRequestPolicy {
         // request can negotiate a lower anonymous default before try_look is applied.
         val requestedQuality = if (!hasSessionCookie && quality <= 0) 80 else quality
         parameters["qn"] = requestedQuality.toString()
-        parameters["fnval"] = "4048"
+        parameters["fnval"] = fnval
+        // Keep the DASH request on the desktop/web player path. The HTML5
+        // platform negotiates MP4-only playback and is not our DASH pipeline.
+        parameters["platform"] = "pc"
         parameters["fourk"] = "1"
         parameters["web_location"] = "1315873"
         if (!hasSessionCookie) {
