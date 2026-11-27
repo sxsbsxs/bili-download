@@ -55,7 +55,7 @@ class BiliRepository(
             throw IOException("SESSDATA 无效或已过期，请重新授权")
         }
         val name = data.optString("uname").ifBlank { "B站用户" }
-        val vip = data.optJSONObject("vipStatus")?.optInt("vip_status", 0) == 1
+        val vip = data.optInt("vipStatus", 0) == 1
         return name to vip
     }
 
@@ -201,8 +201,9 @@ class BiliRepository(
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
+        val data = data.optJSONObject("data") ?: play
         val labels = linkedMapOf<Int, String>()
-        val support = play.optJSONArray("support_formats") ?: JSONArray()
+        val support = data.optJSONArray("support_formats") ?: JSONArray()
         for (i in 0 until support.length()) {
             val item = support.optJSONObject(i) ?: continue
             val id = item.optInt("quality")
@@ -211,8 +212,8 @@ class BiliRepository(
             if (id > 0 && label.isNotBlank()) labels[id] = label
         }
 
-        val accepted = play.optJSONArray("accept_quality") ?: JSONArray()
-        val descriptions = play.optJSONArray("accept_description") ?: JSONArray()
+        val accepted = data.optJSONArray("accept_quality") ?: JSONArray()
+        val descriptions = data.optJSONArray("accept_description") ?: JSONArray()
         for (i in 0 until accepted.length()) {
             val id = accepted.optInt(i)
             val label = descriptions.optString(i).ifBlank { qualityLabel(id) }
@@ -294,7 +295,7 @@ class BiliRepository(
 
     private fun md5(text: String): String {
         val bytes = MessageDigest.getInstance("MD5").digest(text.toByteArray(Charsets.UTF_8))
-        return bytes.joinToString("") { "%02x".format(Locale.US, it) }
+        return bytes.joinToString("") { "%02x".format(Locale.US, it.toInt() and 0xff) }
     }
 
     private fun checkedData(root: JSONObject, key: String = "data"): JSONObject {
