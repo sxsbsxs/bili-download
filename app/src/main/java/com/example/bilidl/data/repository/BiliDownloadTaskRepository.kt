@@ -111,7 +111,9 @@ class BiliDownloadTaskRepository private constructor(
                 taskId = taskId,
                 progress = nextProgress,
                 stage = stage.take(120),
-                detail = detail.take(1000)
+                detail = detail.take(1000),
+                now = System.currentTimeMillis(),
+                runningStatus = DownloadTaskStatus.RUNNING
             )
         }
     }
