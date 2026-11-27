@@ -32,6 +32,11 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.*
 import org.json.JSONObject
+import com.example.bilidl.data.local.entity.DownloadTaskEntity
+import com.example.bilidl.data.local.entity.DownloadTaskStatus
+import com.example.bilidl.data.repository.BiliDownloadTaskRepository
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.runBlocking
 
 /*
  * ===== 给后端开发者（GPT）的说明 =====
@@ -177,6 +182,31 @@ class MainActivity : ComponentActivity() {
             .put("downloadDanmaku", spec.downloadDanmaku)
             .put("downloadSubtitles", spec.downloadSubtitles)
         taskPrefs.edit().putString(id, value.toString()).apply()
+
+        // Keep SharedPreferences readable for upgrades, while Room becomes the
+        // durable index used by task history, retry and resource management.
+        val entity = DownloadTaskEntity(
+            taskId = id,
+            bvid = spec.video.bvid,
+            aid = spec.video.aid,
+            cid = spec.video.cid,
+            pageNumber = spec.video.page,
+            title = spec.video.title,
+            uploader = spec.video.uploader,
+            durationSeconds = spec.video.durationSeconds,
+            coverUrl = spec.video.coverUrl,
+            qualityId = spec.qualityId,
+            audioOnly = spec.audioOnly,
+            downloadDanmaku = spec.downloadDanmaku,
+            downloadSubtitles = spec.downloadSubtitles
+        )
+        backgroundExecutor.execute {
+            runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).registerTask(entity)
+                }
+            }
+        }
     }
 
     private fun handleWorkInfo(id: String, info: WorkInfo) {
@@ -233,7 +263,56 @@ class MainActivity : ComponentActivity() {
             )
             downloadSpecs[id] = spec
             if (!items.containsKey(id)) addDownload(id, video.title, null)
+            persistDownloadSpec(id, spec) // one-time migration for installations using the old task store
             observeUniqueWork(id)
+        }
+    }
+
+    private fun restoreRoomTasks() {
+        backgroundExecutor.execute {
+            val records = runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).getAllTasks()
+                }
+            }.getOrElse { emptyList() }
+
+            runOnUiThread {
+                records.forEach { task ->
+                    val video = BiliVideo(
+                        bvid = task.bvid,
+                        aid = task.aid,
+                        cid = task.cid,
+                        page = task.pageNumber,
+                        title = task.title,
+                        uploader = task.uploader,
+                        durationSeconds = task.durationSeconds,
+                        coverUrl = task.coverUrl,
+                        cover = null,
+                        qualities = emptyList()
+                    )
+                    val spec = DownloadSpec(
+                        video = video,
+                        qualityId = task.qualityId,
+                        audioOnly = task.audioOnly,
+                        downloadDanmaku = task.downloadDanmaku,
+                        downloadSubtitles = task.downloadSubtitles
+                    )
+                    downloadSpecs[task.taskId] = spec
+                    if (!items.containsKey(task.taskId)) addDownload(task.taskId, task.title, null)
+                    when (task.status) {
+                        DownloadTaskStatus.QUEUED, DownloadTaskStatus.RUNNING -> observeUniqueWork(task.taskId)
+                        DownloadTaskStatus.PAUSED -> setDownloadState(task.taskId, ST_PAUSED, task.detail)
+                        DownloadTaskStatus.FAILED -> failDownload(task.taskId, task.errorMessage ?: task.detail)
+                        DownloadTaskStatus.COMPLETED -> {
+                            task.outputUri?.let { savedFileUris[task.taskId] = Uri.parse(it) }
+                            finishDownload(
+                                task.taskId,
+                                task.outputSizeBytes?.let(BiliDownloadEngine::formatSize) ?: "已保存"
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -941,6 +1020,7 @@ class MainActivity : ComponentActivity() {
         refreshAccountUi()
         refreshDownloadList()
         restoreDownloadTasks()
+        restoreRoomTasks()
         setDownloadPathText("Download/BiliDl")
         backgroundExecutor.execute {
             val cookie = SecureCookieStore.load(this)
