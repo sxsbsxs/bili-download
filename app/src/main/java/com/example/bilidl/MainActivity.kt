@@ -161,15 +161,15 @@ class MainActivity : ComponentActivity() {
     private fun restoreDownloadTasks() {
         workManager.getWorkInfosByTagLiveData(DOWNLOAD_TAG).observe(this) { workInfos ->
             workInfos.forEach { info ->
-                val id = info.info.inputData.getString(BiliDownloadWorker.KEY_TASK_ID) ?: return@forEach
+                val id = info.inputData.getString(BiliDownloadWorker.KEY_TASK_ID) ?: return@forEach
                 if (!items.containsKey(id)) {
-                    val bvid = info.info.inputData.getString(BiliDownloadWorker.KEY_BVID)?.takeIf { it.isNotBlank() }
+                    val bvid = info.inputData.getString(BiliDownloadWorker.KEY_BVID)?.takeIf { it.isNotBlank() }
                     val video = BiliVideo(
                         bvid = bvid,
-                        aid = info.info.inputData.getLong(BiliDownloadWorker.KEY_AID, 0L),
-                        cid = info.info.inputData.getLong(BiliDownloadWorker.KEY_CID, 0L),
+                        aid = info.inputData.getLong(BiliDownloadWorker.KEY_AID, 0L),
+                        cid = info.inputData.getLong(BiliDownloadWorker.KEY_CID, 0L),
                         page = 1,
-                        title = info.info.inputData.getString(BiliDownloadWorker.KEY_TITLE).orEmpty(),
+                        title = info.inputData.getString(BiliDownloadWorker.KEY_TITLE).orEmpty(),
                         uploader = "",
                         durationSeconds = 0,
                         coverUrl = null,
@@ -178,8 +178,8 @@ class MainActivity : ComponentActivity() {
                     )
                     downloadSpecs[id] = DownloadSpec(
                         video,
-                        info.info.inputData.getInt(BiliDownloadWorker.KEY_QUALITY, 80),
-                        info.info.inputData.getBoolean(BiliDownloadWorker.KEY_AUDIO_ONLY, false)
+                        info.inputData.getInt(BiliDownloadWorker.KEY_QUALITY, 80),
+                        info.inputData.getBoolean(BiliDownloadWorker.KEY_AUDIO_ONLY, false)
                     )
                     addDownload(id, video.title, null)
                 }
