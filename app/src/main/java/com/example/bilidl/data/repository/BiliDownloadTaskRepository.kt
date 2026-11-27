@@ -35,6 +35,9 @@ class BiliDownloadTaskRepository private constructor(
     fun observeRecentEvents(taskId: String, limit: Int = 100) =
         events.observeRecent(taskId, limit)
 
+    suspend fun getRecentEvents(taskId: String, limit: Int = 100) =
+        events.getRecent(taskId, limit)
+
     suspend fun getTask(taskId: String): DownloadTaskEntity? = tasks.getById(taskId)
 
     suspend fun getAllTasks(): List<DownloadTaskEntity> = tasks.getAll()
