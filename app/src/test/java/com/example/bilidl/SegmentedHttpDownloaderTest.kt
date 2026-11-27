@@ -138,6 +138,27 @@ class SegmentedHttpDownloaderTest {
     }
 
     @Test
+    fun fallsBackToSequentialGetWhenCdnRejectsRangeRequests() = runBlocking {
+        val bytes = payload(192 * 1024)
+        LocalRangeServer(payload = bytes, rejectRangeRequests = true).use { server ->
+            val target = File(temporaryFolder.root, "sequential-after-range-403.bin")
+            SegmentedHttpDownloader.download(
+                urls = listOf(server.url),
+                target = target,
+                cookie = null,
+                concurrency = 2,
+                isCancelled = { false },
+                onProgress = {},
+                writerFactory = TestFileWriterFactory
+            )
+
+            assertArrayEquals(bytes, target.readBytes())
+            assertTrue(server.ranges.contains("bytes=0-${CHUNK_SIZE - 1}"))
+            assertTrue(server.ranges.any { it.isEmpty() })
+        }
+    }
+
+    @Test
     fun sendsTheActualVideoPageAsRefererToCdnRequests() = runBlocking {
         val bytes = payload(160 * 1024)
         val referer = "https://www.bilibili.com/video/BV1xx411c7mD?p=2"
@@ -250,7 +271,8 @@ private class LocalRangeServer(
     private val ignoreRanges: Boolean = false,
     private val statusCode: Int? = null,
     private val truncateFirstDataRange: String? = null,
-    private val rejectSingleByteProbe: Boolean = false
+    private val rejectSingleByteProbe: Boolean = false,
+    private val rejectRangeRequests: Boolean = false
 ) : Closeable {
     private val server = ServerSocket(0)
     private val running = AtomicBoolean(true)
@@ -299,6 +321,18 @@ private class LocalRangeServer(
                     ("HTTP/1.1 $statusCode Test Error\r\n" +
                         "Content-Length: ${body.size}\r\n" +
                         "Connection: close\r\n\r\n").toByteArray(Charsets.ISO_8859_1)
+                )
+                output.write(body)
+                output.flush()
+                return
+            }
+
+            if (rejectRangeRequests && range.isNotBlank()) {
+                val body = "range requests are not supported".toByteArray()
+                output.write(
+                    ("HTTP/1.1 403 Forbidden\\r\\n" +
+                        "Content-Length: ${body.size}\\r\\n" +
+                        "Connection: close\\r\\n\\r\\n").toByteArray(Charsets.ISO_8859_1)
                 )
                 output.write(body)
                 output.flush()
