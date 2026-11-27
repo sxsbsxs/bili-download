@@ -371,6 +371,33 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun showTaskHistory(id: String) {
+        backgroundExecutor.execute {
+            val events = runCatching {
+                runBlocking(Dispatchers.IO) {
+                    BiliDownloadTaskRepository.getInstance(applicationContext).getRecentEvents(id, 50)
+                }
+            }.getOrElse { emptyList() }
+            runOnUiThread {
+                if (isFinishing) return@runOnUiThread
+                if (events.isEmpty()) {
+                    toast("暂时没有任务状态记录")
+                    return@runOnUiThread
+                }
+                val lines = events.map { event ->
+                    val time = java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                        .format(java.util.Date(event.createdAt))
+                    time + "  ·  " + event.stage + "\n" + event.message
+                }.toTypedArray()
+                AlertDialog.Builder(this)
+                    .setTitle("任务执行记录")
+                    .setItems(lines, null)
+                    .setPositiveButton("关闭", null)
+                    .show()
+            }
+        }
+    }
+
     private fun showTaskResources(id: String) {
         backgroundExecutor.execute {
             val resources = runCatching {
@@ -854,7 +881,7 @@ class MainActivity : ComponentActivity() {
     private class Row(
         val root: LinearLayout, val cover: ImageView, val title: TextView,
         val info: TextView, val bar: ProgressBar, val primary: TextView,
-        val selection: TextView, val resources: TextView
+        val selection: TextView, val resources: TextView, val history: TextView
     )
     private val items = LinkedHashMap<String, DlItem>()
     private val rows = HashMap<String, Row>()
@@ -1480,8 +1507,10 @@ class MainActivity : ComponentActivity() {
         }
         val primary = chip("暂停", true)
         val resources = chip("资源", false)
+        val history = chip("记录", false)
         val delete = chip("删除", false)
         actions.addView(delete, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
+        actions.addView(history, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
         actions.addView(resources, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
         actions.addView(primary)
 
@@ -1493,12 +1522,13 @@ class MainActivity : ComponentActivity() {
         delete.setOnClickListener { confirmDelete(item.id) }
         selection.setOnClickListener { toggleDownloadSelection(item.id) }
         resources.setOnClickListener { showTaskResources(item.id) }
+        history.setOnClickListener { showTaskHistory(item.id) }
         root.setOnLongClickListener {
             if (!batchMode) setBatchMode(true)
             if (item.id !in selectedDownloadIds) toggleDownloadSelection(item.id)
             true
         }
-        return Row(root, cover, title, info, progress, primary, selection, resources)
+        return Row(root, cover, title, info, progress, primary, selection, resources, history)
     }
 
     private fun bindRow(item: DlItem) {
