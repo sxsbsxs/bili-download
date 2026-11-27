@@ -29,7 +29,8 @@ internal object SegmentedHttpDownloader {
     private data class Probe(
         val totalBytes: Long,
         val etag: String,
-        val lastModified: String
+        val lastModified: String,
+        val resourceKey: String
     )
 
     suspend fun download(
@@ -91,7 +92,10 @@ internal object SegmentedHttpDownloader {
             return Probe(
                 totalBytes = total,
                 etag = connection.getHeaderField("ETag").orEmpty(),
-                lastModified = connection.getHeaderField("Last-Modified").orEmpty()
+                lastModified = connection.getHeaderField("Last-Modified").orEmpty(),
+                resourceKey = runCatching {
+                    URL(url).let { it.host + it.path }
+                }.getOrDefault("")
             )
         } finally {
             connection.disconnect()
@@ -115,6 +119,7 @@ internal object SegmentedHttpDownloader {
             probe.totalBytes.toString(),
             probe.etag,
             probe.lastModified,
+            probe.resourceKey,
             CHUNK_SIZE.toString()
         ).joinToString("\n")
 
@@ -156,7 +161,7 @@ internal object SegmentedHttpDownloader {
                         val start = index.toLong() * CHUNK_SIZE
                         val end = minOf(total - 1L, start + CHUNK_SIZE - 1L)
                         val received = downloadRange(
-                            url, cookie, descriptor.fd, start, end,
+                            url, cookie, probe, descriptor.fd, start, end,
                             isCancelled
                         ) { bytes ->
                             val now = completedBytes.addAndGet(bytes)
@@ -166,6 +171,9 @@ internal object SegmentedHttpDownloader {
                         val expected = end - start + 1L
                         if (received != expected) throw IOException("分段长度不匹配：$received / $expected")
                         synchronized(lock) {
+                            if (!NativeTransfer.sync(descriptor.fd)) {
+                                throw IOException("分段写入同步失败")
+                            }
                             completed[index] = true
                             mapFile.writeText(completed.joinToString("") { if (it) "1" else "0" })
                         }
@@ -186,6 +194,7 @@ internal object SegmentedHttpDownloader {
     private suspend fun downloadRange(
         url: String,
         cookie: String?,
+        probe: Probe,
         fd: Int,
         start: Long,
         end: Long,
@@ -194,6 +203,8 @@ internal object SegmentedHttpDownloader {
     ): Long = withContext(Dispatchers.IO) {
         val connection = openConnection(url, cookie).apply {
             setRequestProperty("Range", "bytes=$start-$end")
+            val validator = probe.etag.ifBlank { probe.lastModified }
+            if (validator.isNotBlank()) setRequestProperty("If-Range", validator)
         }
         try {
             val status = connection.responseCode
