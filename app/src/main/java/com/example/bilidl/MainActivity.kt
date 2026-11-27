@@ -30,6 +30,7 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import org.json.JSONObject
 
 /*
  * ===== 给后端开发者（GPT）的说明 =====
@@ -97,6 +98,7 @@ class MainActivity : ComponentActivity() {
         )
         val id = "bili_" + System.currentTimeMillis()
         downloadSpecs[id] = spec
+        persistDownloadSpec(id, spec)
         addDownload(id, video.title, video.cover)
         enqueueDownload(id, spec)
         selectTab(1)
@@ -130,9 +132,31 @@ class MainActivity : ComponentActivity() {
 
         setDownloadState(id, ST_WAITING, "等待下载")
         workManager.enqueueUniqueWork("bilidl_" + id, ExistingWorkPolicy.REPLACE, request)
-        workManager.getWorkInfoByIdLiveData(request.id).observe(this) { info ->
+        observeUniqueWork(id)
+    }
+
+    private fun observeUniqueWork(id: String) {
+        workManager.getWorkInfosForUniqueWorkLiveData("bilidl_" + id).observe(this) { infos ->
+            val info = infos.firstOrNull { it.state == WorkInfo.State.RUNNING }
+                ?: infos.firstOrNull { it.state == WorkInfo.State.ENQUEUED || it.state == WorkInfo.State.BLOCKED }
+                ?: infos.firstOrNull()
             if (info != null) handleWorkInfo(id, info)
         }
+    }
+
+    private fun persistDownloadSpec(id: String, spec: DownloadSpec) {
+        val value = JSONObject()
+            .put("bvid", spec.video.bvid ?: "")
+            .put("aid", spec.video.aid)
+            .put("cid", spec.video.cid)
+            .put("page", spec.video.page)
+            .put("title", spec.video.title)
+            .put("uploader", spec.video.uploader)
+            .put("duration", spec.video.durationSeconds)
+            .put("coverUrl", spec.video.coverUrl ?: "")
+            .put("quality", spec.qualityId)
+            .put("audioOnly", spec.audioOnly)
+        taskPrefs.edit().putString(id, value.toString()).apply()
     }
 
     private fun handleWorkInfo(id: String, info: WorkInfo) {
@@ -206,6 +230,7 @@ class MainActivity : ComponentActivity() {
         workManager.cancelUniqueWork("bilidl_" + id)
         workManager.pruneWork()
         downloadSpecs.remove(id)
+        taskPrefs.edit().remove(id).apply()
         val savedUri = savedFileUris.remove(id)
         if (deleteFile) {
             savedUri?.let { contentResolver.delete(it, null, null) }
@@ -231,6 +256,7 @@ class MainActivity : ComponentActivity() {
 
     private fun onClearFinishedClicked() {
         val activeIds = items.keys
+        taskPrefs.all.keys.filter { it !in activeIds }.forEach { taskPrefs.edit().remove(it).apply() }
         downloadSpecs.keys.toList().filter { it !in activeIds }.forEach(downloadSpecs::remove)
         savedFileUris.keys.toList().filter { it !in activeIds }.forEach(savedFileUris::remove)
         workManager.pruneWork()
@@ -442,6 +468,9 @@ class MainActivity : ComponentActivity() {
 
     private val backgroundExecutor = Executors.newFixedThreadPool(2)
     private val workManager by lazy { WorkManager.getInstance(applicationContext) }
+    private val taskPrefs by lazy {
+        getSharedPreferences("download_tasks", Context.MODE_PRIVATE)
+    }
     private var parsedVideo: BiliVideo? = null
     private var selectedQualityId = 0
     private data class DownloadSpec(val video: BiliVideo, val qualityId: Int, val audioOnly: Boolean)
