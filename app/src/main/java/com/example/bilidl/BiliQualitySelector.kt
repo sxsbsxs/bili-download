@@ -21,3 +21,20 @@ internal object BiliQualitySelector {
             )
     }
 }
+
+/**
+ * Resume checkpoints are only safe when the server supplies a stable
+ * representation validator. Without ETag or Last-Modified we restart cleanly.
+ */
+internal object TransferCheckpointPolicy {
+    fun canReuse(
+        etag: String,
+        lastModified: String,
+        targetMatches: Boolean,
+        metadataMatches: Boolean,
+        mapMatches: Boolean
+    ): Boolean {
+        val hasStableValidator = etag.isNotBlank() || lastModified.isNotBlank()
+        return hasStableValidator && targetMatches && metadataMatches && mapMatches
+    }
+}
