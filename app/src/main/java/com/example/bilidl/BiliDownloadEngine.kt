@@ -83,9 +83,20 @@ object BiliDownloadEngine {
                         "m4a",
                         "audio/mp4"
                     )
-                    progress(100, "音频已保存")
+                    val sidecars = exportSidecars(
+                        context = context,
+                        workDir = workDir,
+                        prefix = prefix,
+                        repository = repository,
+                        video = video,
+                        downloadDanmaku = downloadDanmaku,
+                        downloadSubtitles = downloadSubtitles,
+                        isCancelled = isCancelled,
+                        progress = progress
+                    )
+                    progress(100, completionDetail("音频已保存", sidecars))
                     completed = true
-                    saved
+                    saved.copy(additionalFiles = sidecars.files, warnings = sidecars.warnings)
                 } else {
                     progress(2, "正在下载视频流")
                     downloadStream(source.videoUrls, videoTemp, cookie, concurrency, isCancelled) { value ->
