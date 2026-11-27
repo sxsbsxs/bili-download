@@ -71,12 +71,17 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread {
                     parsedVideo = video
                     selectedQualityId = preferredQualityId(video.qualities)
+                    val pageHint = if (video.pages.size > 1) {
+                        " · 共 " + video.pages.size + " P，点击选择或全部下载"
+                    } else {
+                        ""
+                    }
                     showVideo(
                         video.title,
                         video.uploader,
                         video.cover,
                         "第 " + video.page + " P · " + formatDuration(video.durationSeconds) +
-                            " · " + video.qualities.size + " 种可用画质"
+                            " · " + video.qualities.size + " 种可用画质" + pageHint
                     )
                     homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
                 }
@@ -420,6 +425,74 @@ class MainActivity : ComponentActivity() {
             ?: "自动"
     }
 
+    private fun pageUrl(video: BiliVideo, page: BiliPage): String {
+        val identity = video.bvid?.takeIf { it.isNotBlank() } ?: "av" + video.aid
+        return "https://www.bilibili.com/video/" + identity + "?p=" + page.pageNumber
+    }
+
+    private fun showAvailablePages() {
+        val video = parsedVideo ?: return
+        val pages = video.pages.sortedBy { it.pageNumber }
+        if (pages.size <= 1) return
+
+        val labels = pages.map { page ->
+            "P" + page.pageNumber + " · " + page.part + " · " + formatDuration(page.durationSeconds)
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("选择视频分P")
+            .setItems(labels) { _, which ->
+                onParseClicked(pageUrl(video, pages[which]))
+            }
+            .setNeutralButton("下载全部 " + pages.size + " P") { _, _ ->
+                downloadAllPages(video, pages)
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun downloadAllPages(video: BiliVideo, pages: List<BiliPage>) {
+        if (pages.isEmpty()) return
+        toast("正在逐P获取画质并准备下载任务…")
+        val audioOnly = prefs.getBoolean("audio_only", false)
+        backgroundExecutor.execute {
+            val prepared = ArrayList<DownloadSpec>()
+            val skipped = ArrayList<Int>()
+            val repository = BiliRepository { SecureCookieStore.load(this) }
+            for (page in pages.sortedBy { it.pageNumber }) {
+                try {
+                    // Fetch each P independently so its available quality list is respected.
+                    val partVideo = repository.inspect(pageUrl(video, page))
+                    val quality = preferredQualityId(partVideo.qualities)
+                    prepared += DownloadSpec(partVideo, quality, audioOnly)
+                } catch (_: Exception) {
+                    skipped += page.pageNumber
+                }
+            }
+
+            runOnUiThread {
+                val batchId = System.currentTimeMillis()
+                prepared.forEachIndexed { index, spec ->
+                    val id = "bili_" + batchId + "_" + spec.video.page + "_" + index
+                    downloadSpecs[id] = spec
+                    persistDownloadSpec(id, spec)
+                    addDownload(id, spec.video.title, spec.video.cover)
+                    enqueueDownload(id, spec)
+                }
+                if (prepared.isNotEmpty()) selectTab(1)
+                val message = buildString {
+                    append("已加入 ")
+                    append(prepared.size)
+                    append("/")
+                    append(pages.size)
+                    append(" 个分P任务")
+                    if (skipped.isNotEmpty()) append("；跳过 P" + skipped.joinToString(", P"))
+                }
+                toast(message)
+            }
+        }
+    }
+
     private fun showAvailableQualities() {
         val video = parsedVideo
         if (video == null || video.qualities.isEmpty()) {
@@ -448,6 +521,10 @@ class MainActivity : ComponentActivity() {
         upTv.text = "UP主 · $uploader"
         metaTv.text = meta
         metaTv.visibility = if (meta.isEmpty()) View.GONE else View.VISIBLE
+        val hasMultiplePages = (parsedVideo?.pages?.size ?: 0) > 1
+        metaTv.isClickable = hasMultiplePages
+        metaTv.setTextColor(if (hasMultiplePages) pink else sub)
+        metaTv.setOnClickListener { if (hasMultiplePages) showAvailablePages() }
         if (cover != null) coverIv.setImageBitmap(cover) else coverIv.setImageDrawable(null)
         resultCard.visibility = View.VISIBLE
         parsedVideo?.let { homeQualityTv.text = qualityLabelForSelection(it) + "  ›" }
