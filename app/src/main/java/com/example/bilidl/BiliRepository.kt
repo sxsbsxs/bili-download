@@ -212,7 +212,11 @@ class BiliRepository(
                 }
             }
 
-            directPlaySource(dashData, defaultFormat = "mp4")?.let { return it }
+            directPlaySource(
+                dashData,
+                defaultFormat = "mp4",
+                requestedQuality = requestedQuality
+            )?.let { return it }
         }
 
         // Do not strand older multi-part FLV videos merely because a DASH
@@ -222,7 +226,11 @@ class BiliRepository(
         }
         val legacyData = legacyAttempt.getOrNull()
         if (legacyData != null) {
-            directPlaySource(legacyData, defaultFormat = "flv")?.let { return it }
+            directPlaySource(
+                legacyData,
+                defaultFormat = "flv",
+                requestedQuality = requestedQuality
+            )?.let { return it }
         }
 
         if (dashQualityUnavailable) {
@@ -233,8 +241,14 @@ class BiliRepository(
         throw IOException("B站没有返回可下载的音视频流；可能需要登录或该视频限制下载")
     }
 
-    private fun directPlaySource(data: JSONObject, defaultFormat: String): BiliPlaySource? {
+    private fun directPlaySource(
+        data: JSONObject,
+        defaultFormat: String,
+        requestedQuality: Int
+    ): BiliPlaySource? {
         val durl = data.optJSONArray("durl") ?: return null
+        val returnedQuality = data.optInt("quality", 0)
+        if (!BiliDirectQualityPolicy.canUse(requestedQuality, returnedQuality)) return null
         val direct = BiliDurlParser.parse(durl)
         if (direct.isEmpty()) return null
         return BiliPlaySource(
@@ -453,6 +467,13 @@ class BiliRepository(
             val id = accepted.optInt(i)
             val label = descriptions.optString(i).ifBlank { qualityLabel(id) }
             if (id > 0) labels.putIfAbsent(id, label)
+        }
+
+        if (labels.isEmpty()) {
+            // Legacy fnval=0 playurl responses may only expose the selected
+            // direct-stream quality at the top level.
+            val actualQuality = data.optInt("quality")
+            if (actualQuality > 0) labels[actualQuality] = qualityLabel(actualQuality)
         }
 
         if (labels.isEmpty()) {
