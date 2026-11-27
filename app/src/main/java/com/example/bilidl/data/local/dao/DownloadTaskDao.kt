@@ -73,6 +73,9 @@ interface DownloadTaskDao {
     @Query("DELETE FROM download_tasks WHERE status IN (:statuses)")
     suspend fun deleteByStatuses(statuses: List<Int>)
 
+    @Query("DELETE FROM download_tasks WHERE status = :status")
+    suspend fun deleteByStatus(status: Int)
+
     @Query("SELECT COUNT(*) FROM download_tasks")
     suspend fun countAll(): Int
 }
