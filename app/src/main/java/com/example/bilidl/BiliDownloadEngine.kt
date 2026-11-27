@@ -21,17 +21,26 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 
+data class SavedResource(
+    val uri: Uri,
+    val displayName: String,
+    val sizeBytes: Long,
+    val mimeType: String,
+    val resourceType: Int
+)
+
 data class SavedDownload(
     val uri: Uri,
     val displayName: String,
     val sizeBytes: Long,
     val mimeType: String,
     val additionalFiles: List<String> = emptyList(),
+    val additionalResources: List<SavedResource> = emptyList(),
     val warnings: List<String> = emptyList()
 )
 
 private data class SidecarSummary(
-    val files: List<String>,
+    val resources: List<SavedResource>,
     val warnings: List<String>
 )
 
@@ -96,7 +105,11 @@ object BiliDownloadEngine {
                     )
                     progress(100, completionDetail("音频已保存", sidecars))
                     completed = true
-                    saved.copy(additionalFiles = sidecars.files, warnings = sidecars.warnings)
+                    saved.copy(
+                        additionalFiles = sidecars.resources.map { it.displayName },
+                        additionalResources = sidecars.resources,
+                        warnings = sidecars.warnings
+                    )
                 } else {
                     progress(2, "正在下载视频流")
                     downloadStream(source.videoUrls, videoTemp, cookie, concurrency, isCancelled) { value ->
@@ -124,7 +137,11 @@ object BiliDownloadEngine {
                     )
                     progress(100, completionDetail("下载完成", sidecars))
                     completed = true
-                    saved.copy(additionalFiles = sidecars.files, warnings = sidecars.warnings)
+                    saved.copy(
+                    additionalFiles = sidecars.resources.map { it.displayName },
+                    additionalResources = sidecars.resources,
+                    warnings = sidecars.warnings
+                )
                 }
             } else {
                 if (audioOnly) throw IOException("当前视频接口只返回完整视频流，暂不支持单独提取音频")
@@ -181,7 +198,7 @@ object BiliDownloadEngine {
     ): SidecarSummary {
         if (!downloadDanmaku && !downloadSubtitles) return SidecarSummary(emptyList(), emptyList())
 
-        val files = ArrayList<String>()
+        val files = ArrayList<SavedResource>()
         val warnings = ArrayList<String>()
 
         if (downloadDanmaku) {
@@ -219,13 +236,20 @@ object BiliDownloadEngine {
                             BiliContentExporter.danmakuToXml(video.cid, comments),
                             Charsets.UTF_8
                         )
-                        files += publishFile(
+                        val published = publishFile(
                             context,
                             temp,
                             video.title + "_弹幕",
                             "xml",
                             "application/xml"
-                        ).displayName
+                        )
+                        files += SavedResource(
+                            uri = published.uri,
+                            displayName = published.displayName,
+                            sizeBytes = published.sizeBytes,
+                            mimeType = published.mimeType,
+                            resourceType = com.example.bilidl.data.local.entity.DownloadResourceType.DANMAKU_XML
+                        )
                     } finally {
                         temp.delete()
                     }
@@ -262,13 +286,20 @@ object BiliDownloadEngine {
                                 try {
                                     temp.writeText(BiliContentExporter.subtitlesToSrt(cues), Charsets.UTF_8)
                                     val baseName = video.title + "_" + track.languageName
-                                    files += publishFile(
+                                    val published = publishFile(
                                         context,
                                         temp,
                                         baseName,
                                         "srt",
                                         "application/x-subrip"
-                                    ).displayName
+                                    )
+                                    files += SavedResource(
+                                        uri = published.uri,
+                                        displayName = published.displayName,
+                                        sizeBytes = published.sizeBytes,
+                                        mimeType = published.mimeType,
+                                        resourceType = com.example.bilidl.data.local.entity.DownloadResourceType.SUBTITLE_SRT
+                                    )
                                     exportedTracks++
                                 } finally {
                                     temp.delete()
@@ -295,13 +326,13 @@ object BiliDownloadEngine {
             }
         }
 
-        return SidecarSummary(files.distinct(), warnings.distinct())
+        return SidecarSummary(files.distinctBy { it.uri }, warnings.distinct())
     }
 
     private fun completionDetail(label: String, sidecars: SidecarSummary): String {
         return when {
-            sidecars.files.isNotEmpty() && sidecars.warnings.isNotEmpty() ->
-                "$label · 已保存 ${sidecars.files.size} 个附加文件，部分资源未能获取"
+            sidecars.resources.isNotEmpty() && sidecars.warnings.isNotEmpty() ->
+                "$label · 已保存 ${sidecars.resources.size} 个附加文件，部分资源未能获取"
             sidecars.files.isNotEmpty() ->
                 "$label · 已保存 ${sidecars.files.size} 个附加文件"
             sidecars.warnings.isNotEmpty() ->
