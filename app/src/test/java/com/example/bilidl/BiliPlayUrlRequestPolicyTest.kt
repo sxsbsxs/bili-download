@@ -24,6 +24,20 @@ class BiliPlayUrlRequestPolicyTest {
     }
 
     @Test
+    fun anonymousQualityDiscoveryRequestsThe1080pPreviewTier() {
+        val parameters = BiliPlayUrlRequestPolicy.createParameters(
+            bvid = "BV1xx411c7mD",
+            aid = 1L,
+            cid = 100L,
+            quality = 0,
+            hasSessionCookie = false
+        )
+
+        assertEquals("80", parameters["qn"])
+        assertEquals("1", parameters["try_look"])
+    }
+
+    @Test
     fun authenticatedPlayurlRequestsDoNotUseAnonymousPreviewFlag() {
         val parameters = BiliPlayUrlRequestPolicy.createParameters(
             bvid = null,
