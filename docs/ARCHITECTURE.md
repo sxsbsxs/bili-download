@@ -6,6 +6,8 @@ BiliDl is a Bilibili-specific Android application. It does not embed a generic v
 
 - app/src/main/java/com/example/bilidl: Android entry points, Bilibili API access, download orchestration, WorkManager worker, and platform integration.
 - app/src/main/java/com/example/bilidl/common/content: Bilibili-native content models, segmented-danmaku protobuf decoding, and XML/SRT exporters.
+- app/src/main/java/com/example/bilidl/data/local: Room database, task/resource/event entities, and DAOs.
+- app/src/main/java/com/example/bilidl/data/repository: transactional task lifecycle, state transitions, retry snapshots, and media-resource history.
 - app/src/main/cpp: the original JNI transfer and MP4 inspection core.
 - app/src/test: Kotlin unit tests for link parsing, quality selection, transfer policy, protobuf parsing, and content export.
 - app/src/test/cpp: host-side C++ tests for MP4 container inspection.
@@ -21,10 +23,10 @@ This is an intentional transition layout: the existing application remains one G
 
 1. BiliLinkParser normalizes b23.tv, BV, av, ep, and ss input.
 2. BiliRepository resolves page metadata, WBI playurl data, available qualities, subtitle tracks, and danmaku segments.
-3. BiliDownloadWorker owns the foreground task lifecycle and restores preferences from its persisted input.
+3. BiliDownloadWorker owns the foreground task lifecycle. Room stores task specifications, lifecycle state, retry counts, output URIs, and sidecar resources; WorkManager remains the execution scheduler.
 4. SegmentedHttpDownloader schedules HTTP ranges, checkpoints validated chunks, and retries transient failures.
 5. BiliDownloadEngine packages DASH audio/video, validates MP4 output, and publishes media via MediaStore.
-6. Optional content export writes Bilibili danmaku as XML and BCC subtitles as SRT beside the main media.
+6. Optional content export writes Bilibili danmaku as XML and BCC subtitles as SRT beside the main media. Published resource URIs are committed to Room with the task completion transaction.
 
 ## Native boundary
 
@@ -37,3 +39,5 @@ The C++ core owns positional writes, durable sync, and structural MP4 inspection
 - Do not silently claim a format is supported unless the parser, merger, and regression tests cover it.
 - Treat optional sidecar failures separately from the main video transfer; report warnings without deleting a successfully saved video.
 - Keep secrets such as SESSDATA out of task input, logs, and repository files.
+- Treat Room as task-history/resource metadata storage and WorkManager as execution authority; reconcile the two after process death rather than duplicating scheduler state.
+- Keep task state transitions explicit. A completed task is terminal; retry must re-enter the queued state before a worker may claim it.
