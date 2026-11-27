@@ -128,6 +128,11 @@ class MainActivity : ComponentActivity() {
                     BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[prefs.getInt("concurrent", 1).coerceIn(0, 3)]
                 )
             )
+            .setBackoffCriteria(
+                androidx.work.BackoffPolicy.EXPONENTIAL,
+                30L,
+                java.util.concurrent.TimeUnit.SECONDS
+            )
             .addTag(DOWNLOAD_TAG)
             .build()
 
