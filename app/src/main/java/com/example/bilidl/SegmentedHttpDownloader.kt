@@ -133,7 +133,9 @@ internal object SegmentedHttpDownloader {
 
     private fun probe(url: String, cookie: String?, referer: String): Probe? {
         val connection = openConnection(url, cookie, referer).apply {
-            setRequestProperty("Range", "bytes=0-0")
+            // Some Bilibili Akamai edges reject tiny probe ranges; use the same
+            // finite 4 MiB range shape as the actual transfer requests.
+            setRequestProperty("Range", "bytes=0-${CHUNK_SIZE - 1L}")
         }
         try {
             val status = connection.responseCode
@@ -142,10 +144,16 @@ internal object SegmentedHttpDownloader {
                 throw httpFailure(connection, status, "CDN 探测")
             }
             val contentRange = connection.getHeaderField("Content-Range").orEmpty()
-            val total = Regex("""bytes\s+\d+-\d+/(\d+)""", RegexOption.IGNORE_CASE)
-                .find(contentRange)?.groupValues?.getOrNull(1)?.toLongOrNull()
-                ?: throw IOException("CDN 未提供有效的 Content-Range")
+            val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+)""", RegexOption.IGNORE_CASE)
+                .find(contentRange) ?: throw IOException("CDN 未提供有效的 Content-Range")
+            val actualStart = match.groupValues[1].toLong()
+            val actualEnd = match.groupValues[2].toLong()
+            val total = match.groupValues[3].toLong()
             if (total <= 0L) throw IOException("CDN 返回了无效文件大小")
+            val expectedProbeEnd = minOf(CHUNK_SIZE - 1L, total - 1L)
+            if (actualStart != 0L || actualEnd != expectedProbeEnd) {
+                throw IOException("CDN 返回的探测范围不匹配：$actualStart-$actualEnd/$total")
+            }
             connection.inputStream.use { input ->
                 if (input.read() < 0) throw IOException("CDN 返回了空数据")
             }
@@ -461,7 +469,8 @@ internal object SegmentedHttpDownloader {
         val detail = runCatching {
             connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
         }.getOrNull().orEmpty().take(160)
-        return BiliHttpException(status, operation, detail)
+        val host = runCatching { connection.url.host }.getOrDefault("unknown-host")
+        return BiliHttpException(status, "$operation [$host]", detail)
     }
 
     private fun openConnection(url: String, cookie: String?, referer: String): HttpURLConnection {
