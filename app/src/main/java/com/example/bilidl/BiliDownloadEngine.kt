@@ -33,14 +33,18 @@ object BiliDownloadEngine {
         video: BiliVideo,
         qualityId: Int,
         audioOnly: Boolean,
+        transferId: String,
+        concurrency: Int,
         cookie: String?,
         isCancelled: () -> Boolean = { false },
         progress: (Int, String) -> Unit
     ): SavedDownload = withContext(Dispatchers.IO) {
         val repository = BiliRepository { cookie }
         val source = repository.getPlaySource(video, qualityId)
-        val workDir = File(context.cacheDir, "bilidl").apply { mkdirs() }
-        val prefix = "task_" + java.util.UUID.randomUUID().toString()
+        val workDir = File(context.filesDir, "bilidl_transfers").apply { mkdirs() }
+        val safeId = transferId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
+        val prefix = "task_" + safeId
+        var completed = false
         val finalTemp = File(workDir, prefix + ".mp4")
         val videoTemp = File(workDir, prefix + "_video.m4s")
         val audioTemp = File(workDir, prefix + "_audio.m4s")
@@ -50,21 +54,22 @@ object BiliDownloadEngine {
                 if (audioOnly) {
                     if (source.audioUrls.isEmpty()) throw IOException("这个视频没有独立音频流")
                     progress(3, "正在下载音频")
-                    downloadStream(source.audioUrls, audioTemp, cookie, isCancelled) { value ->
+                    downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
                         progress(3 + value * 94 / 100, "音频流")
                     }
                     val ext = extensionForMime(source.audioMime, "m4a")
                     val saved = publishFile(context, audioTemp, video.title, ext, source.audioMime.ifBlank { "audio/mp4" })
                     progress(100, "已保存")
+                    completed = true
                     saved
                 } else {
                     progress(2, "正在下载视频流")
-                    downloadStream(source.videoUrls, videoTemp, cookie, isCancelled) { value ->
+                    downloadStream(source.videoUrls, videoTemp, cookie, concurrency, isCancelled) { value ->
                         progress(2 + (value * if (source.audioUrls.isEmpty()) 92 else 45) / 100, "视频流")
                     }
                     if (source.audioUrls.isNotEmpty()) {
                         progress(49, "正在下载音频流")
-                        downloadStream(source.audioUrls, audioTemp, cookie, isCancelled) { value ->
+                        downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
                             progress(49 + value * 44 / 100, "音频流")
                         }
                     }
@@ -72,6 +77,7 @@ object BiliDownloadEngine {
                     muxToMp4(videoTemp, audioTemp.takeIf { it.exists() }, finalTemp)
                     val saved = publishFile(context, finalTemp, video.title, "mp4", "video/mp4")
                     progress(100, "下载完成")
+                    completed = true
                     saved
                 }
             } else {
@@ -80,100 +86,47 @@ object BiliDownloadEngine {
                     throw IOException("B站仅返回多段旧式 FLV 流；为避免生成损坏文件，本版暂不拼接此格式")
                 }
                 progress(2, "正在下载视频")
-                downloadStream(source.directUrls, directTemp, cookie, isCancelled) { value ->
+                downloadStream(source.directUrls, directTemp, cookie, concurrency, isCancelled) { value ->
                     progress(value, "视频流")
                 }
                 val ext = if (source.format.contains("flv", true)) "flv" else "mp4"
                 val mime = if (ext == "flv") "video/x-flv" else "video/mp4"
                 val saved = publishFile(context, directTemp, video.title, ext, mime)
                 progress(100, "下载完成")
+                completed = true
                 saved
             }
         } finally {
-            videoTemp.delete()
-            audioTemp.delete()
-            directTemp.delete()
-            finalTemp.delete()
+            // Keep partial range files after a failure so retries can reuse finished chunks.
+            if (completed) {
+                videoTemp.delete()
+                audioTemp.delete()
+                directTemp.delete()
+                finalTemp.delete()
+                listOf(videoTemp, audioTemp, directTemp).forEach { file ->
+                    File(file.absolutePath + ".ranges").delete()
+                    File(file.absolutePath + ".meta").delete()
+                }
+            }
         }
     }
 
-    private fun downloadStream(
+    private suspend fun downloadStream(
         candidates: List<String>,
         target: File,
         cookie: String?,
+        concurrency: Int,
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit
     ) {
-        var lastError: Exception? = null
-        for (candidate in candidates) {
-            try {
-                downloadOne(candidate, target, cookie, isCancelled, onProgress)
-                return
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                target.delete()
-                throw cancelled
-            } catch (error: Exception) {
-                target.delete()
-                lastError = error
-            }
-        }
-        throw IOException("音视频流下载失败：" + (lastError?.message ?: "没有可用地址"))
-    }
-
-    private fun downloadOne(
-        url: String,
-        target: File,
-        cookie: String?,
-        isCancelled: () -> Boolean,
-        onProgress: (Int) -> Unit
-    ) {
-        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 20_000
-            readTimeout = 45_000
-            instanceFollowRedirects = true
-            setRequestProperty("User-Agent", USER_AGENT)
-            setRequestProperty("Referer", "https://www.bilibili.com/")
-            setRequestProperty("Origin", "https://www.bilibili.com")
-            setRequestProperty("Accept", "*/*")
-            setRequestProperty("Accept-Encoding", "identity")
-            setRequestProperty("Connection", "keep-alive")
-            if (!cookie.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=" + cookie)
-            }
-        }
-        try {
-            val status = connection.responseCode
-            if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_PARTIAL) {
-                throw IOException("流服务器返回 HTTP " + status)
-            }
-            val total = connection.contentLengthLong
-            var copied = 0L
-            var lastPercent = -1
-            connection.inputStream.use { input ->
-                target.outputStream().buffered().use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        if (isCancelled()) throw kotlinx.coroutines.CancellationException("下载已取消")
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        copied += count
-                        if (total > 0L) {
-                            val percent = ((copied * 100L) / total).toInt().coerceIn(0, 100)
-                            if (percent != lastPercent) {
-                                lastPercent = percent
-                                onProgress(percent)
-                            }
-                        }
-                    }
-                }
-            }
-            if (copied == 0L) throw IOException("下载到的文件为空")
-            if (total > 0L && copied < total) throw IOException("下载未完成，连接提前中断")
-            onProgress(100)
-        } finally {
-            connection.disconnect()
-        }
+        SegmentedHttpDownloader.download(
+            candidates,
+            target,
+            cookie,
+            concurrency,
+            isCancelled,
+            onProgress
+        )
     }
 
     private fun muxToMp4(videoFile: File, audioFile: File?, output: File) {
@@ -204,6 +157,9 @@ object BiliDownloadEngine {
                 copyTrack(audioExtractor, audioTrack, muxer, outAudio)
             }
             muxer.stop()
+            if (!NativeTransfer.validateMp4(output.absolutePath)) {
+                throw IOException("MP4 容器校验失败：缺少完整的 ftyp/moov/mdat 结构")
+            }
         } catch (error: Exception) {
             output.delete()
             if (error is IOException) throw error

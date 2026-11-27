@@ -25,6 +25,8 @@ class BiliDownloadWorker(
             val title = inputData.getString(KEY_TITLE).orEmpty()
             val quality = inputData.getInt(KEY_QUALITY, 80)
             val audioOnly = inputData.getBoolean(KEY_AUDIO_ONLY, false)
+            val transferId = inputData.getString(KEY_TASK_ID).orEmpty()
+            val concurrency = inputData.getInt(KEY_CONCURRENT, 2)
             if (cid <= 0L || (bvid.isNullOrBlank() && aid <= 0L)) {
                 return Result.failure(workDataOf(KEY_ERROR to "下载参数无效"))
             }
@@ -46,6 +48,8 @@ class BiliDownloadWorker(
                 video,
                 quality,
                 audioOnly,
+                transferId.ifBlank { id.toString() },
+                concurrency,
                 SecureCookieStore.load(applicationContext),
                 isCancelled = { isStopped }
             ) { percent, detail ->
@@ -100,6 +104,7 @@ class BiliDownloadWorker(
         const val KEY_TITLE = "title"
         const val KEY_QUALITY = "quality"
         const val KEY_AUDIO_ONLY = "audio_only"
+        const val KEY_CONCURRENT = "concurrent"
         const val KEY_PROGRESS = "progress"
         const val KEY_DETAIL = "detail"
         const val KEY_ERROR = "error"
