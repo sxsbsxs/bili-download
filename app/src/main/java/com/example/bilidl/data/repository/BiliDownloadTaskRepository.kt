@@ -156,6 +156,7 @@ class BiliDownloadTaskRepository private constructor(
                     sizeBytes = sizeBytes.coerceAtLeast(0L)
                 )
             ) + additionalResources
+            resources.deleteByTask(taskId)
             if (allResources.isNotEmpty()) resources.upsertAll(allResources)
             events.insert(
                 DownloadTaskEventEntity(
