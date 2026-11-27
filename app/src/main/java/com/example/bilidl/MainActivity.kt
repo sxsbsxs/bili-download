@@ -1,6 +1,8 @@
 package com.example.bilidl
 
 import androidx.activity.ComponentActivity
+import androidx.activity.viewModels
+import androidx.lifecycle.lifecycleScope
 import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.Context
@@ -40,6 +42,7 @@ import com.example.bilidl.data.repository.DownloadTaskRecoveryAction
 import com.example.bilidl.data.repository.DownloadTaskRecoveryPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 
 /*
  * ===== 给后端开发者（GPT）的说明 =====
@@ -60,6 +63,8 @@ import kotlinx.coroutines.runBlocking
  */
 class MainActivity : ComponentActivity() {
 
+    private val mainViewModel: MainViewModel by viewModels()
+
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
         const val ST_DOWNLOADING = DownloadTaskStatus.RUNNING
@@ -70,33 +75,47 @@ class MainActivity : ComponentActivity() {
     }
 
     // ===================== 真实业务接入 =====================
-    private fun onParseClicked(text: String) {
-        setBusy(parseBtn, true)
-        parseBtn.text = "解析中…"
-        backgroundExecutor.execute {
-            try {
-                val video = BiliRepository { SecureCookieStore.load(this) }.inspect(text)
-                runOnUiThread {
-                    parsedVideo = video
-                    selectedQualityId = preferredQualityId(video.qualities)
-                    val pageHint = if (video.pages.size > 1) {
-                        " · 共 " + video.pages.size + " P，点击选择或全部下载"
-                    } else {
-                        ""
+    private fun observeParseState() {
+        lifecycleScope.launch {
+            mainViewModel.parseState.collect { state ->
+                when (state) {
+                    VideoParseState.Idle -> Unit
+                    VideoParseState.Loading -> {
+                        setBusy(parseBtn, true)
+                        parseBtn.text = "解析中…"
                     }
-                    showVideo(
-                        video.title,
-                        video.uploader,
-                        video.cover,
-                        "第 " + video.page + " P · " + formatDuration(video.durationSeconds) +
-                            " · " + video.qualities.size + " 种可用画质" + pageHint
-                    )
-                    homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
+                    is VideoParseState.Success -> {
+                        val video = state.video
+                        setBusy(parseBtn, false)
+                        parseBtn.text = "解析 / 分析"
+                        parsedVideo = video
+                        selectedQualityId = preferredQualityId(video.qualities)
+                        val pageHint = if (video.pages.size > 1) {
+                            " · 共 " + video.pages.size + " P，点击选择或全部下载"
+                        } else {
+                            ""
+                        }
+                        showVideo(
+                            video.title,
+                            video.uploader,
+                            video.cover,
+                            "第 " + video.page + " P · " + formatDuration(video.durationSeconds) +
+                                " · " + video.qualities.size + " 种可用画质" + pageHint
+                        )
+                        homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
+                    }
+                    is VideoParseState.Error -> {
+                        setBusy(parseBtn, false)
+                        parseBtn.text = "解析 / 分析"
+                        showError(state.message)
+                    }
                 }
-            } catch (error: Exception) {
-                showError(error.message ?: "解析失败，请检查网络后重试")
             }
         }
+    }
+
+    private fun onParseClicked(text: String) {
+        mainViewModel.parse(text)
     }
 
     private fun onDownloadClicked() {
@@ -1150,6 +1169,7 @@ class MainActivity : ComponentActivity() {
         rootFrame.addView(loginPage, FrameLayout.LayoutParams(match, match))
 
         setContentView(rootFrame)
+        observeParseState()
         selectTab(0)
         refreshAccountUi()
         refreshDownloadList()
