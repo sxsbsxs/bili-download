@@ -12,7 +12,7 @@ This file is a status sheet, not a marketing checklist.
 | Segmented HTTP | Implemented | Range scheduler, ETag/Last-Modified checkpoints, bounded retry |
 | QR authorization | Implemented | Bilibili web QR login; SESSDATA stored with Android Keystore |
 | Background tasks | Implemented | WorkManager foreground worker; Room stores task specs and lifecycle snapshots |
-| Persistent task history | Implemented, needs upgrade-path verification | Room task, resource, and event tables; legacy SharedPreferences specs are migrated |
+| Persistent task history | Implemented | Room task/resource/event tables; legacy SharedPreferences specifications are migrated |
 | Task search and observation | Implemented | Search title/uploader/BV and observe task/resource/event Flow |
 | Resource history | Implemented | Main media and sidecar content URIs are stored per task |
 | MP4 validation | Implemented | C++ box/sample-table checks before publication |
@@ -20,8 +20,11 @@ This file is a status sheet, not a marketing checklist.
 | Subtitle export | Implemented, needs live-device verification | BCC subtitle JSON is exported as SRT; opt-in in settings |
 | Multiple DURL/FLV segments | Not implemented | Multi-segment legacy streams are rejected instead of concatenated unsafely |
 | Native MP4 muxer | In progress | Android MediaExtractor/MediaMuxer still performs sample extraction/remuxing |
-| Persistent relational task database | Planned | Task inputs currently use SharedPreferences plus WorkManager state |
-| Room integration | Automated Android tests | In-memory SQLite tests cover persistence, search, progress, and foreign-key cascade |
+| Room task database | Implemented, schema v1 | Room is the durable task/resource/event index; WorkManager remains the execution scheduler |
+| Room integration | Automated JVM tests | Robolectric-backed in-memory SQLite tests cover persistence, search, progress, upsert safety, and foreign-key cascade |
+| Batch task management | Implemented | Select multiple tasks to pause, retry, or delete; batch retry updates Room before WorkManager enqueue |
+| Saved resource browser | Implemented | Completed task rows open saved MP4, danmaku XML, and subtitle SRT resources |
+| Task execution history | Implemented | View timestamped status changes and failure/retry messages per task |
 | Live CDN/device QA | Not verified by CI | CI cannot prove Bilibili account access, CDN behavior, or playback on every phone |
 
 ## Release gate
