@@ -340,8 +340,20 @@ class MainActivity : ComponentActivity() {
             ?.filter { it.name.startsWith("task_" + safeId) }
             ?.forEach { it.delete() }
         val savedUri = savedFileUris.remove(id)
-        if (deleteFile) {
-            savedUri?.let { contentResolver.delete(it, null, null) }
+        backgroundExecutor.execute {
+            runCatching {
+                runBlocking(Dispatchers.IO) {
+                    val repository = BiliDownloadTaskRepository.getInstance(applicationContext)
+                    val resourceUris = repository.getResources(id).map { it.contentUri } +
+                        listOfNotNull(savedUri?.toString())
+                    if (deleteFile) {
+                        resourceUris.distinct().forEach { value ->
+                            runCatching { contentResolver.delete(Uri.parse(value), null, null) }
+                        }
+                    }
+                    repository.deleteTask(id)
+                }
+            }
         }
     }
 
