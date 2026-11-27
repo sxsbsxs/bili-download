@@ -17,6 +17,13 @@ import java.util.Locale
 
 data class BiliQuality(val id: Int, val label: String)
 
+data class BiliPage(
+    val pageNumber: Int,
+    val cid: Long,
+    val part: String,
+    val durationSeconds: Int
+)
+
 data class BiliVideo(
     val bvid: String?,
     val aid: Long,
@@ -27,7 +34,8 @@ data class BiliVideo(
     val durationSeconds: Int,
     val coverUrl: String?,
     val cover: Bitmap?,
-    val qualities: List<BiliQuality>
+    val qualities: List<BiliQuality>,
+    val pages: List<BiliPage> = emptyList()
 )
 
 data class BiliPlaySource(
@@ -101,6 +109,17 @@ class BiliRepository(
         val pages = data.optJSONArray("pages") ?: JSONArray()
         val requestedPage = (uri.getQueryParameter("p")?.toIntOrNull() ?: 1).coerceAtLeast(1)
         val pageIndex = (requestedPage - 1).coerceAtMost((pages.length() - 1).coerceAtLeast(0))
+        val availablePages = (0 until pages.length()).mapNotNull { index ->
+            val item = pages.optJSONObject(index) ?: return@mapNotNull null
+            val pageCid = item.optLong("cid")
+            if (pageCid <= 0L) return@mapNotNull null
+            BiliPage(
+                pageNumber = item.optInt("page", index + 1),
+                cid = pageCid,
+                part = item.optString("part").ifBlank { "P" + (index + 1) },
+                durationSeconds = item.optInt("duration")
+            )
+        }
         val page = pages.optJSONObject(pageIndex)
         val cid = page?.optLong("cid") ?: data.optLong("cid")
         if (cid <= 0L) throw IOException("无法获取视频 CID")
@@ -115,7 +134,7 @@ class BiliRepository(
         val qualities = parseQualities(play)
         return BiliVideo(
             actualBvid, aid, cid, pageIndex + 1, title, owner, duration,
-            coverUrl, null, qualities
+            coverUrl, null, qualities, availablePages
         )
     }
 
