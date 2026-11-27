@@ -28,7 +28,7 @@ The GitHub Actions workflow builds the debug APK and uploads it as the bili-down
 ## Current limits
 
 - QR-code login has not been connected yet. Cookie authorization is optional; public videos can be parsed without signing in.
-- Range-capable CDN transfers persist completed 4 MiB chunks and resume them on retry while the representation (size, ETag and Last-Modified) remains unchanged. Servers that do not support HTTP Range use a sequential fallback and cannot resume partial bytes.
+- Range-capable CDN transfers persist completed 4 MiB chunks and resume them on retry only when the server supplies a stable ETag or Last-Modified validator and the representation still matches. Without a validator, BiliDl safely starts that stream again instead of risking a corrupted mixture of old and new bytes. Servers that do not support HTTP Range use a sequential fallback and cannot resume partial bytes.
 - If Bilibili only provides multiple legacy DURL / FLV segments, this version reports that format as unsupported rather than writing a potentially broken file.
 - MP4 muxing depends on the audio/video codecs exposed by Bilibili and supported by the device's Android media stack. The native validator checks the resulting ftyp/moov/mdat container structure. Unsupported codecs produce a visible failed task.
 - Bilibili may change its API, WBI signing requirements, or CDN access rules. HTTP 412 / 403 / 352 responses are surfaced as errors rather than bypassed.
