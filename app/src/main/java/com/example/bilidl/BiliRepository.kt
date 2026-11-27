@@ -156,10 +156,15 @@ class BiliRepository(
         if (dash != null) {
             val videos = dash.optJSONArray("video") ?: JSONArray()
             val audios = dash.optJSONArray("audio") ?: JSONArray()
-            val videoItem = (0 until videos.length()).mapNotNull { videos.optJSONObject(it) }
-                .firstOrNull { it.optInt("id") == requestedQuality }
-                ?: (0 until videos.length()).mapNotNull { videos.optJSONObject(it) }
-                    .maxByOrNull { it.optInt("id") }
+            val videoCandidates = (0 until videos.length()).mapNotNull { videos.optJSONObject(it) }
+            val matchingQuality = videoCandidates.filter { it.optInt("id") == requestedQuality }
+            val videoItem = matchingQuality.firstOrNull {
+                it.optString("codecs").contains("avc", ignoreCase = true)
+            } ?: matchingQuality.firstOrNull()
+                ?: videoCandidates.filter {
+                    it.optString("codecs").contains("avc", ignoreCase = true)
+                }.maxByOrNull { it.optInt("id") }
+                ?: videoCandidates.maxByOrNull { it.optInt("id") }
             val audioItem = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
                 .maxByOrNull { it.optInt("id") }
 
