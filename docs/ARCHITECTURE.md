@@ -29,10 +29,10 @@ This is an intentional transition layout: the existing application remains one G
 
 1. MainViewModel runs BiliRepository inspection on Dispatchers.IO and emits Idle/Loading/Success/Error through StateFlow; a newer input cancels the previous parse job. BiliLinkParser normalizes b23.tv, BV, av, ep, and ss input.
 2. LoginViewModel owns QR generation/polling, cookie verification and Keystore-backed storage. QR polling uses cancellable coroutine delays rather than blocking the Activity executor.
-3. BiliRepository resolves page metadata, WBI playurl data, available qualities, subtitle tracks, and danmaku segments.
+3. BiliRepository resolves page metadata, WBI playurl data, available qualities, subtitle tracks, and danmaku segments. Anonymous playurl requests add `try_look=1` before WBI signing; this is an observed preview parameter, not a guarantee of 1080P access.
 4. DownloadsViewModel owns Activity-facing task metadata commands and history queries. BiliDownloadWorker owns the foreground execution lifecycle. Room stores task specifications, lifecycle state, retry counts, output URIs, and sidecar resources; WorkManager remains the execution scheduler.
-5. SegmentedHttpDownloader schedules HTTP ranges, checkpoints validated chunks, and retries transient failures.
-6. BiliDownloadEngine coordinates stream transfer and Bilibili sidecar export; BiliMediaMuxer separately packages DASH audio/video, interleaves samples by timestamps, and invokes native MP4 validation before publication.
+5. SegmentedHttpDownloader schedules HTTP ranges, checkpoints validated chunks, and retries transient failures. Its positional writer is injectable so JVM tests can run the real HTTP protocol against a local range server without loading JNI; release builds continue to use the native positional writer.
+6. BiliDownloadEngine coordinates stream transfer and Bilibili sidecar export; BiliMediaMuxer separately packages DASH audio/video, interleaves samples by timestamps, and invokes native MP4 validation before publication. A disk-space guard reserves temporary-output headroom, and validated video/audio source tracks are released before the final MP4 is copied to MediaStore.
 7. Optional content export writes Bilibili danmaku as XML and BCC subtitles as SRT beside the main media. Published resource URIs are committed to Room with the task completion transaction.
 
 ## Native boundary
@@ -49,3 +49,5 @@ The C++ core owns positional writes, durable sync, and structural MP4 inspection
 - Treat Room as task-history/resource metadata storage and WorkManager as execution authority; reconcile the two after process death rather than duplicating scheduler state.
 - Keep task state transitions explicit. A completed task is terminal; retry must re-enter the queued state before a worker may claim it.
 - Never perform Room I/O synchronously from the HTTP progress callback. Progress snapshots are conflated and written by a separate IO coroutine; metadata failures must not abort a valid media transfer.
+- Treat `try_look=1` as a best-effort anonymous preview request only. Never promise a quality until the live playurl response actually contains that stream.
+- Preserve validated transfer checkpoints when a download or mux operation fails; remove source stream artifacts only after successful media packaging.

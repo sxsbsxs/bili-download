@@ -6,10 +6,10 @@ This file is a status sheet, not a marketing checklist.
 |---|---|---|
 | Bilibili links | Implemented | b23.tv, BV, av, ep, ss |
 | Video metadata | Implemented | CID, page list, title, cover, uploader |
-| Available qualities | Implemented | Read from Bilibili playurl response |
+| Available qualities | Implemented | Read from Bilibili playurl response; anonymous WBI playurl requests include `try_look=1` before signing, but higher quality availability remains server-controlled |
 | DASH video + audio | Implemented | Separate streams downloaded then remuxed |
 | Audio-only | Implemented with limits | AAC DASH is packaged as M4A |
-| Segmented HTTP | Implemented | Range scheduler, ETag/Last-Modified checkpoints, bounded retry |
+| Segmented HTTP | Implemented | Range scheduler, ETag/Last-Modified checkpoints, bounded retry; local HTTP integration tests cover interruption retry, valid resume, validator change, ignored Range, and backup CDN fallback |
 | QR authorization | Implemented | Bilibili web QR login; SESSDATA stored with Android Keystore |
 | Background tasks | Implemented | WorkManager foreground worker; Room stores task specs and lifecycle snapshots |
 | Presentation state | In progress | Main, Downloads, Login and Settings ViewModels own parse, history, authorization and preference state; View-based screen construction remains hosted by MainActivity |
@@ -27,7 +27,7 @@ This file is a status sheet, not a marketing checklist.
 | Batch task management | Implemented | Select multiple tasks to pause, retry, or delete; batch retry updates Room before WorkManager enqueue |
 | Saved resource browser | Implemented | Completed task rows open saved MP4, danmaku XML, and subtitle SRT resources |
 | Task execution history | Implemented | View timestamped status changes and failure/retry messages per task |
-| Live CDN/device QA | Not verified by CI | CI cannot prove Bilibili account access, CDN behavior, or playback on every phone |
+| Live CDN/device QA | Not verified by CI | Local HTTP server tests cover transport behavior; CI cannot prove Bilibili's current `try_look` entitlement, real CDN responses, danmaku/subtitle availability, or playback on every phone |
 
 ## Release gate
 

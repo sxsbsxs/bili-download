@@ -2,9 +2,9 @@ name: Source checks
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/anonymous-playurl-storage-http-tests]
   pull_request:
-    branches: [main]
+    branches: [main, refactor/nonblocking-download-progress]
 
 permissions:
   contents: read

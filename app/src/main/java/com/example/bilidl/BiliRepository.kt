@@ -358,16 +358,24 @@ class BiliRepository(
     }
 
     private fun getPlayInfo(bvid: String?, aid: Long, cid: Long, quality: Int): JSONObject {
-        val parameters = linkedMapOf<String, String>()
-        if (!bvid.isNullOrBlank()) parameters["bvid"] = bvid else parameters["avid"] = aid.toString()
-        parameters["cid"] = cid.toString()
-        parameters["qn"] = quality.toString()
-        parameters["fnval"] = "4048"
-        parameters["fourk"] = "1"
-        parameters["web_location"] = "1315873"
+        // Capture the credential once so the anonymous preview flag and the
+        // Cookie header cannot disagree if the session changes mid-request.
+        val sessionCookie = cookieProvider()
+        val parameters = BiliPlayUrlRequestPolicy.createParameters(
+            bvid = bvid,
+            aid = aid,
+            cid = cid,
+            quality = quality,
+            hasSessionCookie = !sessionCookie.isNullOrBlank()
+        )
 
+        // try_look is included before WBI signing. It is an undocumented
+        // Bilibili preview capability, so only request it for anonymous users.
         val signedQuery = signWbi(parameters)
-        return requestJson("https://api.bilibili.com/x/player/wbi/playurl?" + signedQuery)
+        return requestJson(
+            "https://api.bilibili.com/x/player/wbi/playurl?$signedQuery",
+            sessionCookie
+        )
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
