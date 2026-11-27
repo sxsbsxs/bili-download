@@ -26,8 +26,11 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
     val state: StateFlow<LoginUiState> = _state.asStateFlow()
 
     private var authJob: Job? = null
+    private var qrJob: Job? = null
 
     fun restoreSession() {
+        qrJob?.cancel()
+        qrJob = null
         authJob?.cancel()
         authJob = viewModelScope.launch {
             _state.value = LoginUiState.CheckingSession
@@ -56,7 +59,9 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
 
     fun requestQrCode() {
         authJob?.cancel()
-        authJob = viewModelScope.launch {
+        authJob = null
+        qrJob?.cancel()
+        qrJob = viewModelScope.launch {
             _state.value = LoginUiState.RequestingQr
             try {
                 val session = withContext(Dispatchers.IO) {
@@ -106,6 +111,8 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loginWithSessdata(rawSessdata: String) {
+        qrJob?.cancel()
+        qrJob = null
         authJob?.cancel()
         authJob = viewModelScope.launch {
             _state.value = LoginUiState.VerifyingCookie
@@ -128,8 +135,8 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun stopQrLogin() {
-        authJob?.cancel()
-        authJob = null
+        qrJob?.cancel()
+        qrJob = null
         when (_state.value) {
             LoginUiState.RequestingQr,
             is LoginUiState.QrReady,
@@ -139,14 +146,19 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logout() {
+        qrJob?.cancel()
+        qrJob = null
         authJob?.cancel()
-        authJob = viewModelScope.launch(Dispatchers.IO) {
+        authJob = null
+        viewModelScope.launch(Dispatchers.IO) {
             SecureCookieStore.clear(getApplication())
             _state.value = LoginUiState.LoggedOut
         }
     }
 
     override fun onCleared() {
+        qrJob?.cancel()
+        qrJob = null
         authJob?.cancel()
         authJob = null
         super.onCleared()
