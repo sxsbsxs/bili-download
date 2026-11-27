@@ -11,7 +11,7 @@ required_files=(
   "docs/FEATURE_MATRIX.md"
 )
 
-for path in "\${required_files[@]}"; do
+for path in "${required_files[@]}"; do
   if [[ ! -s "$path" ]]; then
     echo "Required project file missing or empty: $path" >&2
     exit 1
