@@ -49,7 +49,7 @@ interface DownloadTaskDao {
     suspend fun countByStatus(status: Int): Int
 
     @Query("UPDATE download_tasks SET status = :status, updatedAt = :now WHERE taskId = :taskId")
-    suspend fun setStatus(taskId: String, status: Int, now: Long = System.currentTimeMillis())
+    suspend fun setStatus(taskId: String, status: Int, now: Long)
 
     @Query(
         """
@@ -63,8 +63,8 @@ interface DownloadTaskDao {
         progress: Int,
         stage: String,
         detail: String,
-        now: Long = System.currentTimeMillis(),
-        runningStatus: Int = 1
+        now: Long,
+        runningStatus: Int
     )
 
     @Query("DELETE FROM download_tasks WHERE taskId = :taskId")
