@@ -59,11 +59,11 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
-        const val ST_DOWNLOADING = 0
-        const val ST_WAITING = 1
-        const val ST_PAUSED = 2
-        const val ST_FAILED = 3
-        const val ST_DONE = 4
+        const val ST_DOWNLOADING = DownloadTaskStatus.RUNNING
+        const val ST_WAITING = DownloadTaskStatus.QUEUED
+        const val ST_PAUSED = DownloadTaskStatus.PAUSED
+        const val ST_FAILED = DownloadTaskStatus.FAILED
+        const val ST_DONE = DownloadTaskStatus.COMPLETED
     }
 
     // ===================== 真实业务接入 =====================
