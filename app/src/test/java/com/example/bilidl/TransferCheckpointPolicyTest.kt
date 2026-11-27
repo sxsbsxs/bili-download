@@ -65,4 +65,11 @@ class TransferCheckpointPolicyTest {
             )
         )
     }
+    @Test
+    fun onlyUsesParallelRangesWhenCdnHasStableValidator() {
+        assertTrue(TransferCheckpointPolicy.supportsVerifiedRanges("\"e1\"", ""))
+        assertTrue(TransferCheckpointPolicy.supportsVerifiedRanges("", "Wed, 26 Nov 2026 10:00:00 GMT"))
+        assertFalse(TransferCheckpointPolicy.supportsVerifiedRanges("", ""))
+    }
+
 }
