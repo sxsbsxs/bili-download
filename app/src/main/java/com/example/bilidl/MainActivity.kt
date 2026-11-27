@@ -812,7 +812,8 @@ class MainActivity : ComponentActivity() {
     }
     private class Row(
         val root: LinearLayout, val cover: ImageView, val title: TextView,
-        val info: TextView, val bar: ProgressBar, val primary: TextView
+        val info: TextView, val bar: ProgressBar, val primary: TextView,
+        val selection: TextView
     )
     private val items = LinkedHashMap<String, DlItem>()
     private val rows = HashMap<String, Row>()
@@ -820,8 +821,13 @@ class MainActivity : ComponentActivity() {
     private lateinit var dlSegs: List<TextView>
     private lateinit var listBox: LinearLayout
     private lateinit var clearTv: TextView
+    private lateinit var batchTv: TextView
+    private lateinit var batchBar: LinearLayout
+    private lateinit var batchCountTv: TextView
     private lateinit var downloadSearch: EditText
     private var downloadQuery = ""
+    private var batchMode = false
+    private val selectedDownloadIds = LinkedHashSet<String>()
 
     // 设置页
     private lateinit var avatarIv: ImageView
@@ -1308,6 +1314,18 @@ class MainActivity : ComponentActivity() {
         hdr.addView(clearTv, FrameLayout.LayoutParams(wrap, wrap, Gravity.TOP or Gravity.END).apply {
             topMargin = dp(28); rightMargin = dp(20)
         })
+        batchTv = TextView(this).apply {
+            text = "批量选择"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = shape(Color.parseColor("#33FFFFFF"), 16)
+            setOnClickListener { setBatchMode(!batchMode) }
+        }
+        hdr.addView(batchTv, FrameLayout.LayoutParams(wrap, wrap, Gravity.TOP or Gravity.END).apply {
+            topMargin = dp(28); rightMargin = dp(112)
+        })
         page.addView(hdr, match, wrap)
 
         val (segBox, segs) = buildSegmented(listOf("进行中", "已完成", "失败")) { i ->
@@ -1316,6 +1334,29 @@ class MainActivity : ComponentActivity() {
         }
         dlSegs = segs
         page.addView(segBox, sideMargins().apply { topMargin = -dp(26) })
+
+        batchBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            background = shape(Color.WHITE, 14)
+        }
+        batchCountTv = TextView(this).apply {
+            text = "已选 0 项"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }
+        batchBar.addView(batchCountTv, LinearLayout.LayoutParams(0, wrap, 1f))
+        val selectAllButton = chip("全选", false).apply { setOnClickListener { selectVisibleDownloads() } }
+        val pauseButton = chip("暂停", false).apply { setOnClickListener { pauseSelectedDownloads() } }
+        val retryButton = chip("重试", true).apply { setOnClickListener { retrySelectedDownloads() } }
+        val deleteButton = chip("删除", false).apply { setOnClickListener { confirmDeleteSelected() } }
+        listOf(selectAllButton, pauseButton, retryButton, deleteButton).forEach { button ->
+            batchBar.addView(button, LinearLayout.LayoutParams(wrap, wrap).apply { leftMargin = dp(5) })
+        }
+        page.addView(batchBar, sideMargins(8))
 
         downloadSearch = EditText(this).apply {
             hint = "搜索任务名称或状态信息"
@@ -1368,6 +1409,14 @@ class MainActivity : ComponentActivity() {
             background = shape(Color.parseColor("#E8EAF0"), 12)
             clipToOutline = true
         }
+        val selection = TextView(this).apply {
+            text = "○"
+            textSize = 21f
+            gravity = Gravity.CENTER
+            setTextColor(pink)
+            visibility = View.GONE
+            minWidth = dp(28)
+        }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val title = TextView(this).apply {
             textSize = 15f
@@ -1379,6 +1428,7 @@ class MainActivity : ComponentActivity() {
         val info = TextView(this).apply { textSize = 12f; setTextColor(sub) }
         col.addView(title, match, wrap)
         col.addView(info, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
+        top.addView(selection, LinearLayout.LayoutParams(dp(28), dp(70)))
         top.addView(cover, LinearLayout.LayoutParams(dp(112), dp(70)))
         top.addView(col, LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(12) })
 
@@ -1398,12 +1448,23 @@ class MainActivity : ComponentActivity() {
 
         primary.setOnClickListener { onPrimary(item.id) }
         delete.setOnClickListener { confirmDelete(item.id) }
-        return Row(root, cover, title, info, progress, primary)
+        selection.setOnClickListener { toggleDownloadSelection(item.id) }
+        root.setOnLongClickListener {
+            if (!batchMode) setBatchMode(true)
+            if (item.id !in selectedDownloadIds) toggleDownloadSelection(item.id)
+            true
+        }
+        return Row(root, cover, title, info, progress, primary, selection)
     }
 
     private fun bindRow(item: DlItem) {
         val r = rows[item.id] ?: return
         r.title.text = item.title
+        r.selection.visibility = if (batchMode) View.VISIBLE else View.GONE
+        val selected = item.id in selectedDownloadIds
+        r.selection.text = if (selected) "✓" else "○"
+        r.selection.setTextColor(if (selected) Color.WHITE else pink)
+        r.selection.background = if (selected) shape(pink, 24) else null
         val c = item.cover
         if (c != null) r.cover.setImageBitmap(c) else r.cover.setImageDrawable(null)
         r.bar.progress = item.progress
@@ -1441,6 +1502,108 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun visibleDownloadItems(): List<DlItem> = items.values.filter { item ->
+        val matchesState = when (dlFilter) {
+            0 -> item.state == ST_DOWNLOADING || item.state == ST_WAITING || item.state == ST_PAUSED
+            1 -> item.state == ST_DONE
+            else -> item.state == ST_FAILED
+        }
+        val matchesQuery = downloadQuery.isBlank() ||
+            item.title.contains(downloadQuery, ignoreCase = true) ||
+            item.info.contains(downloadQuery, ignoreCase = true) ||
+            item.sizeText.contains(downloadQuery, ignoreCase = true)
+        matchesState && matchesQuery
+    }.sortedByDescending { item ->
+        item.id.substringAfterLast('_').toLongOrNull() ?: 0L
+    }
+
+    private fun setBatchMode(enabled: Boolean) {
+        batchMode = enabled
+        if (!enabled) selectedDownloadIds.clear()
+        batchTv.text = if (enabled) "退出选择" else "批量选择"
+        batchBar.visibility = if (enabled) View.VISIBLE else View.GONE
+        refreshDownloadList()
+    }
+
+    private fun toggleDownloadSelection(id: String) {
+        if (!batchMode) return
+        if (!selectedDownloadIds.add(id)) selectedDownloadIds.remove(id)
+        refreshDownloadList()
+    }
+
+    private fun selectVisibleDownloads() {
+        val visible = visibleDownloadItems().map { it.id }
+        if (visible.isNotEmpty() && visible.all { it in selectedDownloadIds }) {
+            selectedDownloadIds.removeAll(visible.toSet())
+        } else {
+            selectedDownloadIds.addAll(visible)
+        }
+        refreshDownloadList()
+    }
+
+    private fun pauseSelectedDownloads() {
+        val targets = selectedDownloadIds.mapNotNull { items[it] }
+            .filter { it.state == ST_DOWNLOADING || it.state == ST_WAITING }
+        targets.forEach { onPauseClicked(it.id) }
+        toast("已暂停 " + targets.size + " 个任务")
+    }
+
+    private fun retrySelectedDownloads() {
+        val targets = selectedDownloadIds.mapNotNull { id ->
+            val item = items[id] ?: return@mapNotNull null
+            val spec = downloadSpecs[id] ?: return@mapNotNull null
+            if (item.state == ST_FAILED || item.state == ST_PAUSED) id to spec else null
+        }
+        if (targets.isEmpty()) {
+            toast("所选任务中没有可重试的项目")
+            return
+        }
+        backgroundExecutor.execute {
+            val repository = BiliDownloadTaskRepository.getInstance(applicationContext)
+            targets.forEach { (id, spec) ->
+                runCatching {
+                    runBlocking(Dispatchers.IO) {
+                        val task = repository.getTask(id)
+                        if (task?.status == DownloadTaskStatus.FAILED ||
+                            task?.status == DownloadTaskStatus.PAUSED
+                        ) {
+                            repository.retry(id)
+                        }
+                    }
+                }
+                runOnUiThread {
+                    if (!isFinishing && id in selectedDownloadIds) enqueueDownload(id, spec)
+                }
+            }
+            runOnUiThread { toast("已提交 " + targets.size + " 个重试任务") }
+        }
+    }
+
+    private fun confirmDeleteSelected() {
+        val ids = selectedDownloadIds.filter { items.containsKey(it) }
+        if (ids.isEmpty()) {
+            toast("请先选择任务")
+            return
+        }
+        val deleteFiles = booleanArrayOf(false)
+        AlertDialog.Builder(this)
+            .setTitle("删除 " + ids.size + " 个任务？")
+            .setMultiChoiceItems(arrayOf("同时删除已保存的视频、弹幕和字幕文件"), deleteFiles) { _, index, checked ->
+                deleteFiles[index] = checked
+            }
+            .setPositiveButton("删除") { _, _ ->
+                ids.forEach { id ->
+                    removeDownload(id)
+                    onDeleteClicked(id, deleteFiles[0])
+                }
+                selectedDownloadIds.clear()
+                setBatchMode(false)
+                toast("已删除 " + ids.size + " 个任务记录")
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     private fun refreshDownloadList() {
         val done = items.values.count { it.state == ST_DONE }
         val failed = items.values.count { it.state == ST_FAILED }
@@ -1451,19 +1614,10 @@ class MainActivity : ComponentActivity() {
         styleSegs(dlSegs, dlFilter)
         clearTv.visibility = if (dlFilter == 1 && done > 0) View.VISIBLE else View.GONE
 
+        selectedDownloadIds.retainAll(items.keys)
+        batchCountTv.text = "已选 " + selectedDownloadIds.size + " 项"
         listBox.removeAllViews()
-        val shown = items.values.filter { item ->
-            val matchesState = when (dlFilter) {
-                0 -> item.state == ST_DOWNLOADING || item.state == ST_WAITING || item.state == ST_PAUSED
-                1 -> item.state == ST_DONE
-                else -> item.state == ST_FAILED
-            }
-            val matchesQuery = downloadQuery.isBlank() ||
-                item.title.contains(downloadQuery, ignoreCase = true) ||
-                item.info.contains(downloadQuery, ignoreCase = true) ||
-                item.sizeText.contains(downloadQuery, ignoreCase = true)
-            matchesState && matchesQuery
-        }.reversed()
+        val shown = visibleDownloadItems()
 
         if (shown.isEmpty()) {
             listBox.addView(emptyView(), match, wrap)
