@@ -60,22 +60,7 @@ class BiliDownloadTaskRepository private constructor(
                     )
                 )
             } else {
-                tasks.upsert(
-                    task.copy(
-                        createdAt = existing.createdAt,
-                        status = existing.status,
-                        progress = existing.progress,
-                        stage = existing.stage,
-                        detail = existing.detail,
-                        completedAt = existing.completedAt,
-                        outputUri = existing.outputUri,
-                        outputName = existing.outputName,
-                        outputMimeType = existing.outputMimeType,
-                        outputSizeBytes = existing.outputSizeBytes,
-                        errorMessage = existing.errorMessage,
-                        attemptCount = existing.attemptCount
-                    )
-                )
+                tasks.upsert(DownloadTaskSpecMergePolicy.merge(existing, task))
             }
         }
     }
