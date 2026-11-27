@@ -134,6 +134,25 @@ class BiliDownloadDatabaseTest {
         assertEquals(1, database.downloadTaskDao().countByStatus(DownloadTaskStatus.RUNNING))
     }
 
+    @Test
+    fun clearingCompletedHistoryKeepsFailedAndActiveTasks() = runBlocking {
+        database.downloadTaskDao().upsert(
+            task("task-complete", status = DownloadTaskStatus.COMPLETED)
+        )
+        database.downloadTaskDao().upsert(
+            task("task-failed", status = DownloadTaskStatus.FAILED)
+        )
+        database.downloadTaskDao().upsert(
+            task("task-running", status = DownloadTaskStatus.RUNNING)
+        )
+
+        database.downloadTaskDao().deleteByStatus(DownloadTaskStatus.COMPLETED)
+
+        assertEquals(null, database.downloadTaskDao().getById("task-complete"))
+        assertEquals(DownloadTaskStatus.FAILED, database.downloadTaskDao().getById("task-failed")?.status)
+        assertEquals(DownloadTaskStatus.RUNNING, database.downloadTaskDao().getById("task-running")?.status)
+    }
+
     private fun task(
         id: String,
         status: Int = DownloadTaskStatus.QUEUED,
