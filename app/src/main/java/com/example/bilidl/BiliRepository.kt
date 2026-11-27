@@ -166,8 +166,10 @@ class BiliRepository(
             val videoItem = eligible.firstOrNull {
                 it.optString("codecs").contains("avc", ignoreCase = true)
             } ?: eligible.maxByOrNull { it.optInt("id") }
-            val audioItem = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
-                .maxByOrNull { it.optInt("id") }
+            val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
+            val audioItem = audioCandidates.firstOrNull {
+                it.optString("codecs").contains("mp4a", ignoreCase = true)
+            } ?: audioCandidates.maxByOrNull { it.optInt("id") }
 
             val videoUrls = videoItem?.let { streamUrls(it) }.orEmpty()
             val audioUrls = audioItem?.let { streamUrls(it) }.orEmpty()
@@ -206,7 +208,7 @@ class BiliRepository(
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
-        val data = play.optJSONObject("data") ?: play
+        val data = checkedData(play)
         val labels = linkedMapOf<Int, String>()
         val support = data.optJSONArray("support_formats") ?: JSONArray()
         for (i in 0 until support.length()) {
