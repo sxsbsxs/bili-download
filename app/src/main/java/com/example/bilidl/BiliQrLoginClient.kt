@@ -181,7 +181,7 @@ internal object BiliQrLoginProtocol {
         setCookieHeaders: Iterable<String>,
         fallbackUrl: String? = null
     ): String? {
-        val cookiePattern = Regex("""(?i)(?:^|;\\s*)SESSDATA=([^;\\s]+)""")
+        val cookiePattern = Regex("""(?i)(?:^|;\s*)SESSDATA=([^;\s]+)""")
         for (header in setCookieHeaders) {
             cookiePattern.find(header)?.groupValues?.getOrNull(1)?.let { return it }
         }
