@@ -93,6 +93,7 @@ class BiliDownloadWorker(
     }
 
     companion object {
+        const val KEY_TASK_ID = "task_id"
         const val KEY_BVID = "bvid"
         const val KEY_AID = "aid"
         const val KEY_CID = "cid"
