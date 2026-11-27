@@ -176,7 +176,7 @@ class BiliRepository(
         // DASH is the preferred format. Older videos may expose only the
         // legacy DURL response, which requires fnval=0 rather than fnval=4048.
         val dashAttempt = runCatching {
-            checkedData(getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality))
+            checkedData(getPlayInfoWithFallback(video.bvid, video.aid, video.cid, requestedQuality))
         }
         val dashData = dashAttempt.getOrNull()
         var dashQualityUnavailable = false
@@ -223,7 +223,7 @@ class BiliRepository(
         // Do not strand older multi-part FLV videos merely because a DASH
         // response exists but contains no usable video track or no durl field.
         val legacyAttempt = runCatching {
-            checkedData(getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality, fnval = "0"))
+            checkedData(getPlayInfoWithFallback(video.bvid, video.aid, video.cid, requestedQuality, fnval = "0"))
         }
         val legacyData = legacyAttempt.getOrNull()
         if (legacyData != null) {
@@ -411,25 +411,58 @@ class BiliRepository(
         quality: Int,
         fnval: String = "4048"
     ): JSONObject {
-        // Capture the credential once so the anonymous preview flag and the
-        // Cookie header cannot disagree if the session changes mid-request.
-        val sessionCookie = cookieProvider()
-        val parameters = BiliPlayUrlRequestPolicy.createParameters(
-            bvid = bvid,
-            aid = aid,
-            cid = cid,
-            quality = quality,
-            hasSessionCookie = !sessionCookie.isNullOrBlank(),
-            fnval = fnval
-        )
+        // Capture the credential once so the preview flag and Cookie header
+        // cannot disagree if the session changes while a request is running.
+        val sessionCookie = cookieProvider()?.takeIf { it.isNotBlank() }
 
-        // try_look is included before WBI signing. It is an undocumented
-        // Bilibili preview capability, so only request it for anonymous users.
-        val signedQuery = signWbi(parameters)
-        return requestJson(
-            "https://api.bilibili.com/x/player/wbi/playurl?$signedQuery",
-            sessionCookie
-        )
+        fun request(cookie: String?): JSONObject {
+            val parameters = BiliPlayUrlRequestPolicy.createParameters(
+                bvid = bvid,
+                aid = aid,
+                cid = cid,
+                quality = quality,
+                hasSessionCookie = !cookie.isNullOrBlank(),
+                fnval = fnval
+            )
+            // try_look must be included before WBI signing for anonymous requests.
+            val signedQuery = signWbi(parameters)
+            return requestJson(
+                "https://api.bilibili.com/x/player/wbi/playurl?$signedQuery",
+                cookie
+            )
+        }
+
+        val response = request(sessionCookie)
+        if (!BiliPlayUrlRequestPolicy.shouldRetryWithoutSession(
+                response.optInt("code", 0),
+                hadSessionCookie = !sessionCookie.isNullOrBlank()
+            )
+        ) {
+            return response
+        }
+
+        // The app may have started before restoreSession() finished validating
+        // a persisted cookie. A -101 response proves this credential is not
+        // accepted by the endpoint, so retry public access without sending it.
+        return request(null)
+    }
+
+    private fun getPlayInfoWithFallback(
+        bvid: String?,
+        aid: Long,
+        cid: Long,
+        requestedQuality: Int,
+        fnval: String = "4048"
+    ): JSONObject {
+        var lastLoginError: JSONObject? = null
+        for (quality in BiliPlayUrlRequestPolicy.qualityFallbacks(requestedQuality)) {
+            val response = getPlayInfo(bvid, aid, cid, quality, fnval)
+            if (response.optInt("code", 0) != -101) return response
+            lastLoginError = response
+        }
+        // Preserve Bilibili's final response so checkedData() can display the
+        // real access restriction rather than pretending a lower tier exists.
+        return lastLoginError ?: getPlayInfo(bvid, aid, cid, requestedQuality, fnval)
     }
 
     private fun getAvailableQualities(bvid: String?, aid: Long, cid: Long): List<BiliQuality> {
@@ -563,7 +596,11 @@ class BiliRepository(
     private fun checkedData(root: JSONObject, key: String = "data"): JSONObject {
         val code = root.optInt("code", 0)
         if (code != 0) {
-            val message = root.optString("message").ifBlank { "未知错误" }
+            val message = if (code == -101) {
+                "账号未登录。公开视频可以匿名解析；此视频或当前画质可能需要 B站账号授权"
+            } else {
+                root.optString("message").ifBlank { "未知错误" }
+            }
             throw IOException("B站接口错误 " + code + "：" + message)
         }
         return root.optJSONObject(key) ?: throw IOException("B站返回内容不完整")
