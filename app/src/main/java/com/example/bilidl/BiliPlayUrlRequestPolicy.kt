@@ -38,4 +38,23 @@ internal object BiliPlayUrlRequestPolicy {
         }
         return parameters
     }
+
+    /**
+     * A stored SESSDATA may have expired between app launch and a download.
+     * If Bilibili rejects that authenticated request with -101, retry the
+     * same request without the stale cookie and with the anonymous preview flag.
+     */
+    fun shouldRetryWithoutSession(apiCode: Int, hadSessionCookie: Boolean): Boolean =
+        apiCode == -101 && hadSessionCookie
+
+    /**
+     * If an anonymous playurl request is still login-gated, step down through
+     * standard lower tiers instead of failing immediately at the requested tier.
+     * Returned order is highest-to-lowest and never invents a quality label.
+     */
+    fun qualityFallbacks(requestedQuality: Int): List<Int> {
+        val requested = requestedQuality.takeIf { it > 0 } ?: 80
+        val lowerTiers = listOf(127, 126, 125, 120, 116, 112, 80, 74, 64, 32, 16, 6)
+        return (listOf(requested) + lowerTiers.filter { it < requested }).distinct()
+    }
 }
