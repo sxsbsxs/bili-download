@@ -55,7 +55,7 @@ internal object SegmentedHttpDownloader {
                 lastError = error
             }
         }
-        throw IOException("分段下载失败：" + (lastError?.message ?: "没有可用 CDN 地址"))
+        throw IOException("分段下载失败：" + (lastError?.message ?: "没有可用 CDN 地址"), lastError)
     }
 
     private suspend fun downloadOne(
@@ -194,7 +194,7 @@ internal object SegmentedHttpDownloader {
                         if (isCancelled()) throw CancellationException("下载已取消")
                         val start = index.toLong() * CHUNK_SIZE
                         val end = minOf(total - 1L, start + CHUNK_SIZE - 1L)
-                        val received = downloadRangeWithRetry(
+                        downloadRangeWithRetry(
                             url = url,
                             cookie = cookie,
                             probe = probe,
