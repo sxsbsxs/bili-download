@@ -152,10 +152,21 @@ object BiliDownloadEngine {
                 -1
             }
             muxer.start()
-            copyTrack(videoExtractor, videoTrack, muxer, outVideo)
-            if (audioTrack >= 0 && audioExtractor != null && outAudio >= 0) {
-                copyTrack(audioExtractor, audioTrack, muxer, outAudio)
+            val videoBuffer = sampleBuffer(videoExtractor.getTrackFormat(videoTrack))
+            val audioBuffer = if (audioTrack >= 0 && audioExtractor != null) {
+                sampleBuffer(audioExtractor.getTrackFormat(audioTrack))
+            } else {
+                null
             }
+            writeInterleavedSamples(
+                videoExtractor = videoExtractor,
+                videoBuffer = videoBuffer,
+                videoOutputTrack = outVideo,
+                audioExtractor = audioExtractor?.takeIf { audioTrack >= 0 },
+                audioBuffer = audioBuffer,
+                audioOutputTrack = outAudio,
+                muxer = muxer
+            )
             muxer.stop()
             if (!NativeTransfer.validateMp4(output.absolutePath)) {
                 throw IOException("MP4 容器校验失败：缺少完整的 ftyp/moov/mdat 结构")
@@ -182,24 +193,76 @@ object BiliDownloadEngine {
         return null
     }
 
-    private fun copyTrack(
+    /**
+     * Keep a sample buffer large enough for the selected codec's declared input size.
+     * Some high-bitrate keyframes are larger than a small fixed 4 MiB buffer.
+     */
+    private fun sampleBuffer(format: MediaFormat): java.nio.ByteBuffer {
+        val declaredSize = runCatching {
+            format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
+        }.getOrDefault(0)
+        val capacity = maxOf(4 * 1024 * 1024, declaredSize)
+            .coerceAtMost(64 * 1024 * 1024)
+        return java.nio.ByteBuffer.allocate(capacity)
+    }
+
+    private fun readNextSample(
         extractor: MediaExtractor,
-        sourceTrack: Int,
-        muxer: MediaMuxer,
-        targetTrack: Int
+        buffer: java.nio.ByteBuffer
+    ): MediaCodec.BufferInfo? {
+        val presentationTimeUs = extractor.sampleTime
+        if (presentationTimeUs < 0L) return null
+
+        buffer.clear()
+        val size = extractor.readSampleData(buffer, 0)
+        if (size < 0) return null
+
+        return MediaCodec.BufferInfo().apply {
+            set(0, size, presentationTimeUs, extractor.sampleFlags)
+            buffer.position(0)
+            buffer.limit(size)
+        }
+    }
+
+    /**
+     * The video and audio DASH streams have independent extractors. Read one
+     * pending sample from each and write whichever has the earlier timestamp.
+     * This produces a properly time-ordered MP4 without re-encoding either track.
+     */
+    private fun writeInterleavedSamples(
+        videoExtractor: MediaExtractor,
+        videoBuffer: java.nio.ByteBuffer,
+        videoOutputTrack: Int,
+        audioExtractor: MediaExtractor?,
+        audioBuffer: java.nio.ByteBuffer?,
+        audioOutputTrack: Int,
+        muxer: MediaMuxer
     ) {
-        val buffer = java.nio.ByteBuffer.allocate(4 * 1024 * 1024)
-        val info = MediaCodec.BufferInfo()
-        while (true) {
-            buffer.clear()
-            val size = extractor.readSampleData(buffer, 0)
-            if (size < 0) break
-            info.offset = 0
-            info.size = size
-            info.presentationTimeUs = extractor.sampleTime
-            info.flags = extractor.sampleFlags
-            muxer.writeSampleData(targetTrack, buffer, info)
-            extractor.advance()
+        var videoSample = readNextSample(videoExtractor, videoBuffer)
+        var audioSample = if (audioExtractor != null && audioBuffer != null) {
+            readNextSample(audioExtractor, audioBuffer)
+        } else {
+            null
+        }
+
+        while (videoSample != null || audioSample != null) {
+            val writeVideo = audioSample == null ||
+                (videoSample != null &&
+                    videoSample.presentationTimeUs <= audioSample.presentationTimeUs)
+
+            if (writeVideo) {
+                val sample = videoSample ?: break
+                muxer.writeSampleData(videoOutputTrack, videoBuffer, sample)
+                videoExtractor.advance()
+                videoSample = readNextSample(videoExtractor, videoBuffer)
+            } else {
+                val extractor = audioExtractor ?: break
+                val buffer = audioBuffer ?: break
+                val sample = audioSample ?: break
+                muxer.writeSampleData(audioOutputTrack, buffer, sample)
+                extractor.advance()
+                audioSample = readNextSample(extractor, buffer)
+            }
         }
     }
 
