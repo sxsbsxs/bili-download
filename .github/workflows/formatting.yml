@@ -2,7 +2,7 @@ name: Source checks
 
 on:
   push:
-    branches: [main, feature/anonymous-playurl-storage-http-tests]
+    branches: [main, feature/anonymous-playurl-storage-http-tests, feature/multisegment-durl-flv-merge]
   pull_request:
     branches: [main, refactor/nonblocking-download-progress]
 
