@@ -53,6 +53,22 @@ class BiliPlayUrlRequestPolicyTest {
     }
 
     @Test
+    fun legacyFallbackCanRequestDirectFlvWithoutLosingAnonymousPreviewFlag() {
+        val parameters = BiliPlayUrlRequestPolicy.createParameters(
+            bvid = "BV1xx411c7mD",
+            aid = 1L,
+            cid = 100L,
+            quality = 80,
+            hasSessionCookie = false,
+            fnval = "0"
+        )
+
+        assertEquals("0", parameters["fnval"])
+        assertEquals("80", parameters["qn"])
+        assertEquals("1", parameters["try_look"])
+    }
+
+    @Test
     fun anonymousAndAuthenticatedRequestsKeepSameDashNegotiation() {
         val anonymous = BiliPlayUrlRequestPolicy.createParameters(
             "BV1xx411c7mD", 1L, 100L, 64, false
