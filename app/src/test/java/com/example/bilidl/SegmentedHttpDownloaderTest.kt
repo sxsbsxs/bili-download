@@ -176,8 +176,14 @@ private object TestFileWriterFactory : PositionalFileWriterFactory {
     override fun open(target: File): PositionalFileWriter {
         val channel = RandomAccessFile(target, "rw").channel
         return object : PositionalFileWriter {
-            override fun writeAt(offset: Long, bytes: ByteArray): Int =
-                channel.write(ByteBuffer.wrap(bytes), offset)
+            override fun writeAt(offset: Long, bytes: ByteArray): Int {
+                val buffer = ByteBuffer.wrap(bytes)
+                var position = offset
+                while (buffer.hasRemaining()) {
+                    position += channel.write(buffer, position)
+                }
+                return bytes.size
+            }
 
             override fun sync(): Boolean {
                 channel.force(true)
