@@ -233,9 +233,13 @@ class BiliDownloadWorker(
         // Preserve the useful response details instead of replacing every 403
         // with the same generic sentence. BiliHttpException stores the operation,
         // CDN host and a short response excerpt, never the signed media URL.
-        val transportDetails = generateSequence(error as Throwable?) { it.cause }
-            .filterIsInstance<BiliHttpException>()
-            .map { it.message.orEmpty().replace(Regex("\\s+"), " ").take(240) }
+        val transportDetails = (
+            listOfNotNull(error.message) +
+                generateSequence(error.cause) { it.cause }
+                    .filterIsInstance<BiliHttpException>()
+                    .map { it.message.orEmpty() }
+                    .toList()
+            ).map { it.replace(Regex("\\s+"), " ").take(240) }
             .distinct()
             .joinToString("；")
             .take(420)
