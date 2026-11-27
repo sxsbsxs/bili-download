@@ -5,6 +5,8 @@ BiliDl is a Bilibili-specific Android application. It does not embed a generic v
 ## Current source layout
 
 - app/src/main/java/com/example/bilidl: Android entry points, Bilibili API access, download orchestration, WorkManager worker, and platform integration.
+- app/src/main/java/com/example/bilidl/MainViewModel.kt and VideoParseState.kt: lifecycle-owned link parsing and typed home-screen state.
+- app/src/main/java/com/example/bilidl/DownloadsViewModel.kt: durable task, retry, resource-history and deletion commands for the download-management screen.
 - app/src/main/java/com/example/bilidl/common/content: Bilibili-native content models, segmented-danmaku protobuf decoding, and XML/SRT exporters.
 - app/src/main/java/com/example/bilidl/BiliMediaMuxer.kt: Android MediaExtractor/MediaMuxer sample interleaving and native MP4 structural validation.
 - app/src/main/java/com/example/bilidl/DownloadProgressPolicy.kt: pure progress publication and durable-snapshot throttling policy.
@@ -23,9 +25,9 @@ This is an intentional transition layout: the existing application remains one G
 
 ## Download flow
 
-1. BiliLinkParser normalizes b23.tv, BV, av, ep, and ss input.
+1. MainViewModel runs BiliRepository inspection on Dispatchers.IO and emits Idle/Loading/Success/Error through StateFlow; a newer input cancels the previous parse job. BiliLinkParser normalizes b23.tv, BV, av, ep, and ss input.
 2. BiliRepository resolves page metadata, WBI playurl data, available qualities, subtitle tracks, and danmaku segments.
-3. BiliDownloadWorker owns the foreground task lifecycle. Room stores task specifications, lifecycle state, retry counts, output URIs, and sidecar resources; WorkManager remains the execution scheduler.
+3. DownloadsViewModel owns Activity-facing task metadata commands and history queries. BiliDownloadWorker owns the foreground execution lifecycle. Room stores task specifications, lifecycle state, retry counts, output URIs, and sidecar resources; WorkManager remains the execution scheduler.
 4. SegmentedHttpDownloader schedules HTTP ranges, checkpoints validated chunks, and retries transient failures.
 5. BiliDownloadEngine coordinates stream transfer and Bilibili sidecar export; BiliMediaMuxer separately packages DASH audio/video, interleaves samples by timestamps, and invokes native MP4 validation before publication.
 6. Optional content export writes Bilibili danmaku as XML and BCC subtitles as SRT beside the main media. Published resource URIs are committed to Room with the task completion transaction.
