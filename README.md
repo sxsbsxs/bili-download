@@ -28,6 +28,14 @@ BiliDl is a Bilibili-focused Android downloader. The project uses its own Bilibi
 
 The application remains a single Gradle app module for now; package boundaries are being established before any independent module split.
 
+## Live API verification
+
+To verify anonymous preview quality against a specific public video without sending a Cookie:
+
+    python3 scripts/probe-anonymous-playurl.py --bvid BV1xxxxxxxxx --page 1 --require-1080p
+
+The probe resolves the selected part CID, obtains the current WBI key, signs a `try_look=1` / `qn=80` DASH request, and reports the actual video track IDs returned by Bilibili. It does not download or publish the video. The same check is available as the manually triggered **Bilibili anonymous playurl smoke test** GitHub Actions workflow.
+
 ## Build
 
 Open the repository in Android Studio with JDK 17 and Gradle 8.13 support, or run:
