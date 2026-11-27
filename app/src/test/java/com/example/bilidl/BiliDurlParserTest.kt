@@ -6,6 +6,31 @@ import org.junit.Test
 
 class BiliDurlParserTest {
     @Test
+    fun parsesBilibiliDurlJsonIncludingOrderLengthSizeAndBackupUrls() {
+        val durl = org.json.JSONArray().put(
+            org.json.JSONObject()
+                .put("order", 2)
+                .put("length", 2_500)
+                .put("size", 4096)
+                .put("url", "https://cdn.example/part2")
+                .put("backup_url", org.json.JSONArray().put("https://backup.example/part2"))
+        ).put(
+            org.json.JSONObject()
+                .put("order", 1)
+                .put("length", 1_500)
+                .put("size", 2048)
+                .put("url", "https://cdn.example/part1")
+        )
+
+        val result = BiliDurlParser.parse(durl)
+
+        assertEquals(listOf(1, 2), result.map { it.order })
+        assertEquals(listOf(1_500L, 2_500L), result.map { it.lengthMs })
+        assertEquals(listOf(2048L, 4096L), result.map { it.sizeBytes })
+        assertEquals(listOf("https://cdn.example/part2", "https://backup.example/part2"), result[1].urls)
+    }
+
+    @Test
     fun sortsSegmentsAndKeepsBackupUrlsAsAlternatives() {
         val result = BiliDurlParser.normalize(
             listOf(
