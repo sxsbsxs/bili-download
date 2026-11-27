@@ -71,6 +71,21 @@ class BiliPlayUrlRequestPolicyTest {
     }
 
     @Test
+    fun expiredSessionCanRetryPlayurlWithoutCookie() {
+        assertTrue(BiliPlayUrlRequestPolicy.shouldRetryWithoutSession(-101, true))
+        assertFalse(BiliPlayUrlRequestPolicy.shouldRetryWithoutSession(-101, false))
+        assertFalse(BiliPlayUrlRequestPolicy.shouldRetryWithoutSession(0, true))
+        assertFalse(BiliPlayUrlRequestPolicy.shouldRetryWithoutSession(-352, true))
+    }
+
+    @Test
+    fun loginGatedQualityFallsBackThroughLowerSupportedTiers() {
+        assertEquals(listOf(80, 74, 64, 32, 16, 6), BiliPlayUrlRequestPolicy.qualityFallbacks(80))
+        assertEquals(listOf(32, 16, 6), BiliPlayUrlRequestPolicy.qualityFallbacks(32))
+        assertEquals(listOf(80, 74, 64, 32, 16, 6), BiliPlayUrlRequestPolicy.qualityFallbacks(0))
+    }
+
+    @Test
     fun anonymousAndAuthenticatedRequestsKeepSameDashNegotiation() {
         val anonymous = BiliPlayUrlRequestPolicy.createParameters(
             "BV1xx411c7mD", 1L, 100L, 64, false
