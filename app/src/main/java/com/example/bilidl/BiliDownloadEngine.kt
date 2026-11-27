@@ -9,6 +9,10 @@ import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import com.example.bilidl.common.content.BiliContentExporter
+import com.example.bilidl.common.content.BiliDanmaku
+import com.example.bilidl.common.content.BiliDanmakuProtoParser
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -21,12 +25,22 @@ data class SavedDownload(
     val uri: Uri,
     val displayName: String,
     val sizeBytes: Long,
-    val mimeType: String
+    val mimeType: String,
+    val additionalFiles: List<String> = emptyList(),
+    val warnings: List<String> = emptyList()
+)
+
+private data class SidecarSummary(
+    val files: List<String>,
+    val warnings: List<String>
 )
 
 object BiliDownloadEngine {
     private const val USER_AGENT =
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36"
+    private const val DANMAKU_SEGMENT_SECONDS = 360
+    private const val MAX_DANMAKU_SEGMENTS = 512
+    private const val MAX_SUBTITLE_TRACKS = 12
 
     suspend fun download(
         context: Context,
@@ -36,6 +50,8 @@ object BiliDownloadEngine {
         transferId: String,
         concurrency: Int,
         cookie: String?,
+        downloadDanmaku: Boolean = false,
+        downloadSubtitles: Boolean = false,
         isCancelled: () -> Boolean = { false },
         progress: (Int, String) -> Unit
     ): SavedDownload = withContext(Dispatchers.IO) {
@@ -84,9 +100,20 @@ object BiliDownloadEngine {
                     progress(95, "正在封装 MP4")
                     muxToMp4(videoTemp, audioTemp.takeIf { it.exists() }, finalTemp)
                     val saved = publishFile(context, finalTemp, video.title, "mp4", "video/mp4")
-                    progress(100, "下载完成")
+                    val sidecars = exportSidecars(
+                        context = context,
+                        workDir = workDir,
+                        prefix = prefix,
+                        repository = repository,
+                        video = video,
+                        downloadDanmaku = downloadDanmaku,
+                        downloadSubtitles = downloadSubtitles,
+                        isCancelled = isCancelled,
+                        progress = progress
+                    )
+                    progress(100, completionDetail("下载完成", sidecars))
                     completed = true
-                    saved
+                    saved.copy(additionalFiles = sidecars.files, warnings = sidecars.warnings)
                 }
             } else {
                 if (audioOnly) throw IOException("当前视频接口只返回完整视频流，暂不支持单独提取音频")
@@ -100,14 +127,23 @@ object BiliDownloadEngine {
                 val ext = if (source.format.contains("flv", true)) "flv" else "mp4"
                 val mime = if (ext == "flv") "video/x-flv" else "video/mp4"
                 val saved = publishFile(context, directTemp, video.title, ext, mime)
-                progress(100, "下载完成")
+                val sidecars = exportSidecars(
+                    context = context,
+                    workDir = workDir,
+                    prefix = prefix,
+                    repository = repository,
+                    video = video,
+                    downloadDanmaku = downloadDanmaku,
+                    downloadSubtitles = downloadSubtitles,
+                    isCancelled = isCancelled,
+                    progress = progress
+                )
+                progress(100, completionDetail("下载完成", sidecars))
                 completed = true
-                saved
+                saved.copy(additionalFiles = sidecars.files, warnings = sidecars.warnings)
             }
         } finally {
-            // The muxed audio file is reproducible from the retained downloaded stream.
             audioOutputTemp.delete()
-            // Keep partial range files after a failure so retries can reuse finished chunks.
             if (completed) {
                 videoTemp.delete()
                 audioTemp.delete()
@@ -118,6 +154,148 @@ object BiliDownloadEngine {
                     File(file.absolutePath + ".meta").delete()
                 }
             }
+        }
+    }
+
+    private fun exportSidecars(
+        context: Context,
+        workDir: File,
+        prefix: String,
+        repository: BiliRepository,
+        video: BiliVideo,
+        downloadDanmaku: Boolean,
+        downloadSubtitles: Boolean,
+        isCancelled: () -> Boolean,
+        progress: (Int, String) -> Unit
+    ): SidecarSummary {
+        if (!downloadDanmaku && !downloadSubtitles) return SidecarSummary(emptyList(), emptyList())
+
+        val files = ArrayList<String>()
+        val warnings = ArrayList<String>()
+
+        if (downloadDanmaku) {
+            try {
+                progress(96, "正在获取弹幕")
+                val requestedSegments = (
+                    (video.durationSeconds.coerceAtLeast(1) + DANMAKU_SEGMENT_SECONDS - 1) /
+                        DANMAKU_SEGMENT_SECONDS
+                    )
+                val segmentCount = requestedSegments.coerceIn(1, MAX_DANMAKU_SEGMENTS)
+                val comments = ArrayList<BiliDanmaku>()
+                var failedSegments = 0
+                for (segment in 1..segmentCount) {
+                    if (isCancelled()) throw CancellationException("下载已取消")
+                    try {
+                        val bytes = repository.getDanmakuSegment(video.cid, segment)
+                        comments += BiliDanmakuProtoParser.parse(bytes)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        failedSegments++
+                    }
+                }
+
+                if (comments.isEmpty()) {
+                    warnings += if (failedSegments == segmentCount) {
+                        "弹幕获取失败：B站未返回可用分段"
+                    } else {
+                        "该视频没有可导出的弹幕"
+                    }
+                } else {
+                    val temp = File(workDir, "\${prefix}_danmaku.xml")
+                    try {
+                        temp.writeText(
+                            BiliContentExporter.danmakuToXml(video.cid, comments),
+                            Charsets.UTF_8
+                        )
+                        files += publishFile(
+                            context,
+                            temp,
+                            video.title + "_弹幕",
+                            "xml",
+                            "application/xml"
+                        ).displayName
+                    } finally {
+                        temp.delete()
+                    }
+                    if (failedSegments > 0) {
+                        warnings += "弹幕部分导出：\${failedSegments}/$segmentCount 个分段获取失败"
+                    }
+                }
+                if (requestedSegments > MAX_DANMAKU_SEGMENTS) {
+                    warnings += "视频时长过长，本次最多获取 $MAX_DANMAKU_SEGMENTS 个弹幕分段"
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                warnings += "弹幕导出失败：" + (error.message ?: "未知错误")
+            }
+        }
+
+        if (downloadSubtitles) {
+            try {
+                progress(98, "正在获取字幕")
+                if (isCancelled()) throw CancellationException("下载已取消")
+                val allTracks = repository.getSubtitleTracks(video)
+                val tracks = allTracks.take(MAX_SUBTITLE_TRACKS)
+                if (tracks.isEmpty()) {
+                    warnings += "该视频没有可下载的字幕轨道"
+                } else {
+                    var exportedTracks = 0
+                    tracks.forEachIndexed { index, track ->
+                        if (isCancelled()) throw CancellationException("下载已取消")
+                        try {
+                            val cues = repository.getSubtitleCues(track)
+                            if (cues.isNotEmpty()) {
+                                val temp = File(workDir, "\${prefix}_subtitle_$index.srt")
+                                try {
+                                    temp.writeText(BiliContentExporter.subtitlesToSrt(cues), Charsets.UTF_8)
+                                    val baseName = video.title + "_" + track.languageName
+                                    files += publishFile(
+                                        context,
+                                        temp,
+                                        baseName,
+                                        "srt",
+                                        "application/x-subrip"
+                                    ).displayName
+                                    exportedTracks++
+                                } finally {
+                                    temp.delete()
+                                }
+                            }
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            warnings += "字幕 \${track.languageName} 导出失败：" +
+                                (error.message ?: "未知错误")
+                        }
+                    }
+                    if (exportedTracks == 0 && warnings.none { it.startsWith("字幕") }) {
+                        warnings += "字幕轨道没有可导出的文字"
+                    }
+                }
+                if (allTracks.size > MAX_SUBTITLE_TRACKS) {
+                    warnings += "字幕轨道较多，本次最多导出 $MAX_SUBTITLE_TRACKS 条"
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                warnings += "字幕导出失败：" + (error.message ?: "未知错误")
+            }
+        }
+
+        return SidecarSummary(files.distinct(), warnings.distinct())
+    }
+
+    private fun completionDetail(label: String, sidecars: SidecarSummary): String {
+        return when {
+            sidecars.files.isNotEmpty() && sidecars.warnings.isNotEmpty() ->
+                "$label · 已保存 \${sidecars.files.size} 个附加文件，部分资源未能获取"
+            sidecars.files.isNotEmpty() ->
+                "$label · 已保存 \${sidecars.files.size} 个附加文件"
+            sidecars.warnings.isNotEmpty() ->
+                "$label · 附加资源未能获取"
+            else -> label
         }
     }
 
