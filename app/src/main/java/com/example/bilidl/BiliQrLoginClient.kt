@@ -162,7 +162,7 @@ internal object BiliQrLoginClient {
 
     private fun setCookieHeaders(connection: HttpURLConnection): List<String> {
         return connection.headerFields.entries
-            .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
+            .filter { it.key?.equals("Set-Cookie", ignoreCase = true) == true }
             .flatMap { it.value.orEmpty() }
     }
 }
