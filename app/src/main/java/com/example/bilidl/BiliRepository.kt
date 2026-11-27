@@ -199,7 +199,6 @@ class BiliRepository(
         parameters["fnval"] = "4048"
         parameters["fourk"] = "1"
         parameters["web_location"] = "1315873"
-        parameters["try_look"] = "1"
 
         val signedQuery = signWbi(parameters)
         return requestJson("https://api.bilibili.com/x/player/wbi/playurl?" + signedQuery)
