@@ -32,7 +32,7 @@ jobs:
       - name: Publish draft test release
         uses: softprops/action-gh-release@v2
         with:
-          name: "BiliDl \${{ github.ref_name }} (test build)"
+          name: "BiliDl ${{ github.ref_name }} (test build)"
           draft: true
           prerelease: true
           files: release/*.apk
