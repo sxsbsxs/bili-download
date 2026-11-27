@@ -124,7 +124,7 @@ class BiliFlvSegmentMergerTest {
         data.write(byteArrayOf('F'.code.toByte(), 'L'.code.toByte(), 'V'.code.toByte(), 1, flags.toByte()))
         data.writeInt(9)
         data.writeInt(0)
-        tags.forEach(data::write)
+        tags.forEach { data.write(it) }
         data.flush()
         return out.toByteArray()
     }
