@@ -26,6 +26,8 @@ jobs:
           python-version: "3.12"
       - name: Validate probe script
         run: python -m py_compile scripts/probe-anonymous-playurl.py
+      - name: Test WBI signing and probe parameters
+        run: python -m unittest discover -s scripts/tests -v
       - name: Probe anonymous DASH 1080P
         env:
           BVID: ${{ inputs.bvid }}
