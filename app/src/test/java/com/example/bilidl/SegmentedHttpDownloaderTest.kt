@@ -208,8 +208,8 @@ private class LocalRangeServer(
             try {
                 val socket = server.accept()
                 executor.execute { handle(socket) }
-            } catch (_: IOException) {
-                if (running.get()) throw
+            } catch (error: IOException) {
+                if (running.get()) throw error
             }
         }
     }
