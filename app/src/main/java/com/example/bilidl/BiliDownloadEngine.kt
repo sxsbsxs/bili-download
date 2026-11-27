@@ -123,6 +123,7 @@ object BiliDownloadEngine {
     private fun downloadOne(
         url: String,
         target: File,
+        cookie: String?,
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit
     ) {
