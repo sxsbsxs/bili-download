@@ -29,7 +29,7 @@ class DownloadsViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun registerTask(task: DownloadTaskEntity) {
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { repository.registerTask(task) }
+            runCatching { repository.registerTask(task, preferIncomingSpec = true) }
                 .onFailure { Log.e(TAG, "Unable to save task ${task.taskId}", it) }
         }
     }
