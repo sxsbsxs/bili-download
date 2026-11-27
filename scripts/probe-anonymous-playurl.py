@@ -7,9 +7,7 @@ import argparse
 import hashlib
 import json
 import re
-import sys
 import time
-from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus, urlencode, urlparse
 from urllib.request import Request, urlopen
