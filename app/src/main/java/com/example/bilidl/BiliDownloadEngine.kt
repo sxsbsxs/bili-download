@@ -40,7 +40,7 @@ object BiliDownloadEngine {
         val repository = BiliRepository { cookie }
         val source = repository.getPlaySource(video, qualityId)
         val workDir = File(context.cacheDir, "bilidl").apply { mkdirs() }
-        val prefix = "task_" + System.currentTimeMillis()
+        val prefix = "task_" + java.util.UUID.randomUUID().toString()
         val finalTemp = File(workDir, prefix + ".mp4")
         val videoTemp = File(workDir, prefix + "_video.m4s")
         val audioTemp = File(workDir, prefix + "_audio.m4s")
@@ -227,7 +227,7 @@ object BiliDownloadEngine {
         muxer: MediaMuxer,
         targetTrack: Int
     ) {
-        val buffer = java.nio.ByteBuffer.allocate(1024 * 1024)
+        val buffer = java.nio.ByteBuffer.allocate(4 * 1024 * 1024)
         val info = MediaCodec.BufferInfo()
         while (true) {
             buffer.clear()
