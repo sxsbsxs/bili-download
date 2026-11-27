@@ -72,6 +72,26 @@ class BiliDurlParserTest {
     }
 
     @Test
+    fun stableOrderPreservesApiArrayWhenOrderValuesAreEqual() {
+        val first = BiliDirectSegment(
+            urls = listOf("https://z.example/first"),
+            lengthMs = 100L,
+            sizeBytes = 10L,
+            order = 1
+        )
+        val second = BiliDirectSegment(
+            urls = listOf("https://a.example/second"),
+            lengthMs = 100L,
+            sizeBytes = 10L,
+            order = 1
+        )
+
+        val result = BiliDurlParser.normalize(listOf(first, second))
+
+        assertEquals(listOf(first.urls.single(), second.urls.single()), result.map { it.urls.single() })
+    }
+
+    @Test
     fun ignoresSegmentsWithoutValidHttpCandidates() {
         val result = BiliDurlParser.normalize(
             listOf(
