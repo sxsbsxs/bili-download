@@ -2,36 +2,33 @@
 
 BiliDl is an Android app for saving Bilibili videos that your account or the public video page is allowed to access.
 
-## What works in this branch
+## Implemented
 
 - Accepts Bilibili video links, b23.tv share links, BV IDs, av IDs, and bangumi ep / ss links.
-- Resolves video metadata, multipart page CID, cover, and the quality options returned by Bilibili for that video.
-- Uses Bilibili's WBI-signed playurl endpoint to request DASH streams.
-- Downloads video and audio streams with BiliDl's own HTTP Range scheduler (parallel chunks, per-chunk checkpoints and retry resume), then muxes them into MP4 with Android MediaExtractor / MediaMuxer.
-- Includes an original C++/JNI transfer core for concurrent random-access writes, durable file sync, and MP4 top-level box validation. HTTPS/TLS uses Android's platform HTTP stack; no third-party downloader engine is embedded.
-- Saves completed media in Download/BiliDl through MediaStore; no broad storage permission is requested.
-- Supports audio-only mode when Bilibili returns a separate audio stream.
-- Optionally accepts the user's SESSDATA. It is validated with Bilibili and encrypted at rest with an Android Keystore AES-GCM key.
-- Respects the Wi-Fi-only preference and shows real task progress / failure details. WorkManager jobs survive Activity recreation and process restarts.
+- Resolves video metadata, all multipart page CIDs, cover art, and the quality options returned by Bilibili for each page.
+- Uses Bilibili's WBI-signed playurl endpoint to request DASH streams and reports only qualities actually returned by the API.
+- Downloads video and audio streams with BiliDl's own HTTP Range scheduler: parallel chunks, per-chunk checkpoints, validator-aware resume, bounded retry, and sequential fallback.
+- Muxes DASH video/audio into MP4, interleaving samples by presentation timestamp without re-encoding. Audio-only downloads are packaged as M4A.
+- Supports Bilibili web QR authorization and optional SESSDATA entry. The credential is validated against Bilibili and encrypted locally with an Android Keystore AES-GCM key.
+- Handles multipart video selection and batch task creation. WorkManager foreground notifications report the current stage and transfer progress.
+- Saves finished media in Download/BiliDl through MediaStore without requesting broad storage access.
+- Includes an original C++/JNI core for concurrent random-access writes, durable file sync, and structural MP4 inspection. The inspector checks box boundaries, track/sample tables, timing-table counts, chunk mappings, and verifies that each chunk points into an actual mdat payload.
+- HTTPS/TLS networking uses Android's platform HTTP stack. This project does not bundle yt-dlp, FFmpeg, or aria2.
 
 ## Build
 
-Open this repository in Android Studio with JDK 17 and Gradle 8.13 support, or run:
+Open the repository in Android Studio with JDK 17 and Gradle 8.13 support, or run:
 
-```bash
-gradle --no-daemon :app:assembleDebug
-gradle --no-daemon :app:testDebugUnitTest
-```
+    gradle --no-daemon :app:assembleDebug
+    gradle --no-daemon :app:testDebugUnitTest
 
-The GitHub Actions workflow builds the debug APK and uploads it as the bili-download-debug artifact.
+GitHub Actions also runs a host-side C++ MP4-inspector test suite before building the Android debug APK.
 
-## Current limits
+## Known limits
 
-- QR-code login has not been connected yet. Cookie authorization is optional; public videos can be parsed without signing in.
-- Range-capable CDN transfers use parallel 4 MiB chunks and persist completed ranges only when the server supplies a stable ETag or Last-Modified validator. Retries reuse completed chunks only while the representation still matches. Without a validator, BiliDl falls back to a clean sequential transfer rather than risk mixing bytes from changing CDN representations. Servers that do not support HTTP Range use the same sequential fallback and cannot resume partial bytes.
-- If Bilibili only provides multiple legacy DURL / FLV segments, this version reports that format as unsupported rather than writing a potentially broken file.
-- MP4 muxing depends on the audio/video codecs exposed by Bilibili and supported by the device's Android media stack. The native validator checks the resulting ftyp/moov/mdat container structure. Unsupported codecs produce a visible failed task.
-- Bilibili may change its API, WBI signing requirements, or CDN access rules. HTTP 412 / 403 / 352 responses are surfaced as errors rather than bypassed.
-- This app does not remove DRM, bypass paid access, or grant access to videos your account cannot play.
+- If Bilibili only provides multiple legacy DURL / FLV segments, this version reports that format as unsupported rather than joining unrelated files and risking corruption.
+- DASH remuxing still uses the Android media stack to extract codec samples and write the MP4 container. Codec availability and behavior can vary by Android device; the native inspector verifies container structure, not decoded picture/audio quality.
+- Some videos require an authorized Bilibili account. The app does not bypass paid access, DRM, or Bilibili's access controls.
+- Bilibili may change its API, WBI signing requirements, or CDN access rules. HTTP errors are surfaced instead of bypassing platform restrictions.
 
 Use the app only for content you are authorized to save, and follow Bilibili's terms and the creator's rights.
