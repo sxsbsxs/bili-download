@@ -6,13 +6,24 @@ plugins {
 android {
     namespace = "com.example.bilidl"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "com.example.bilidl"
         minSdk = 29
         targetSdk = 35
         versionCode = 2
-        versionName = "1.1.0"
+        versionName = "1.2.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf("-std=c++17", "-D_FILE_OFFSET_BITS=64")
+            }
+        }
     }
 
     compileOptions {
@@ -24,6 +35,12 @@ android {
         jvmTarget = "17"
     }
 
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
 }
 
 dependencies {
