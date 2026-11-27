@@ -36,6 +36,8 @@ import org.json.JSONObject
 import com.example.bilidl.data.local.entity.DownloadTaskEntity
 import com.example.bilidl.data.local.entity.DownloadTaskStatus
 import com.example.bilidl.data.repository.BiliDownloadTaskRepository
+import com.example.bilidl.data.repository.DownloadTaskRecoveryAction
+import com.example.bilidl.data.repository.DownloadTaskRecoveryPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 
@@ -304,7 +306,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     null
                 }
-                task to (needsExecution && workInfos?.isEmpty() == true)
+                task to DownloadTaskRecoveryPolicy.decide(task.status, workInfos?.size)
             }
 
             runOnUiThread {
@@ -332,8 +334,11 @@ class MainActivity : ComponentActivity() {
                     if (!items.containsKey(task.taskId)) addDownload(task.taskId, task.title, null)
                     when (task.status) {
                         DownloadTaskStatus.QUEUED, DownloadTaskStatus.RUNNING -> {
-                            if (shouldRequeue) enqueueDownload(task.taskId, spec)
-                            else observeUniqueWork(task.taskId)
+                            when (shouldRequeue) {
+                                DownloadTaskRecoveryAction.ENQUEUE_MISSING_WORK -> enqueueDownload(task.taskId, spec)
+                                DownloadTaskRecoveryAction.OBSERVE_EXISTING_WORK -> observeUniqueWork(task.taskId)
+                                DownloadTaskRecoveryAction.RESTORE_TERMINAL_STATE -> Unit
+                            }
                         }
                         DownloadTaskStatus.PAUSED -> setDownloadState(task.taskId, ST_PAUSED, task.detail)
                         DownloadTaskStatus.FAILED -> failDownload(task.taskId, task.errorMessage ?: task.detail)
