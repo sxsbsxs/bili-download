@@ -116,6 +116,29 @@ class SegmentedHttpDownloaderTest {
     }
 
     @Test
+    fun sendsTheActualVideoPageAsRefererToCdnRequests() = runBlocking {
+        val bytes = payload(160 * 1024)
+        val referer = "https://www.bilibili.com/video/BV1xx411c7mD?p=2"
+        LocalRangeServer(payload = bytes).use { server ->
+            val target = File(temporaryFolder.root, "referer.bin")
+            SegmentedHttpDownloader.download(
+                urls = listOf(server.url),
+                target = target,
+                cookie = null,
+                concurrency = 2,
+                isCancelled = { false },
+                onProgress = {},
+                writerFactory = TestFileWriterFactory,
+                referer = referer
+            )
+
+            assertArrayEquals(bytes, target.readBytes())
+            assertTrue(server.referers.isNotEmpty())
+            assertTrue(server.referers.all { it == referer })
+        }
+    }
+
+    @Test
     fun switchesToBackupCdnAfterNonRetryablePrimaryFailure() = runBlocking {
         val bytes = payload(128 * 1024)
         LocalRangeServer(payload = bytes, statusCode = 403).use { rejected ->
@@ -223,6 +246,7 @@ private class LocalRangeServer(
     val url: String = "http://127.0.0.1:${server.localPort}/media"
     val ranges = CopyOnWriteArrayList<String>()
     val requests = CopyOnWriteArrayList<String>()
+    val referers = CopyOnWriteArrayList<String>()
     private val truncated = AtomicBoolean(false)
 
     private fun handle(socket: Socket) {
@@ -244,6 +268,7 @@ private class LocalRangeServer(
             val range = headers["range"].orEmpty()
             ranges += range
             requests += requestLine
+            referers += headers["referer"].orEmpty()
             val output = client.getOutputStream()
             if (statusCode != null) {
                 val body = "test error".toByteArray()
