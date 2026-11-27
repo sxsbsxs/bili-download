@@ -375,7 +375,9 @@ class BiliRepository(
             val body = stream.use {
                 BufferedReader(InputStreamReader(it, Charsets.UTF_8)).readText()
             }
-            if (status !in 200..299) throw IOException("B站请求失败（HTTP " + status + "）")
+            if (status !in 200..299) {
+                throw BiliHttpException(status, "B站接口请求", body.take(160))
+            }
             return JSONObject(body)
         } finally {
             connection.disconnect()
