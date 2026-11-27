@@ -34,8 +34,8 @@ object BiliDownloadEngine {
         qualityId: Int,
         audioOnly: Boolean,
         cookie: String?,
-        progress: (Int, String) -> Unit,
-        isCancelled: () -> Boolean = { false }
+        isCancelled: () -> Boolean = { false },
+        progress: (Int, String) -> Unit
     ): SavedDownload = withContext(Dispatchers.IO) {
         val repository = BiliRepository { cookie }
         val source = repository.getPlaySource(video, qualityId)
@@ -108,6 +108,9 @@ object BiliDownloadEngine {
             try {
                 downloadOne(candidate, target, isCancelled, onProgress)
                 return
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                target.delete()
+                throw cancelled
             } catch (error: Exception) {
                 target.delete()
                 lastError = error
