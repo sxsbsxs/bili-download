@@ -46,6 +46,7 @@ object BiliDownloadEngine {
         val prefix = "task_" + safeId
         var completed = false
         val finalTemp = File(workDir, prefix + ".mp4")
+        val audioOutputTemp = File(workDir, prefix + "_audio.m4a")
         val videoTemp = File(workDir, prefix + "_video.m4s")
         val audioTemp = File(workDir, prefix + "_audio.m4s")
         val directTemp = File(workDir, prefix + "_direct")
@@ -53,13 +54,20 @@ object BiliDownloadEngine {
             if (source.videoUrls.isNotEmpty()) {
                 if (audioOnly) {
                     if (source.audioUrls.isEmpty()) throw IOException("这个视频没有独立音频流")
-                    progress(3, "正在下载音频")
+                    progress(3, "正在下载音频流")
                     downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
-                        progress(3 + value * 94 / 100, "音频流")
+                        progress(3 + value * 78 / 100, "音频流")
                     }
-                    val ext = extensionForMime(source.audioMime, "m4a")
-                    val saved = publishFile(context, audioTemp, video.title, ext, source.audioMime.ifBlank { "audio/mp4" })
-                    progress(100, "已保存")
+                    progress(84, "正在封装 M4A")
+                    muxAudioToM4a(audioTemp, audioOutputTemp)
+                    val saved = publishFile(
+                        context,
+                        audioOutputTemp,
+                        video.title,
+                        "m4a",
+                        "audio/mp4"
+                    )
+                    progress(100, "音频已保存")
                     completed = true
                     saved
                 } else {
@@ -97,6 +105,8 @@ object BiliDownloadEngine {
                 saved
             }
         } finally {
+            // The muxed audio file is reproducible from the retained downloaded stream.
+            audioOutputTemp.delete()
             // Keep partial range files after a failure so retries can reuse finished chunks.
             if (completed) {
                 videoTemp.delete()
@@ -179,6 +189,52 @@ object BiliDownloadEngine {
             try { muxer?.release() } catch (_: Exception) {}
             try { videoExtractor.release() } catch (_: Exception) {}
             try { audioExtractor?.release() } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Package the AAC DASH track into a standalone M4A container. The downloaded
+     * .m4s is only a transport fragment; it must not be published by renaming it.
+     */
+    private fun muxAudioToM4a(audioFile: File, output: File) {
+        val extractor = MediaExtractor()
+        var muxer: MediaMuxer? = null
+        try {
+            extractor.setDataSource(audioFile.absolutePath)
+            val audioTrack = findTrack(extractor, "audio/")
+                ?: throw IOException("下载的音频流中没有可读取的音轨")
+            val format = extractor.getTrackFormat(audioTrack)
+            val mime = format.getString(MediaFormat.KEY_MIME).orEmpty()
+            if (mime != "audio/mp4a-latm") {
+                throw IOException("当前 B站返回的音频编码为 $mime，暂不支持无损封装为 M4A")
+            }
+
+            output.parentFile?.mkdirs()
+            output.delete()
+            muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val outputTrack = muxer.addTrack(format)
+            muxer.start()
+
+            val buffer = sampleBuffer(format)
+            var sample = readNextSample(extractor, buffer)
+            while (sample != null) {
+                muxer.writeSampleData(outputTrack, buffer, sample)
+                extractor.advance()
+                sample = readNextSample(extractor, buffer)
+            }
+            muxer.stop()
+
+            if (!NativeTransfer.validateMp4(output.absolutePath)) {
+                throw IOException("M4A 容器校验失败")
+            }
+            if (output.length() <= 0L) throw IOException("生成的 M4A 文件为空")
+        } catch (error: Exception) {
+            output.delete()
+            if (error is IOException) throw error
+            throw IOException("M4A 封装失败：" + (error.message ?: "设备不支持此音频格式"))
+        } finally {
+            try { muxer?.release() } catch (_: Exception) {}
+            try { extractor.release() } catch (_: Exception) {}
         }
     }
 
