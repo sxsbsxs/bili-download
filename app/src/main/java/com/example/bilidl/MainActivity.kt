@@ -183,32 +183,35 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun restoreDownloadTasks() {
-        workManager.getWorkInfosByTagLiveData(DOWNLOAD_TAG).observe(this) { workInfos ->
-            workInfos.forEach { info ->
-                val id = info.inputData.getString(BiliDownloadWorker.KEY_TASK_ID) ?: return@forEach
-                if (!items.containsKey(id)) {
-                    val bvid = info.inputData.getString(BiliDownloadWorker.KEY_BVID)?.takeIf { it.isNotBlank() }
-                    val video = BiliVideo(
-                        bvid = bvid,
-                        aid = info.inputData.getLong(BiliDownloadWorker.KEY_AID, 0L),
-                        cid = info.inputData.getLong(BiliDownloadWorker.KEY_CID, 0L),
-                        page = 1,
-                        title = info.inputData.getString(BiliDownloadWorker.KEY_TITLE).orEmpty(),
-                        uploader = "",
-                        durationSeconds = 0,
-                        coverUrl = null,
-                        cover = null,
-                        qualities = emptyList()
-                    )
-                    downloadSpecs[id] = DownloadSpec(
-                        video,
-                        info.inputData.getInt(BiliDownloadWorker.KEY_QUALITY, 80),
-                        info.inputData.getBoolean(BiliDownloadWorker.KEY_AUDIO_ONLY, false)
-                    )
-                    addDownload(id, video.title, null)
-                }
-                handleWorkInfo(id, info)
+        taskPrefs.all.forEach { entry ->
+            val id = entry.key
+            val raw = entry.value as? String ?: return@forEach
+            val json = try {
+                JSONObject(raw)
+            } catch (_: Exception) {
+                taskPrefs.edit().remove(id).apply()
+                return@forEach
             }
+            val video = BiliVideo(
+                bvid = json.optString("bvid").takeIf { it.isNotBlank() },
+                aid = json.optLong("aid"),
+                cid = json.optLong("cid"),
+                page = json.optInt("page", 1),
+                title = json.optString("title", "B站视频"),
+                uploader = json.optString("uploader"),
+                durationSeconds = json.optInt("duration"),
+                coverUrl = json.optString("coverUrl").takeIf { it.isNotBlank() },
+                cover = null,
+                qualities = emptyList()
+            )
+            val spec = DownloadSpec(
+                video,
+                json.optInt("quality", 80),
+                json.optBoolean("audioOnly", false)
+            )
+            downloadSpecs[id] = spec
+            if (!items.containsKey(id)) addDownload(id, video.title, null)
+            observeUniqueWork(id)
         }
     }
 
