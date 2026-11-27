@@ -81,6 +81,9 @@ internal object BiliFlvSegmentMerger {
                 }
                 destination.fd.sync()
             }
+            // Re-open the finished artifact and validate the exact bytes that
+            // will be published, not only the source fragments.
+            inspectSegment(output)
         } catch (error: Exception) {
             output.delete()
             if (error is IOException) throw error
