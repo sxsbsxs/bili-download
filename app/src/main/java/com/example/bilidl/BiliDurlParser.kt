@@ -59,3 +59,9 @@ internal object BiliDurlParser {
             .sortedWith(compareBy<BiliDirectSegment> { it.order }.thenBy { it.urls.first() })
     }
 }
+
+/** Prevents a legacy direct response from silently exceeding the user's choice. */
+internal object BiliDirectQualityPolicy {
+    fun canUse(requestedQuality: Int, returnedQuality: Int): Boolean =
+        requestedQuality <= 0 || returnedQuality <= 0 || returnedQuality <= requestedQuality
+}
