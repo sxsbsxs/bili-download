@@ -132,9 +132,11 @@ class BiliRepository(
         val title = if (pages.length() > 1 && part.isNotBlank()) baseTitle + " - " + part else baseTitle
         val owner = data.optJSONObject("owner")?.optString("name").orEmpty().ifBlank { "未知 UP 主" }
         val duration = page?.optInt("duration") ?: data.optInt("duration")
-        val coverUrl = data.optString("pic").takeIf { it.startsWith("http") }
-        val play = getPlayInfoForInspection(actualBvid, aid, cid)
-        val qualities = parseQualities(play)
+        val coverUrl = normalizeCoverUrl(data.optString("pic"))
+        // Public metadata must remain usable even when the anonymous playurl
+        // endpoint refuses to return a quality list. Download re-resolves the
+        // playurl at execution time and may succeed with a different CDN token.
+        val qualities = getAvailableQualities(actualBvid, aid, cid)
         return BiliVideo(
             actualBvid, aid, cid, pageIndex + 1, title, owner, duration,
             coverUrl, null, qualities, availablePages
@@ -160,14 +162,13 @@ class BiliRepository(
         val seasonTitle = result.optString("title").ifBlank { "B站番剧" }
         val episodeTitle = selected.optString("long_title").ifBlank { selected.optString("title") }
         val title = (seasonTitle + " - " + episodeTitle).trimEnd(' ', '-')
-        val coverUrl = selected.optString("cover")
-            .takeIf { it.startsWith("http") }
-            ?: result.optString("cover").takeIf { it.startsWith("http") }
-        val play = getPlayInfoForInspection(bvid, aid, cid)
+        val coverUrl = normalizeCoverUrl(selected.optString("cover"))
+            ?: normalizeCoverUrl(result.optString("cover"))
+        val qualities = getAvailableQualities(bvid, aid, cid)
         return BiliVideo(
             bvid, aid, cid, 1, title,
             result.optJSONObject("up_info")?.optString("uname") ?: "番剧",
-            selected.optInt("duration"), coverUrl, null, parseQualities(play)
+            selected.optInt("duration"), coverUrl, null, qualities
         )
     }
 
@@ -431,22 +432,23 @@ class BiliRepository(
         )
     }
 
-    private fun getPlayInfoForInspection(bvid: String?, aid: Long, cid: Long): JSONObject {
-        val dashAttempt = runCatching { getPlayInfo(bvid, aid, cid, 0) }
-        val dash = dashAttempt.getOrNull()
-        if (dash != null && runCatching { parseQualities(dash).isNotEmpty() }.getOrDefault(false)) {
-            return dash
+    private fun getAvailableQualities(bvid: String?, aid: Long, cid: Long): List<BiliQuality> {
+        val dash = runCatching { getPlayInfo(bvid, aid, cid, 0) }.getOrNull()
+        dash?.let { response ->
+            val qualities = runCatching { parseQualities(response) }.getOrDefault(emptyList())
+            if (qualities.isNotEmpty()) return qualities
         }
 
-        val legacyAttempt = runCatching { getPlayInfo(bvid, aid, cid, 0, fnval = "0") }
-        val legacy = legacyAttempt.getOrNull()
-        if (legacy != null && runCatching { parseQualities(legacy).isNotEmpty() }.getOrDefault(false)) {
-            return legacy
+        val legacy = runCatching { getPlayInfo(bvid, aid, cid, 0, fnval = "0") }.getOrNull()
+        legacy?.let { response ->
+            val qualities = runCatching { parseQualities(response) }.getOrDefault(emptyList())
+            if (qualities.isNotEmpty()) return qualities
         }
 
-        return dash ?: legacy ?: throw (dashAttempt.exceptionOrNull()
-            ?: legacyAttempt.exceptionOrNull()
-            ?: IOException("B站没有返回播放信息"))
+        // Do not turn a public metadata parse into a login wall merely because
+        // Bilibili withholds the quality list. The user can still try download;
+        // the worker fetches fresh playurl data when the task actually runs.
+        return emptyList()
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
@@ -585,22 +587,70 @@ class BiliRepository(
         }
     }
 
+    private fun normalizeCoverUrl(value: String?): String? {
+        val raw = value?.trim().orEmpty()
+        if (raw.isBlank()) return null
+        return when {
+            raw.startsWith("//") -> "https:$raw"
+            raw.startsWith("http://", ignoreCase = true) -> "https://" + raw.substringAfter("://")
+            raw.startsWith("https://", ignoreCase = true) -> raw
+            raw.startsWith("/") -> "https://www.bilibili.com$raw"
+            else -> null
+        }
+    }
+
     private fun downloadCover(url: String?): Bitmap? {
-        if (url.isNullOrBlank()) return null
-        return try {
-            val connection = URL(url).openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 15_000
-            connection.setRequestProperty("User-Agent", userAgent)
-            connection.setRequestProperty("Referer", "https://www.bilibili.com/")
-            connection.inputStream.use { BitmapFactory.decodeStream(it) }
-        } finally {
-            connection.disconnect()
+        val normalized = normalizeCoverUrl(url) ?: return null
+        val referers = listOf("https://www.bilibili.com/", "https://m.bilibili.com/")
+        for (referer in referers) {
+            val connection = runCatching {
+                (URL(normalized).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 10_000
+                    readTimeout = 15_000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", userAgent)
+                    setRequestProperty("Referer", referer)
+                    setRequestProperty(
+                        "Accept",
+                        "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+                    )
+                    setRequestProperty("Accept-Encoding", "identity")
+                    setRequestProperty("Connection", "close")
+                }
+            }.getOrNull() ?: continue
+            try {
+                if (connection.responseCode !in 200..299) continue
+                val bytes = connection.inputStream.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(16 * 1024)
+                    var total = 0
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > 8 * 1024 * 1024) throw IOException("封面图片超过大小限制")
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                }
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) continue
+                var sampleSize = 1
+                while (bounds.outWidth / sampleSize > 960 ||
+                    bounds.outHeight / sampleSize > 720
+                ) {
+                    sampleSize *= 2
+                }
+                val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.let { return it }
+            } catch (_: Exception) {
+                // Retry the same CDN image with the mobile web Referer below.
+            } finally {
+                connection.disconnect()
+            }
         }
-        } catch (_: Exception) {
-            null
-        }
+        return null
     }
 
     private fun requestJson(url: String, cookieOverride: String? = cookieProvider()): JSONObject {
