@@ -11,6 +11,8 @@ import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.example.bilidl.data.local.entity.DownloadResourceEntity
+import com.example.bilidl.data.local.entity.DownloadTaskEntity
+import com.example.bilidl.data.local.entity.DownloadTaskStatus
 import com.example.bilidl.data.repository.BiliDownloadTaskRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -39,11 +41,37 @@ class BiliDownloadWorker(
             val page = inputData.getInt(KEY_PAGE, 1)
             val transferId = inputData.getString(KEY_TASK_ID).orEmpty()
             val concurrency = inputData.getInt(KEY_CONCURRENT, 2)
+            if (taskId.isBlank()) {
+                return Result.failure(workDataOf(KEY_ERROR to "任务编号缺失"))
+            }
+
+            taskRepository.registerTask(
+                DownloadTaskEntity(
+                    taskId = taskId,
+                    bvid = bvid,
+                    aid = aid,
+                    cid = cid,
+                    pageNumber = page,
+                    title = title,
+                    uploader = "",
+                    durationSeconds = durationSeconds,
+                    coverUrl = null,
+                    qualityId = quality,
+                    audioOnly = audioOnly,
+                    downloadDanmaku = downloadDanmaku,
+                    downloadSubtitles = downloadSubtitles
+                )
+            )
             if (cid <= 0L || (bvid.isNullOrBlank() && aid <= 0L)) {
-                if (taskId.isNotBlank()) taskRepository.markFailed(taskId, "下载参数无效")
+                taskRepository.markFailed(taskId, "下载参数无效")
                 return Result.failure(workDataOf(KEY_ERROR to "下载参数无效"))
             }
-            if (taskId.isNotBlank()) taskRepository.markRunning(taskId)
+
+            val persistedStatus = taskRepository.getTask(taskId)?.status
+            if (persistedStatus == DownloadTaskStatus.FAILED || persistedStatus == DownloadTaskStatus.PAUSED) {
+                taskRepository.markQueued(taskId, "任务已重新加入队列", countAttempt = true)
+            }
+            taskRepository.markRunning(taskId)
 
             val video = BiliVideo(
                 bvid = bvid,
