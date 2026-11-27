@@ -329,12 +329,15 @@ class BiliRepository(
         if (url.isNullOrBlank()) return null
         return try {
             val connection = URL(url).openConnection() as HttpURLConnection
+        try {
             connection.connectTimeout = 10_000
             connection.readTimeout = 15_000
             connection.setRequestProperty("User-Agent", userAgent)
             connection.setRequestProperty("Referer", "https://www.bilibili.com/")
             connection.inputStream.use { BitmapFactory.decodeStream(it) }
-                .also { connection.disconnect() }
+        } finally {
+            connection.disconnect()
+        }
         } catch (_: Exception) {
             null
         }
@@ -360,7 +363,7 @@ class BiliRepository(
             val stream: InputStream = if (status in 200..299) connection.inputStream
                 else connection.errorStream ?: throw IOException("B站请求失败（HTTP " + status + "）")
             val body = stream.use {
-                BufferedReader(InputStreamReader(it, Charsets.UTF_8)).use(BufferedReader::readText)
+                BufferedReader(InputStreamReader(it, Charsets.UTF_8)).readText()
             }
             if (status !in 200..299) throw IOException("B站请求失败（HTTP " + status + "）")
             return JSONObject(body)
