@@ -371,7 +371,7 @@ class BiliRepository(
         try {
             val status = connection.responseCode
             val stream: InputStream = if (status in 200..299) connection.inputStream
-                else connection.errorStream ?: throw IOException("B站请求失败（HTTP " + status + "）")
+                else connection.errorStream ?: throw BiliHttpException(status, "B站接口请求")
             val body = stream.use {
                 BufferedReader(InputStreamReader(it, Charsets.UTF_8)).readText()
             }
