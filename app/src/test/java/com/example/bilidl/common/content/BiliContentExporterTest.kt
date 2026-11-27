@@ -25,7 +25,7 @@ class BiliContentExporterTest {
 
         assertTrue(xml.startsWith("""<?xml version="1.0" encoding="UTF-8"?>"""))
         assertTrue(xml.contains("<chatid>123456</chatid>"))
-        assertTrue(xml.contains("""p="1.234,1,25,16777215,1794000000,0,sender&amp;1,9,0""""))
+        assertTrue(xml.contains("p=\"1.234,1,25,16777215,1794000000,0,sender&amp;1,9,0\""))
         assertTrue(xml.contains("A &lt; B &amp; C"))
         assertTrue(xml.endsWith("</i>"))
     }
