@@ -132,7 +132,7 @@ class BiliRepository(
         val title = if (pages.length() > 1 && part.isNotBlank()) baseTitle + " - " + part else baseTitle
         val owner = data.optJSONObject("owner")?.optString("name").orEmpty().ifBlank { "未知 UP 主" }
         val duration = page?.optInt("duration") ?: data.optInt("duration")
-        val coverUrl = normalizeCoverUrl(data.optString("pic"))
+        val coverUrl = BiliCoverUrlPolicy.normalize(data.optString("pic"))
         // Public metadata must remain usable even when the anonymous playurl
         // endpoint refuses to return a quality list. Download re-resolves the
         // playurl at execution time and may succeed with a different CDN token.
@@ -162,8 +162,8 @@ class BiliRepository(
         val seasonTitle = result.optString("title").ifBlank { "B站番剧" }
         val episodeTitle = selected.optString("long_title").ifBlank { selected.optString("title") }
         val title = (seasonTitle + " - " + episodeTitle).trimEnd(' ', '-')
-        val coverUrl = normalizeCoverUrl(selected.optString("cover"))
-            ?: normalizeCoverUrl(result.optString("cover"))
+        val coverUrl = BiliCoverUrlPolicy.normalize(selected.optString("cover"))
+            ?: BiliCoverUrlPolicy.normalize(result.optString("cover"))
         val qualities = getAvailableQualities(bvid, aid, cid)
         return BiliVideo(
             bvid, aid, cid, 1, title,
@@ -584,18 +584,6 @@ class BiliRepository(
             return connection.url.toString()
         } finally {
             connection.disconnect()
-        }
-    }
-
-    private fun normalizeCoverUrl(value: String?): String? {
-        val raw = value?.trim().orEmpty()
-        if (raw.isBlank()) return null
-        return when {
-            raw.startsWith("//") -> "https:$raw"
-            raw.startsWith("http://", ignoreCase = true) -> "https://" + raw.substringAfter("://")
-            raw.startsWith("https://", ignoreCase = true) -> raw
-            raw.startsWith("/") -> "https://www.bilibili.com$raw"
-            else -> null
         }
     }
 
