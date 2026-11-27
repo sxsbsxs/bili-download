@@ -129,8 +129,8 @@ class MainActivity : ComponentActivity() {
             video = video,
             qualityId = selectedQualityId.takeIf { it > 0 } ?: video.qualities.firstOrNull()?.id ?: 80,
             audioOnly = settingsViewModel.getBoolean("audio_only", false),
-            downloadDanmaku = prefs.getBoolean("danmaku", false),
-            downloadSubtitles = prefs.getBoolean("subtitles", false)
+            downloadDanmaku = settingsViewModel.getBoolean("danmaku", false),
+            downloadSubtitles = settingsViewModel.getBoolean("subtitles", false)
         )
         val id = "bili_" + System.currentTimeMillis()
         downloadSpecs[id] = spec
@@ -142,7 +142,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun enqueueDownload(id: String, spec: DownloadSpec) {
-        val networkType = if (prefs.getBoolean("wifi_only", true)) {
+        val networkType = if (settingsViewModel.getBoolean("wifi_only", true)) {
             androidx.work.NetworkType.UNMETERED
         } else {
             androidx.work.NetworkType.CONNECTED
@@ -554,7 +554,7 @@ class MainActivity : ComponentActivity() {
 
     private fun preferredQualityId(qualities: List<BiliQuality>): Int {
         if (qualities.isEmpty()) return 80
-        val target = when (prefs.getInt("quality", 0)) {
+        val target = when (settingsViewModel.getInt("quality", 0)) {
             1 -> 80
             2 -> 64
             3 -> 32
@@ -599,7 +599,7 @@ class MainActivity : ComponentActivity() {
     private fun downloadAllPages(video: BiliVideo, pages: List<BiliPage>) {
         if (pages.isEmpty()) return
         toast("正在逐P获取画质并准备下载任务…")
-        val audioOnly = prefs.getBoolean("audio_only", false)
+        val audioOnly = settingsViewModel.getBoolean("audio_only", false)
         backgroundExecutor.execute {
             val prepared = ArrayList<DownloadSpec>()
             val skipped = ArrayList<Int>()
@@ -613,8 +613,8 @@ class MainActivity : ComponentActivity() {
                         partVideo,
                         quality,
                         audioOnly,
-                        prefs.getBoolean("danmaku", false),
-                        prefs.getBoolean("subtitles", false)
+                        settingsViewModel.getBoolean("danmaku", false),
+                        settingsViewModel.getBoolean("subtitles", false)
                     )
                 } catch (_: Exception) {
                     skipped += page.pageNumber
@@ -1135,7 +1135,7 @@ class MainActivity : ComponentActivity() {
 
     // ================= 首页 =================
     private fun qualityText() =
-        qualityOptions[prefs.getInt("quality", 0).coerceIn(0, qualityOptions.lastIndex)] + "  ›"
+        qualityOptions[settingsViewModel.getInt("quality", 0).coerceIn(0, qualityOptions.lastIndex)] + "  ›"
 
     private fun refreshQuality() {
         homeQualityTv.text = qualityText()
@@ -1145,7 +1145,7 @@ class MainActivity : ComponentActivity() {
     private fun pickOption(title: String, key: String, options: Array<String>, def: Int, after: () -> Unit) {
         AlertDialog.Builder(this)
             .setTitle(title)
-            .setSingleChoiceItems(options, prefs.getInt(key, def)) { d, which ->
+            .setSingleChoiceItems(options, settingsViewModel.getInt(key, def)) { d, which ->
                 settingsViewModel.setInt(key, which)
                 after()
                 d.dismiss()
@@ -1713,7 +1713,7 @@ class MainActivity : ComponentActivity() {
     private fun choiceRow(title: String, key: String, options: Array<String>, def: Int): View {
         val value = valueText("")
         fun refresh() {
-            value.text = options[prefs.getInt(key, def).coerceIn(0, options.lastIndex)] + "  ›"
+            value.text = options[settingsViewModel.getInt(key, def).coerceIn(0, options.lastIndex)] + "  ›"
         }
         refresh()
         return settingRow(title, null, value) { pickOption(title, key, options, def) { refresh() } }
@@ -1721,7 +1721,7 @@ class MainActivity : ComponentActivity() {
 
     private fun switchRow(title: String, key: String, def: Boolean, desc: String? = null): View {
         val sw = Switch(this)
-        sw.isChecked = prefs.getBoolean(key, def)
+        sw.isChecked = settingsViewModel.getBoolean(key, def)
         val states = arrayOf(intArrayOf(android.R.attr.state_checked), intArrayOf())
         sw.thumbTintList = ColorStateList(states, intArrayOf(pink, Color.parseColor("#BFC5D0")))
         sw.trackTintList = ColorStateList(states, intArrayOf(Color.parseColor("#FDB9CC"), Color.parseColor("#E3E6EC")))
