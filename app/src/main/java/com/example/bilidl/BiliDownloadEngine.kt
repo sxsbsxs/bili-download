@@ -62,6 +62,7 @@ object BiliDownloadEngine {
     ): SavedDownload = withContext(Dispatchers.IO) {
         val repository = BiliRepository { cookie }
         val source = repository.getPlaySource(video, qualityId)
+        val referer = videoReferer(video)
         val workDir = File(context.filesDir, "bilidl_transfers").apply { mkdirs() }
         val safeId = transferId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
         val prefix = "task_" + safeId
@@ -82,7 +83,19 @@ object BiliDownloadEngine {
                         progress(84, "恢复已封装的 M4A")
                     } else {
                         progress(3, "正在下载音频流")
-                        downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
+                        downloadStreamWithRefresh(
+                            repository = repository,
+                            video = video,
+                            qualityId = qualityId,
+                            initialCandidates = source.audioUrls,
+                            refreshedCandidates = { fresh -> fresh.audioUrls },
+                            target = audioTemp,
+                            cookie = cookie,
+                            concurrency = concurrency,
+                            isCancelled = isCancelled,
+                            referer = referer,
+                            onRefreshing = { progress(3, "CDN 拒绝访问，正在刷新音频地址…") }
+                        ) { value ->
                             progress(3 + value * 78 / 100, "音频流")
                         }
                         progress(84, "正在封装 M4A")
@@ -125,12 +138,36 @@ object BiliDownloadEngine {
                         progress(95, "恢复已封装的 MP4")
                     } else {
                         progress(2, "正在下载视频流")
-                        downloadStream(source.videoUrls, videoTemp, cookie, concurrency, isCancelled) { value ->
+                        downloadStreamWithRefresh(
+                            repository = repository,
+                            video = video,
+                            qualityId = qualityId,
+                            initialCandidates = source.videoUrls,
+                            refreshedCandidates = { fresh -> fresh.videoUrls },
+                            target = videoTemp,
+                            cookie = cookie,
+                            concurrency = concurrency,
+                            isCancelled = isCancelled,
+                            referer = referer,
+                            onRefreshing = { progress(2, "CDN 拒绝访问，正在刷新视频地址…") }
+                        ) { value ->
                             progress(2 + (value * if (source.audioUrls.isEmpty()) 92 else 45) / 100, "视频流")
                         }
                         if (source.audioUrls.isNotEmpty()) {
                             progress(49, "正在下载音频流")
-                            downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
+                            downloadStreamWithRefresh(
+                                repository = repository,
+                                video = video,
+                                qualityId = qualityId,
+                                initialCandidates = source.audioUrls,
+                                refreshedCandidates = { fresh -> fresh.audioUrls },
+                                target = audioTemp,
+                                cookie = cookie,
+                                concurrency = concurrency,
+                                isCancelled = isCancelled,
+                                referer = referer,
+                                onRefreshing = { progress(49, "CDN 拒绝访问，正在刷新音频地址…") }
+                            ) { value ->
                                 progress(49 + value * 44 / 100, "音频流")
                             }
                         }
@@ -184,12 +221,20 @@ object BiliDownloadEngine {
                     if (reusableDirect) {
                         progress(96, "恢复已下载的视频文件")
                     } else {
-                        downloadStream(
-                            segments.single().urls,
-                            directTemp,
-                            cookie,
-                            concurrency,
-                            isCancelled
+                        downloadStreamWithRefresh(
+                            repository = repository,
+                            video = video,
+                            qualityId = qualityId,
+                            initialCandidates = segments.single().urls,
+                            refreshedCandidates = { fresh ->
+                                fresh.directSegments.firstOrNull()?.urls.orEmpty()
+                            },
+                            target = directTemp,
+                            cookie = cookie,
+                            concurrency = concurrency,
+                            isCancelled = isCancelled,
+                            referer = referer,
+                            onRefreshing = { progress(1, "CDN 拒绝访问，正在刷新直连地址…") }
                         ) { value ->
                             progress(value.coerceIn(0, 99), "视频流")
                         }
@@ -210,12 +255,20 @@ object BiliDownloadEngine {
                         segments.forEachIndexed { index, segment ->
                             if (isCancelled()) throw CancellationException("下载已取消")
                             val target = directSegmentTemps[index]
-                            downloadStream(
-                                segment.urls,
-                                target,
-                                cookie,
-                                concurrency,
-                                isCancelled
+                            downloadStreamWithRefresh(
+                                repository = repository,
+                                video = video,
+                                qualityId = qualityId,
+                                initialCandidates = segment.urls,
+                                refreshedCandidates = { fresh ->
+                                    fresh.directSegments.getOrNull(index)?.urls.orEmpty()
+                                },
+                                target = target,
+                                cookie = cookie,
+                                concurrency = concurrency,
+                                isCancelled = isCancelled,
+                                referer = referer,
+                                onRefreshing = { progress(2, "CDN 拒绝访问，正在刷新第 ${index + 1} 段地址…") }
                             ) { value ->
                                 val combined = (completedWeight + weights[index] * value.coerceIn(0, 100) / 100.0) /
                                     totalWeight
@@ -435,22 +488,74 @@ object BiliDownloadEngine {
         }
     }
 
+    private suspend fun downloadStreamWithRefresh(
+        repository: BiliRepository,
+        video: BiliVideo,
+        qualityId: Int,
+        initialCandidates: List<String>,
+        refreshedCandidates: (BiliPlaySource) -> List<String>,
+        target: File,
+        cookie: String?,
+        concurrency: Int,
+        isCancelled: () -> Boolean,
+        referer: String,
+        onRefreshing: () -> Unit = {},
+        onProgress: (Int) -> Unit
+    ) {
+        try {
+            downloadStream(
+                initialCandidates, target, cookie, concurrency, isCancelled, referer, onProgress
+            )
+        } catch (error: Exception) {
+            if (BiliDownloadRetryPolicy.httpStatus(error) != 403) throw error
+
+            // Bilibili CDN URLs are short-lived. If all primary/backup URLs deny
+            // access, resolve a fresh playurl once instead of failing immediately.
+            onRefreshing()
+            val refreshed = try {
+                repository.getPlaySource(video, qualityId)
+            } catch (refreshError: Exception) {
+                throw IOException(
+                    "CDN 返回 HTTP 403，刷新视频地址失败：" +
+                        (refreshError.message ?: "B站暂时没有返回可用地址"),
+                    refreshError
+                )
+            }
+            val candidates = refreshedCandidates(refreshed).distinct()
+            if (candidates.isEmpty()) {
+                throw IOException("CDN 返回 HTTP 403，刷新后没有同类型可用地址", error)
+            }
+            downloadStream(
+                candidates, target, cookie, concurrency, isCancelled, referer, onProgress
+            )
+        }
+    }
+
     private suspend fun downloadStream(
         candidates: List<String>,
         target: File,
         cookie: String?,
         concurrency: Int,
         isCancelled: () -> Boolean,
+        referer: String,
         onProgress: (Int) -> Unit
     ) {
         SegmentedHttpDownloader.download(
-            candidates,
-            target,
-            cookie,
-            concurrency,
-            isCancelled,
-            onProgress
+            urls = candidates,
+            target = target,
+            cookie = cookie,
+            concurrency = concurrency,
+            isCancelled = isCancelled,
+            onProgress = onProgress,
+            referer = referer
         )
+    }
+
+    private fun videoReferer(video: BiliVideo): String {
+        val identity = video.bvid?.takeIf { it.isNotBlank() }
+            ?: video.aid.takeIf { it > 0L }?.let { "av$it" }
+            ?: return "https://www.bilibili.com/"
+        return "https://www.bilibili.com/video/$identity?p=${video.page.coerceAtLeast(1)}"
     }
 
     private fun publishFile(
