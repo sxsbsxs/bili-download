@@ -43,6 +43,9 @@ class BiliDownloadWorker(
                 cover = null,
                 qualities = emptyList()
             )
+            var lastReportedPercent = -1
+            var lastReportedDetail = ""
+            val progressLock = Any()
             val saved = BiliDownloadEngine.download(
                 applicationContext,
                 video,
@@ -53,9 +56,17 @@ class BiliDownloadWorker(
                 SecureCookieStore.load(applicationContext),
                 isCancelled = { isStopped }
             ) { percent, detail ->
-                val progressData = workDataOf(KEY_PROGRESS to percent, KEY_DETAIL to detail)
-                setProgressAsync(progressData)
-                setForegroundAsync(foregroundInfo(percent, detail))
+                synchronized(progressLock) {
+                    // The range engine reports each buffer write; update WorkManager
+                    // only when the visible percentage or stage actually changes.
+                    if (percent != lastReportedPercent || detail != lastReportedDetail) {
+                        lastReportedPercent = percent
+                        lastReportedDetail = detail
+                        val progressData = workDataOf(KEY_PROGRESS to percent, KEY_DETAIL to detail)
+                        setProgressAsync(progressData)
+                        setForegroundAsync(foregroundInfo(percent, detail))
+                    }
+                }
             }
             Result.success(
                 workDataOf(
