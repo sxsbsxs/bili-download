@@ -1768,7 +1768,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         detailSearchItem = null
         if (::mainContainer.isInitialized) {
             mainContainer.visibility = View.VISIBLE
-            selectTab(0)
         }
     }
 
@@ -2536,7 +2535,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         toast("已退出登录")
     }
 
-    fun setDownloadPathText(text: String) = runOnUiThread { pathTv.text = "$text  ›" }
+    fun setDownloadPathText(text: String) = runOnUiThread {
+        if (::pathTv.isInitialized) pathTv.text = "$text  ›"
+    }
     // ================================================================
 
     // ---------------- 颜色与常量 ----------------
@@ -3167,31 +3168,36 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
 
     private fun selectTab(i: Int): Boolean {
-        val fragment = when (i) {
-            0 -> HomeFragment()
-            1 -> DownloadsFragment()
-            else -> ProfileFragment()
+        val targetId = when (i) {
+            0 -> com.sxsbsxs.bilivdl.ui.R.id.nav_home
+            1 -> com.sxsbsxs.bilivdl.ui.R.id.nav_downloads
+            else -> com.sxsbsxs.bilivdl.ui.R.id.nav_profile
+        }
+        val navigation = mainContainer.findViewById<BottomNavigationView>(
+            com.sxsbsxs.bilivdl.ui.R.id.bottom_navigation
+        )
+        if (navigation.selectedItemId != targetId) {
+            navigation.selectedItemId = targetId
+            return true
         }
         val tag = when (i) {
             0 -> "bilivdl-home"
             1 -> "bilivdl-downloads"
             else -> "bilivdl-profile"
         }
-        if (supportFragmentManager.findFragmentByTag(tag) == null) {
-            supportFragmentManager.beginTransaction()
-                .setReorderingAllowed(true)
-                .replace(com.sxsbsxs.bilivdl.ui.R.id.fragment_container, fragment, tag)
-                .commit()
-        } else {
-            supportFragmentManager.beginTransaction()
-                .setReorderingAllowed(true)
-                .replace(
-                    com.sxsbsxs.bilivdl.ui.R.id.fragment_container,
-                    supportFragmentManager.findFragmentByTag(tag)!!,
-                    tag
-                )
-                .commit()
+        val current = supportFragmentManager.findFragmentById(
+            com.sxsbsxs.bilivdl.ui.R.id.fragment_container
+        )
+        if (current?.tag == tag) return true
+        val fragment = when (i) {
+            0 -> HomeFragment()
+            1 -> DownloadsFragment()
+            else -> ProfileFragment()
         }
+        supportFragmentManager.beginTransaction()
+            .setReorderingAllowed(true)
+            .replace(com.sxsbsxs.bilivdl.ui.R.id.fragment_container, fragment, tag)
+            .commit()
         return true
     }
 
@@ -3691,6 +3697,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
 
     private fun refreshDownloadList() {
+        if (!::dlSegs.isInitialized || !::listBox.isInitialized) return
         val done = items.values.count { it.state == ST_DONE }
         val failed = items.values.count { it.state == ST_FAILED }
         val active = items.values.count { it.state == ST_DOWNLOADING || it.state == ST_WAITING || it.state == ST_PAUSED }
@@ -3933,6 +3940,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
 
     private fun refreshAccountUi() {
+        // The account card now lives in the BiliVdl ProfileFragment.
+        // Keep compatibility with legacy settings widgets if they are instantiated.
+        if (!::nameTv.isInitialized || !::loginTip.isInitialized) return
         if (loggedIn) {
             nameTv.text = userName
             subTv.text = if (userVip) "已登录 · 大会员" else "已登录"
