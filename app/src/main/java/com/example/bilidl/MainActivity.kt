@@ -259,8 +259,8 @@ class MainActivity : ComponentActivity() {
             })
         }
         loadMoreButton.visibility = if (canLoadMoreSearch) View.VISIBLE else View.GONE
-        loadMoreButton.text = if (searchLoading) "加载中…" else "加载更多"
-        loadMoreButton.isEnabled = !searchLoading && canLoadMoreSearch
+        loadMoreButton.text = if (searchLoading) "正在加载更多…" else "继续上滑，自动加载更多"
+        loadMoreButton.isEnabled = false
     }
 
     private fun buildSearchCard(item: BiliSearchVideo): View {
@@ -276,7 +276,7 @@ class MainActivity : ComponentActivity() {
             background = shape(Color.parseColor("#E8EAF0"), 0)
             tag = item.coverUrl
         }
-        imageFrame.addView(cover, FrameLayout.LayoutParams(match, dp(108)))
+        imageFrame.addView(cover, FrameLayout.LayoutParams(match, dp(100)))
         val duration = TextView(this).apply {
             text = item.duration.ifBlank { "--:--" }
             textSize = 10f
@@ -288,7 +288,7 @@ class MainActivity : ComponentActivity() {
             rightMargin = dp(6)
             bottomMargin = dp(6)
         })
-        root.addView(imageFrame, LinearLayout.LayoutParams(match, dp(108)))
+        root.addView(imageFrame, LinearLayout.LayoutParams(match, dp(100)))
 
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -2033,26 +2033,29 @@ class MainActivity : ComponentActivity() {
         }
         col.addView(resultGrid, sideMargins(12))
         loadMoreButton = TextView(this).apply {
-            text = "加载更多"
-            textSize = 13f
+            text = "继续上滑，自动加载更多"
+            textSize = 12f
             typeface = Typeface.DEFAULT_BOLD
             gravity = Gravity.CENTER
             setTextColor(pink)
             background = shape(Color.WHITE, 14)
             setPadding(dp(16), dp(13), dp(16), dp(13))
             visibility = View.GONE
-            setOnClickListener {
-                if (canLoadMoreSearch && !searchLoading) {
-                    if (searchKeyword.isBlank()) loadHomeFeed(false)
-                    else startVideoSearch(searchKeyword, false)
-                }
-            }
+            isClickable = false
         }
         col.addView(loadMoreButton, sideMargins(12).apply {
             topMargin = dp(2)
             bottomMargin = dp(24)
         })
         renderSearchResults()
+        scroll.setOnScrollChangeListener { view, _, scrollY, _, _ ->
+            val contentView = (view as? ScrollView)?.getChildAt(0) ?: return@setOnScrollChangeListener
+            val nearBottom = scrollY + view.height >= contentView.height - dp(420)
+            if (nearBottom && searchResults.isNotEmpty() && canLoadMoreSearch && !searchLoading) {
+                if (searchKeyword.isBlank()) loadHomeFeed(false)
+                else startVideoSearch(searchKeyword, false)
+            }
+        }
 
         pasteButton.setOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
