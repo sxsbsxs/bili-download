@@ -485,7 +485,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             positionProvider = { currentPlayer?.currentPosition ?: 0L }
             playingProvider = { currentPlayer?.isPlaying == true }
             danmakuEnabled = detailDanmakuVisible
-        }
+        }.also(::applyDanmakuDisplaySettings)
         detailDanmakuOverlay = overlay
 
         content.findViewById<TextView>(com.sxsbsxs.bilivdl.ui.R.id.player_title).text = video.title
@@ -578,6 +578,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             detailDanmakuVisible = !detailDanmakuVisible
             detailDanmakuOverlay?.danmakuEnabled = detailDanmakuVisible
             updateDanmakuButton()
+        }
+        danmakuButton.setOnLongClickListener {
+            showDanmakuDisplaySettings()
+            true
         }
 
         content.findViewById<MaterialButton>(
@@ -894,12 +898,29 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             )
         }
         val colorChoices = listOf(
-            "白色" to 0xFFFFFF,
-            "黄色" to 0xFFFF00,
-            "粉色" to 0xFF79B8,
-            "蓝色" to 0x66CCFF,
-            "绿色" to 0x66CC66
+            "#FFFFFF" to 0xFFFFFF,
+            "#FE0302" to 0xFE0302,
+            "#FF7204" to 0xFF7204,
+            "#FFAA02" to 0xFFAA02,
+            "#FFD302" to 0xFFD302,
+            "#FFFF00" to 0xFFFF00,
+            "#A0EE00" to 0xA0EE00,
+            "#00CD00" to 0x00CD00,
+            "#019899" to 0x019899,
+            "#4266BE" to 0x4266BE,
+            "#89D5FF" to 0x89D5FF,
+            "#CC0273" to 0xCC0273,
+            "#222222" to 0x222222,
+            "#9B9B9B" to 0x9B9B9B
         )
+        val fontSizes = listOf(25, 18)
+        val fontSizeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("默认字号（25）", "小号（18）")
+            )
+        }
         val colorSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(
                 this@MainActivity,
@@ -925,6 +946,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 setPadding(0, dp(8), 0, dp(2))
             })
             addView(colorSpinner, LinearLayout.LayoutParams(match, dp(44)))
+            addView(TextView(this@MainActivity).apply {
+                text = "字体大小"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(8), 0, dp(2))
+            })
+            addView(fontSizeSpinner, LinearLayout.LayoutParams(match, dp(44)))
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle("发送弹幕")
@@ -944,6 +972,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 val selectedColor = colorChoices.getOrElse(colorSpinner.selectedItemPosition) {
                     colorChoices.first()
                 }.second
+                val selectedFontSize = fontSizes.getOrElse(fontSizeSpinner.selectedItemPosition) { 25 }
                 val progressMs = currentPlayer?.currentPosition ?: 0L
                 setBusy(dialog.getButton(AlertDialog.BUTTON_POSITIVE), true)
                 backgroundExecutor.execute {
@@ -953,12 +982,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                             text = message,
                             progressMs = progressMs,
                             color = selectedColor,
+                            fontSize = selectedFontSize,
                             mode = selectedMode
                         )
                         runOnUiThread {
                             if (parsedVideo?.cid == video.cid) {
                                 detailDanmakuOverlay?.addLocalDanmaku(
-                                    message, selectedColor, selectedMode, progressMs
+                                    message, selectedColor, selectedMode, progressMs, selectedFontSize
                                 )
                             }
                             toast("弹幕发送成功")
@@ -975,6 +1005,108 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }
         dialog.show()
         editor.requestFocus()
+    }
+
+    private fun applyDanmakuDisplaySettings(
+        overlay: com.sxsbsxs.bilivdl.ui.DanmakuOverlayView
+    ) {
+        overlay.setDisplaySettings(
+            fontScale = prefs.getFloat("danmaku_font_scale", 1f),
+            opacity = prefs.getFloat("danmaku_opacity", 1f),
+            speed = prefs.getFloat("danmaku_speed", 1f),
+            showScrolling = prefs.getBoolean("danmaku_show_scrolling", true),
+            showTop = prefs.getBoolean("danmaku_show_top", true),
+            showBottom = prefs.getBoolean("danmaku_show_bottom", true),
+            showAdvanced = prefs.getBoolean("danmaku_show_advanced", true)
+        )
+    }
+
+    private fun showDanmakuDisplaySettings() {
+        val overlay = detailDanmakuOverlay ?: return
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(content)
+        }
+
+        fun addSlider(
+            title: String,
+            initial: Int,
+            max: Int,
+            valueText: (Int) -> String,
+        ): android.widget.SeekBar {
+            val label = TextView(this).apply {
+                text = "$title · ${valueText(initial)}"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(10), 0, dp(2))
+            }
+            val slider = android.widget.SeekBar(this).apply {
+                this.max = max
+                progress = initial.coerceIn(0, max)
+            }
+            slider.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(
+                    seekBar: android.widget.SeekBar?,
+                    progress: Int,
+                    fromUser: Boolean
+                ) {
+                    label.text = "$title · ${valueText(progress)}"
+                }
+                override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
+            })
+            content.addView(label, LinearLayout.LayoutParams(match, wrap))
+            content.addView(slider, LinearLayout.LayoutParams(match, wrap))
+            return slider
+        }
+
+        val fontProgress = ((prefs.getFloat("danmaku_font_scale", 1f) - 0.5f) * 100f)
+            .toInt().coerceIn(0, 150)
+        val opacityProgress = (prefs.getFloat("danmaku_opacity", 1f) * 100f)
+            .toInt().coerceIn(0, 100)
+        val speedProgress = ((prefs.getFloat("danmaku_speed", 1f) - 0.1f) * 10f)
+            .toInt().coerceIn(0, 19)
+        val fontSlider = addSlider("字体大小", fontProgress, 150) { "${(0.5f + it / 100f).toString().take(4)} 倍" }
+        val opacitySlider = addSlider("不透明度", opacityProgress, 100) { "$it%" }
+        val speedSlider = addSlider("弹幕速度", speedProgress, 19) { "${(0.1f + it / 10f).toString().take(3)} 倍" }
+
+        fun settingCheck(key: String, title: String): CheckBox =
+            CheckBox(this).apply {
+                text = title
+                setTextColor(ink)
+                isChecked = prefs.getBoolean(key, true)
+            }
+        val rolling = settingCheck("danmaku_show_scrolling", "滚动弹幕")
+        val top = settingCheck("danmaku_show_top", "顶部弹幕")
+        val bottom = settingCheck("danmaku_show_bottom", "底部弹幕")
+        val advanced = settingCheck("danmaku_show_advanced", "高级动画弹幕")
+        content.addView(rolling)
+        content.addView(top)
+        content.addView(bottom)
+        content.addView(advanced)
+
+        AlertDialog.Builder(this)
+            .setTitle("弹幕显示设置")
+            .setView(scroll)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("应用") { _, _ ->
+                prefs.edit()
+                    .putFloat("danmaku_font_scale", 0.5f + fontSlider.progress / 100f)
+                    .putFloat("danmaku_opacity", opacitySlider.progress / 100f)
+                    .putFloat("danmaku_speed", 0.1f + speedSlider.progress / 10f)
+                    .putBoolean("danmaku_show_scrolling", rolling.isChecked)
+                    .putBoolean("danmaku_show_top", top.isChecked)
+                    .putBoolean("danmaku_show_bottom", bottom.isChecked)
+                    .putBoolean("danmaku_show_advanced", advanced.isChecked)
+                    .apply()
+                applyDanmakuDisplaySettings(overlay)
+                toast("弹幕显示设置已应用")
+            }
+            .show()
     }
 
     private fun performVideoLike(video: BiliVideo) {

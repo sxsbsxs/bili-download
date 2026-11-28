@@ -77,9 +77,37 @@ class DanmakuOverlayView @JvmOverloads constructor(
         }
 
     private var forcedPlaying = false
-    private val laneHeight get() = dp(38f)
-    private val scrollDurationMs = 8_500L
-    private val fixedDurationMs = 4_200L
+    private var fontScale = 1f
+    private var opacity = 1f
+    private var speed = 1f
+    private var showScrolling = true
+    private var showTop = true
+    private var showBottom = true
+    private var showAdvanced = true
+    private val laneHeight get() = dp(38f) * fontScale
+    private val scrollDurationMs get() = (8_500L / speed).toLong().coerceAtLeast(1L)
+    private val fixedDurationMs get() = (4_200L / speed).toLong().coerceAtLeast(1L)
+
+    /** BiliMiao-style display preferences, scoped to the active player surface. */
+    fun setDisplaySettings(
+        fontScale: Float,
+        opacity: Float,
+        speed: Float,
+        showScrolling: Boolean,
+        showTop: Boolean,
+        showBottom: Boolean,
+        showAdvanced: Boolean
+    ) {
+        this.fontScale = fontScale.coerceIn(0.5f, 2f)
+        this.opacity = opacity.coerceIn(0f, 1f)
+        this.speed = speed.coerceIn(0.1f, 2f)
+        this.showScrolling = showScrolling
+        this.showTop = showTop
+        this.showBottom = showBottom
+        this.showAdvanced = showAdvanced
+        assignLanes()
+        invalidate()
+    }
 
     fun setDanmaku(value: List<BiliVdlDanmaku>) {
         items = value.asSequence()
@@ -157,20 +185,24 @@ class DanmakuOverlayView @JvmOverloads constructor(
         invalidate()
     }
 
-    fun addLocalDanmaku(text: String, color: Int, mode: Int, timeMs: Long) {
+    fun addLocalDanmaku(
+        text: String,
+        color: Int,
+        mode: Int,
+        timeMs: Long,
+        fontSize: Int = 25
+    ) {
         if (text.isBlank()) return
-        val next = BiliVdlDanmaku(
+        val next = RenderItem(
             text = text,
             timeMs = timeMs.coerceAtLeast(0L),
             color = color,
-            fontSize = 25,
+            fontSize = fontSize.coerceIn(18, 48),
             mode = mode
         )
-        setDanmaku(
-            items.map {
-                BiliVdlDanmaku(it.text, it.timeMs, it.color, it.fontSize, it.mode)
-            } + next
-        )
+        items = (items + next).sortedBy { it.timeMs }
+        assignLanes()
+        invalidate()
     }
 
     fun setPlaybackPositionProvider(provider: () -> Long) {
@@ -209,14 +241,15 @@ class DanmakuOverlayView @JvmOverloads constructor(
     private fun drawStandard(canvas: Canvas, item: RenderItem, now: Long) {
         val fixed = item.mode == 4 || item.mode == 5
         val duration = if (fixed) fixedDurationMs else scrollDurationMs
+        if (!isModeVisible(item.mode)) return
         val elapsed = now - item.timeMs
         if (elapsed !in 0 until duration) return
 
         val size = fontPixels(item.fontSize)
         paint.textSize = size
         strokePaint.textSize = size
-        paint.alpha = 255
-        strokePaint.alpha = 210
+        paint.alpha = (opacity * 255f).toInt()
+        strokePaint.alpha = (opacity * 210f).toInt()
         paint.color = 0xFF000000.toInt() or (item.color and 0x00FFFFFF)
         val textWidth = paint.measureText(item.text)
         val top = item.lane * laneHeight + size
@@ -245,8 +278,10 @@ class DanmakuOverlayView @JvmOverloads constructor(
      */
     private fun drawSpecial(canvas: Canvas, item: RenderItem, now: Long) {
         val motion = item.special ?: return
+        if (!showAdvanced) return
         val elapsed = now - item.timeMs - motion.delayMs
-        if (elapsed < 0L || elapsed >= motion.durationMs) return
+        val advancedDuration = (motion.durationMs / speed).toLong().coerceAtLeast(1L)
+        if (elapsed < 0L || elapsed >= advancedDuration) return
         val total = motion.translationDurationMs.coerceAtLeast(1L)
         var progress = (elapsed.toFloat() / total).coerceIn(0f, 1f)
         if (motion.quadraticEaseOut) progress = 1f - (1f - progress) * (1f - progress)
@@ -257,14 +292,14 @@ class DanmakuOverlayView @JvmOverloads constructor(
         val y2 = resolveCoordinate(motion.endY, height.toFloat())
         val x = x1 + (x2 - x1) * progress
         val y = y1 + (y2 - y1) * progress
-        val alphaProgress = (elapsed.toFloat() / motion.durationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
+        val alphaProgress = (elapsed.toFloat() / advancedDuration.toFloat()).coerceIn(0f, 1f)
         val alpha = (motion.alphaFrom + (motion.alphaTo - motion.alphaFrom) * alphaProgress)
             .coerceIn(0f, 1f)
         val size = fontPixels(item.fontSize)
         paint.textSize = size
-        paint.alpha = (alpha * 255f).toInt()
+        paint.alpha = (alpha * opacity * 255f).toInt()
         strokePaint.textSize = size
-        strokePaint.alpha = (alpha * 210f).toInt()
+        strokePaint.alpha = (alpha * opacity * 210f).toInt()
         paint.color = 0xFF000000.toInt() or (item.color and 0x00FFFFFF)
         val width = paint.measureText(motion.text)
         canvas.save()
@@ -354,8 +389,17 @@ class DanmakuOverlayView @JvmOverloads constructor(
         return low
     }
 
+    private fun isModeVisible(mode: Int): Boolean = when (mode) {
+        1, 6 -> showScrolling
+        4 -> showBottom
+        5 -> showTop
+        7 -> showAdvanced
+        else -> false
+    }
+
     private fun fontPixels(value: Int): Float =
-        (value.coerceIn(18, 48) * resources.displayMetrics.scaledDensity).coerceAtLeast(dp(18f))
+        (value.coerceIn(18, 48) * resources.displayMetrics.scaledDensity * fontScale)
+            .coerceIn(dp(18f), dp(72f))
 
     private fun resolveCoordinate(value: Float, extent: Float): Float =
         if (value in 0f..1f) value * extent else value * resources.displayMetrics.density
