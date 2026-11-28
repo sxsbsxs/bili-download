@@ -36,8 +36,18 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "ndk;27.2.12479018" "cmake;3.22.1"
       - name: Assemble debug APK
         run: gradle --no-daemon :app:assembleDebug
-      - name: Verify packaged native library
-        run: test -f app/build/intermediates/stripped_native_libs/debug/stripDebugDebugSymbols/out/lib/arm64-v8a/libbilidl_core.so
+      - name: Verify packaged native libraries and product assets
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          for ABI in arm64-v8a armeabi-v7a x86_64; do
+            unzip -l "$APK" | grep -q "lib/$ABI/libbilidl_core.so" || {
+              echo "Missing native core for $ABI" >&2
+              exit 1
+            }
+          done
+          unzip -l "$APK" | grep -q "res/mipmap-anydpi-v26/ic_launcher.xml"
+          unzip -l "$APK" | grep -q "res/drawable/ic_stat_download.xml"
       - name: Run unit tests
         run: gradle --no-daemon :app:testDebugUnitTest
       - name: Run Room SQLite integration tests
