@@ -26,7 +26,7 @@ internal object BiliDownloadSourceSelector {
         sessionCookie: String?
     ): List<String> {
         val originals = urls.filter(::isHttpUrl).distinct()
-        if (originals.size < 2 && mode != BiliDownloadSourceMode.CUSTOM_HOST) return originals
+        if (originals.isEmpty()) return emptyList()
 
         return when (mode) {
             BiliDownloadSourceMode.DEFAULT -> originals
