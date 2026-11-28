@@ -20,7 +20,8 @@ internal data class BiliQrSession(
 
 internal data class BiliQrPollResult(
     val state: BiliQrLoginState,
-    val sessdata: String? = null
+    val sessdata: String? = null,
+    val cookieHeader: String? = null
 )
 
 internal enum class BiliQrLoginState {
@@ -80,19 +81,19 @@ internal object BiliQrLoginClient {
             BiliQrLoginState.EXPIRED -> BiliQrPollResult(BiliQrLoginState.EXPIRED)
             BiliQrLoginState.SUCCESS -> {
                 val crossDomainUrl = data.optString("url").takeIf { it.startsWith("https://") }
-                var sessdata = BiliQrLoginProtocol.extractSessdata(responseCookies, crossDomainUrl)
-                if (sessdata.isNullOrBlank() && crossDomainUrl != null) {
-                    sessdata = fetchCrossDomainCookie(crossDomainUrl)
+                var cookieHeader = BiliQrLoginProtocol.extractCookieHeader(responseCookies, crossDomainUrl)
+                if (SecureCookieStore.cookieValue(cookieHeader, "SESSDATA").isBlank() && crossDomainUrl != null) {
+                    cookieHeader = fetchCrossDomainCookie(crossDomainUrl)
                 }
-                if (sessdata.isNullOrBlank()) {
-                    throw IOException("B站已确认扫码，但没有返回 SESSDATA；请刷新二维码重试")
-                }
-                BiliQrPollResult(BiliQrLoginState.SUCCESS, sessdata)
+                val sessdata = SecureCookieStore.cookieValue(cookieHeader, "SESSDATA")
+                    .takeIf { it.isNotBlank() }
+                    ?: throw IOException("B站已确认扫码，但没有返回 SESSDATA；请刷新二维码重试")
+                BiliQrPollResult(BiliQrLoginState.SUCCESS, sessdata, cookieHeader)
             }
         }
     }
 
-    private fun fetchCrossDomainCookie(startUrl: String): String? {
+    private fun fetchCrossDomainCookie(startUrl: String): String {
         var current = URL(startUrl)
         val collectedCookies = ArrayList<String>()
 
@@ -111,8 +112,8 @@ internal object BiliQrLoginClient {
             try {
                 val status = connection.responseCode
                 collectedCookies += setCookieHeaders(connection)
-                val sessdata = BiliQrLoginProtocol.extractSessdata(collectedCookies)
-                if (!sessdata.isNullOrBlank()) return sessdata
+                val cookieHeader = BiliQrLoginProtocol.extractCookieHeader(collectedCookies)
+                if (SecureCookieStore.cookieValue(cookieHeader, "SESSDATA").isNotBlank()) return cookieHeader
 
                 if (status in 300..399) {
                     val location = connection.getHeaderField("Location")
@@ -124,13 +125,13 @@ internal object BiliQrLoginClient {
                     if (status !in 200..299) {
                         throw IOException("B站跨域授权失败（HTTP $status）")
                     }
-                    return BiliQrLoginProtocol.extractSessdata(collectedCookies)
+                    return BiliQrLoginProtocol.extractCookieHeader(collectedCookies)
                 }
             } finally {
                 connection.disconnect()
             }
         }
-        return BiliQrLoginProtocol.extractSessdata(collectedCookies)
+        return BiliQrLoginProtocol.extractCookieHeader(collectedCookies)
     }
 
     private fun requestJson(url: String): Pair<JSONObject, List<String>> {
@@ -176,19 +177,35 @@ internal object BiliQrLoginProtocol {
         else -> throw IOException("无法识别 B站扫码状态：$code")
     }
 
-    /** Keep percent-encoded SESSDATA intact; decoding it can corrupt the cookie. */
+    /** Extract cookie name/value pairs from Set-Cookie headers without persisting attributes. */
+    fun extractCookieHeader(
+        setCookieHeaders: Iterable<String>,
+        fallbackUrl: String? = null
+    ): String {
+        val allowed = setOf(
+            "SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5",
+            "buvid3", "buvid4", "sid", "b_nut", "buvid_fp", "buvid_fp_plain"
+        )
+        val values = linkedMapOf<String, String>()
+        val pairPattern = Regex("""(?i)^([^=;\\s]+)=([^;]*)""")
+        setCookieHeaders.forEach { header ->
+            val match = pairPattern.find(header.trim()) ?: return@forEach
+            val name = match.groupValues[1]
+            val value = match.groupValues[2].trim()
+            if (name in allowed && value.isNotBlank()) values[name] = value
+        }
+        if (fallbackUrl != null && !values.containsKey("SESSDATA")) {
+            Regex("""(?i)[?&#]SESSDATA=([^&#]+)""")
+                .find(fallbackUrl)?.groupValues?.getOrNull(1)?.let { values["SESSDATA"] = it }
+        }
+        return values.entries.joinToString("; ") { it.key + "=" + it.value }
+    }
+
     fun extractSessdata(
         setCookieHeaders: Iterable<String>,
         fallbackUrl: String? = null
     ): String? {
-        val cookiePattern = Regex("""(?i)(?:^|;\s*)SESSDATA=([^;\s]+)""")
-        for (header in setCookieHeaders) {
-            cookiePattern.find(header)?.groupValues?.getOrNull(1)?.let { return it }
-        }
-        if (fallbackUrl != null) {
-            Regex("""(?i)[?&#]SESSDATA=([^&#]+)""")
-                .find(fallbackUrl)?.groupValues?.getOrNull(1)?.let { return it }
-        }
-        return null
+        val header = extractCookieHeader(setCookieHeaders, fallbackUrl)
+        return SecureCookieStore.cookieValue(header, "SESSDATA").takeIf { it.isNotBlank() }
     }
 }
