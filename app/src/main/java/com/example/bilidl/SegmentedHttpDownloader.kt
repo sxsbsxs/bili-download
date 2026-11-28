@@ -6,7 +6,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -59,11 +61,10 @@ internal object SegmentedHttpDownloader {
         val resourceKey: String
     )
 
-    private companion object {
-        const val SOURCE_SAMPLE_BYTES = 64 * 1024
-        const val SOURCE_PROBE_TIMEOUT_MS = 3_000
-        const val MAX_SOURCE_PROBES = 6
-    }
+    private const val SOURCE_SAMPLE_BYTES = 64 * 1024
+    private const val SOURCE_SAMPLE_BYTES = 64 * 1024
+    private const val SOURCE_PROBE_TIMEOUT_MS = 3_000
+    private const val MAX_SOURCE_PROBES = 6
 
     /**
      * BVD-style bounded CDN sampling: probe every candidate in parallel with at
@@ -117,7 +118,7 @@ internal object SegmentedHttpDownloader {
             }
             val rangeValid = if (status == HttpURLConnection.HTTP_PARTIAL) {
                 val match = Regex(
-                    """bytes\\s+0-(\\d+)/(\\d+)""",
+                    """bytes\s+0-(\d+)/(\d+)""",
                     RegexOption.IGNORE_CASE
                 ).find(connection.getHeaderField("Content-Range").orEmpty())
                 match != null && match.groupValues[1].toLongOrNull() == count.toLong() - 1L &&
