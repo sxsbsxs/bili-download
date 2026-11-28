@@ -1125,7 +1125,9 @@ class MainActivity : ComponentActivity() {
                     (if (comment.likedByMe) "已赞 " else "点赞 ") + formatCount(comment.likeCount),
                     comment.likedByMe
                 ).apply {
-                    setOnClickListener { performCommentLike(video, comment) }
+                    setOnClickListener {
+                        parsedVideo?.let { currentVideo -> performCommentLike(currentVideo, comment) }
+                    }
                 })
                 actions.addView(TextView(this).apply {
                     text = if (comment.replyCount > 0L) "  " + formatCount(comment.replyCount) + " 条回复" else ""
