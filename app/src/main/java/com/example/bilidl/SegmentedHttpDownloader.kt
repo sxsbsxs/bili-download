@@ -108,7 +108,7 @@ internal object SegmentedHttpDownloader {
                 throw BiliHttpException(status, "CDN 探测")
             }
             val contentRange = connection.getHeaderField("Content-Range").orEmpty()
-            val match = Regex("""bytes\\s+(\\d+)-(\\d+)/(\\d+)""", RegexOption.IGNORE_CASE)
+            val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+)""", RegexOption.IGNORE_CASE)
                 .find(contentRange) ?: throw IOException("CDN 未提供有效的 Content-Range")
             val start = match.groupValues[1].toLong()
             val end = match.groupValues[2].toLong()
