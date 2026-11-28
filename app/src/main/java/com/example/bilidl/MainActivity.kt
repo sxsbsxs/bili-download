@@ -6,13 +6,17 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import androidx.media3.common.util.UnstableApi
 import android.app.AlertDialog
+import java.io.File
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.SharedPreferences
@@ -69,6 +73,7 @@ import kotlinx.coroutines.runBlocking
  *          concurrent(Int 0..3 =1/2/3/5) wifi_only danmaku audio_only notify(Boolean)
  *          变化时会回调 onSettingChanged(key, value)
  */
+@OptIn(UnstableApi::class)
 class MainActivity : ComponentActivity() {
 
     companion object {
@@ -118,6 +123,48 @@ class MainActivity : ComponentActivity() {
         startVideoSearch(query, true)
     }
 
+    private fun loadHomeFeed(reset: Boolean) {
+        if (searchLoading) return
+        if (reset) {
+            searchKeyword = ""
+            searchPage = 1
+            searchResults.clear()
+            canLoadMoreSearch = true
+            renderSearchResults()
+        } else if (!canLoadMoreSearch) {
+            return
+        }
+        val requestedPage = if (reset) 1 else searchPage + 1
+        searchPage = requestedPage
+        searchLoading = true
+        val requestToken = ++searchRequestToken
+        say(if (reset) "正在加载热门视频…" else "正在加载更多热门视频…", sub)
+        renderSearchResults()
+        backgroundExecutor.execute {
+            try {
+                val results = BiliRepository { SecureCookieStore.load(this) }
+                    .getPopularVideos(requestedPage, 20)
+                runOnUiThread {
+                    if (requestToken != searchRequestToken || isFinishing) return@runOnUiThread
+                    searchLoading = false
+                    if (reset) searchResults.clear()
+                    val known = searchResults.mapTo(HashSet()) { it.bvid }
+                    results.filter { known.add(it.bvid) }.forEach(searchResults::add)
+                    canLoadMoreSearch = results.size >= 20
+                    renderSearchResults()
+                    say("热门视频 · " + searchResults.size + " 个", sub)
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (requestToken != searchRequestToken || isFinishing) return@runOnUiThread
+                    searchLoading = false
+                    canLoadMoreSearch = false
+                    say(error.message ?: "热门视频加载失败", err)
+                    renderSearchResults()
+                }
+            }
+        }
+    }
     private fun startVideoSearch(query: String, reset: Boolean) {
         if (searchLoading) return
         if (reset) {
@@ -177,7 +224,7 @@ class MainActivity : ComponentActivity() {
         resultGrid.removeAllViews()
         if (searchResults.isEmpty()) {
             resultGrid.addView(TextView(this).apply {
-                text = if (searchLoading) "正在加载视频…" else "输入关键词，搜索 B 站视频"
+                text = if (searchLoading) "正在加载视频…" else if (searchKeyword.isBlank()) "正在准备热门视频…" else "没有找到视频，换个关键词试试"
                 textSize = 13f
                 setTextColor(sub)
                 gravity = Gravity.CENTER
@@ -511,6 +558,56 @@ class MainActivity : ComponentActivity() {
         return page
     }
 
+    private fun xmlEscape(value: String): String {
+        return value.replace("&", "&amp;")
+            .replace("\"", "&quot;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+    }
+
+    private fun createDashManifestFile(source: BiliPlaySource, durationSeconds: Int): File? {
+        val videoUrl = source.videoUrls.firstOrNull() ?: return null
+        val videoInit = source.videoInitializationRange?.takeIf { it.isNotBlank() } ?: return null
+        val videoIndex = source.videoIndexRange?.takeIf { it.isNotBlank() } ?: return null
+        val audioUrl = source.audioUrls.firstOrNull()
+        val audioInit = source.audioInitializationRange?.takeIf { it.isNotBlank() }
+        val audioIndex = source.audioIndexRange?.takeIf { it.isNotBlank() }
+        val duration = durationSeconds.coerceAtLeast(1)
+        val xml = StringBuilder()
+        xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
+        xml.append("<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" profiles=\"urn:mpeg:dash:profile:isoff-live:2011\" minBufferTime=\"PT1.5S\" mediaPresentationDuration=\"PT")
+            .append(duration).append("S\">")
+        xml.append("<Period duration=\"PT").append(duration).append("S\">")
+        xml.append("<AdaptationSet id=\"1\" contentType=\"video\" mimeType=\"video/mp4\" segmentAlignment=\"true\">")
+        xml.append("<Representation id=\"video\" bandwidth=\"").append(source.videoBandwidth.coerceAtLeast(1L))
+            .append("\" codecs=\"").append(xmlEscape(source.videoCodecs)).append("\"")
+        if (source.width > 0) xml.append(" width=\"").append(source.width).append("\"")
+        if (source.height > 0) xml.append(" height=\"").append(source.height).append("\"")
+        if (source.frameRate.isNotBlank()) xml.append(" frameRate=\"").append(xmlEscape(source.frameRate)).append("\"")
+        xml.append(">")
+        xml.append("<BaseURL>").append(xmlEscape(videoUrl)).append("</BaseURL>")
+        xml.append("<SegmentBase indexRange=\"").append(xmlEscape(videoIndex)).append("\" indexRangeExact=\"true\"><Initialization range=\"")
+            .append(xmlEscape(videoInit)).append("\" /></SegmentBase>")
+        xml.append("</Representation></AdaptationSet>")
+        if (!audioUrl.isNullOrBlank() && audioInit != null && audioIndex != null) {
+            xml.append("<AdaptationSet id=\"2\" contentType=\"audio\" mimeType=\"audio/mp4\" segmentAlignment=\"true\">")
+            xml.append("<Representation id=\"audio\" bandwidth=\"").append(source.audioBandwidth.coerceAtLeast(1L))
+                .append("\" codecs=\"").append(xmlEscape(source.audioCodecs)).append("\">")
+            xml.append("<BaseURL>").append(xmlEscape(audioUrl)).append("</BaseURL>")
+            xml.append("<SegmentBase indexRange=\"").append(xmlEscape(audioIndex)).append("\" indexRangeExact=\"true\"><Initialization range=\"")
+                .append(xmlEscape(audioInit)).append("\" /></SegmentBase>")
+            xml.append("</Representation></AdaptationSet>")
+        }
+        xml.append("</Period></MPD>")
+
+        val directory = File(cacheDir, "bilidl_playback").apply { mkdirs() }
+        directory.listFiles()?.filter {
+            it.extension == "mpd" && System.currentTimeMillis() - it.lastModified() > 24L * 60L * 60L * 1000L
+        }?.forEach { it.delete() }
+        return File(directory, "play_" + System.currentTimeMillis() + ".mpd").apply {
+            writeText(xml.toString(), Charsets.UTF_8)
+        }
+    }
     private fun startPlayback(
         video: BiliVideo,
         playerView: PlayerView,
@@ -543,21 +640,22 @@ class MainActivity : ComponentActivity() {
                     val progressiveFactory = ProgressiveMediaSource.Factory(dataSourceFactory)
                     val mediaSource: MediaSource = when {
                         source.videoUrls.isNotEmpty() -> {
-                            val videoItem = MediaItem.Builder()
-                                .setUri(source.videoUrls.first())
-                                .setMimeType(MimeTypes.VIDEO_MP4)
-                                .build()
-                            val videoSource = progressiveFactory.createMediaSource(videoItem)
-                            val audioUrl = source.audioUrls.firstOrNull()
-                            if (audioUrl.isNullOrBlank()) {
-                                videoSource
+                            val manifestFile = createDashManifestFile(source, video.durationSeconds)
+                            if (manifestFile != null) {
+                                val defaultDataSource = DefaultDataSource.Factory(this, dataSourceFactory)
+                                DashMediaSource.Factory(defaultDataSource).createMediaSource(
+                                    MediaItem.Builder()
+                                        .setUri(Uri.fromFile(manifestFile))
+                                        .setMimeType(MimeTypes.APPLICATION_MPD)
+                                        .build()
+                                )
                             } else {
-                                val audioItem = MediaItem.Builder()
-                                    .setUri(audioUrl)
-                                    .setMimeType(MimeTypes.AUDIO_MP4)
-                                    .build()
-                                val audioSource = progressiveFactory.createMediaSource(audioItem)
-                                MergingMediaSource(videoSource, audioSource)
+                                progressiveFactory.createMediaSource(
+                                    MediaItem.Builder()
+                                        .setUri(source.videoUrls.first())
+                                        .setMimeType(MimeTypes.VIDEO_MP4)
+                                        .build()
+                                )
                             }
                         }
                         source.directUrls.isNotEmpty() -> {
@@ -1719,6 +1817,7 @@ class MainActivity : ComponentActivity() {
 
         setContentView(rootFrame)
         selectTab(0)
+        loadHomeFeed(true)
         refreshAccountUi()
         refreshDownloadList()
         restoreDownloadTasks()
@@ -1891,6 +1990,7 @@ class MainActivity : ComponentActivity() {
             }
             styleSegs(searchSortLabels, index)
             if (searchKeyword.isNotBlank()) startVideoSearch(searchKeyword, true)
+            else loadHomeFeed(true)
         }
         searchSortLabels = sortLabels
         styleSegs(searchSortLabels, 0)
@@ -1919,7 +2019,8 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
             setOnClickListener {
                 if (canLoadMoreSearch && !searchLoading) {
-                    startVideoSearch(searchKeyword, false)
+                    if (searchKeyword.isBlank()) loadHomeFeed(false)
+                    else startVideoSearch(searchKeyword, false)
                 }
             }
         }
