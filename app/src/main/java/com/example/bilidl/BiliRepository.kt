@@ -174,6 +174,87 @@ class BiliRepository(
         )
     }
 
+
+    /**
+     * BVD-style all-site search: videos, anime, and film/TV media.
+     * Returns canonical Bilibili URLs; selecting a row reuses the normal
+     * inspect -> quality selection -> download pipeline.
+     */
+    fun searchBilibili(
+        keyword: String,
+        page: Int = 1,
+        category: BiliSearchCategory = BiliSearchCategory.VIDEO
+    ): List<BiliSearchResult> {
+        val cleanKeyword = keyword.trim()
+        require(cleanKeyword.isNotEmpty()) { "请输入搜索关键词" }
+        require(page >= 1) { "搜索页码无效" }
+
+        val parameters = linkedMapOf(
+            "search_type" to category.apiType,
+            "keyword" to cleanKeyword,
+            "page" to page.toString()
+        )
+        val signedQuery = signWbi(parameters)
+        val root = requestJson(
+            "https://api.bilibili.com/x/web-interface/wbi/search/type?$signedQuery"
+        )
+        val data = checkedData(root)
+        val items = data.optJSONArray("result") ?: JSONArray()
+
+        return (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            val bvid = item.optString("bvid").takeIf { it.isNotBlank() }
+            val aid = item.optLong("aid")
+            val seasonId = item.optLong("season_id")
+            val episodeId = item.optLong("ep_id")
+            val resultUrl = when {
+                !bvid.isNullOrBlank() -> "https://www.bilibili.com/video/$bvid"
+                seasonId > 0L -> "https://www.bilibili.com/bangumi/play/ss$seasonId"
+                episodeId > 0L -> "https://www.bilibili.com/bangumi/play/ep$episodeId"
+                aid > 0L -> "https://www.bilibili.com/video/av$aid"
+                else -> null
+            } ?: return@mapNotNull null
+
+            val rawTitle = item.optString("title").ifBlank { "B站内容" }
+            val title = android.text.Html.fromHtml(
+                rawTitle,
+                android.text.Html.FROM_HTML_MODE_LEGACY
+            ).toString().replace(Regex("\\s+"), " ").trim()
+            val author = item.optString("author")
+                .ifBlank { item.optString("uname") }
+                .ifBlank { item.optString("up_name") }
+                .ifBlank { item.optString("styles") }
+                .ifBlank { "B站创作者" }
+            val coverUrl = BiliCoverUrlPolicy.normalize(
+                item.optString("pic").ifBlank { item.optString("cover") }
+            )
+            val detail = when (category) {
+                BiliSearchCategory.VIDEO -> buildList {
+                    item.optString("duration").takeIf { it.isNotBlank() }?.let(::add)
+                    item.opt("play")?.toString()?.takeIf { it.isNotBlank() && it != "0" }
+                        ?.let { add("播放 $it") }
+                    item.opt("video_review")?.toString()?.takeIf { it.isNotBlank() && it != "0" }
+                        ?.let { add("弹幕 $it") }
+                }.joinToString(" · ")
+                else -> listOf(
+                    item.optString("index_show"),
+                    item.optString("styles"),
+                    item.optString("areas")
+                ).filter { it.isNotBlank() }.distinct().joinToString(" · ")
+            }
+            BiliSearchResult(
+                url = resultUrl,
+                title = title,
+                author = author,
+                coverUrl = coverUrl,
+                detail = detail
+            )
+        }
+    }
+
+    /** Fetch a public cover image for search result cards. */
+    fun fetchCover(url: String?): Bitmap? = downloadCover(url)
+
     fun getPlaySource(video: BiliVideo, requestedQuality: Int): BiliPlaySource {
         // DASH is the preferred format. Older videos may expose only the
         // legacy DURL response, which requires fnval=0 rather than fnval=4048.
