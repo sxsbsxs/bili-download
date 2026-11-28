@@ -7,6 +7,16 @@ package com.example.bilidl
  * A later P is never promoted above the user's first-P selection.
  */
 internal object BiliBatchStreamPolicy {
+    fun selectExact(
+        preferred: BiliStreamChoice?,
+        available: List<BiliStreamChoice>
+    ): BiliStreamChoice? {
+        if (preferred == null) return null
+        return available.firstOrNull {
+            it.id == preferred.id && it.codecs == preferred.codecs
+        }
+    }
+
     fun selectCompatible(
         preferred: BiliStreamChoice?,
         available: List<BiliStreamChoice>

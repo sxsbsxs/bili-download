@@ -2806,6 +2806,129 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }
     }
 
+    /**
+     * BVD's ASK strategy: for a P whose stream pair cannot match the first P,
+     * show the real representations returned for that P. Runs on the preparation
+     * worker and waits there; the Android main thread is never blocked.
+     *
+     * Negative: skip this P. Neutral: cancel the whole batch preparation.
+     */
+    private fun awaitBatchStreamSelection(
+        video: BiliVideo,
+        options: BiliDownloadStreamOptions,
+        preferred: DownloadSpec,
+        cancelled: java.util.concurrent.atomic.AtomicBoolean
+    ): BatchStreamSelection? {
+        if (options.direct) return null
+        val needsVideo = !preferred.audioOnly
+        val needsAudio = preferred.includeAudio
+        if ((needsVideo && options.videoChoices.isEmpty()) ||
+            (needsAudio && options.audioChoices.isEmpty())
+        ) return null
+
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val result = java.util.concurrent.atomic.AtomicReference<BatchStreamSelection?>()
+        val dialogRef = java.util.concurrent.atomic.AtomicReference<AlertDialog?>()
+
+        runOnUiThread {
+            if (cancelled.get() || isFinishing || isDestroyed) {
+                cancelled.set(true)
+                latch.countDown()
+                return@runOnUiThread
+            }
+            val body = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(20), dp(6), dp(20), dp(4))
+            }
+            fun heading(value: String) {
+                body.addView(TextView(this).apply {
+                    text = value
+                    textSize = 12f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(sub)
+                    setPadding(0, dp(10), 0, dp(4))
+                }, LinearLayout.LayoutParams(match, wrap))
+            }
+            val videoSpinner = android.widget.Spinner(this)
+            val audioSpinner = android.widget.Spinner(this)
+            if (needsVideo) {
+                heading("当前分P的视频轨道")
+                videoSpinner.adapter = android.widget.ArrayAdapter(
+                    this,
+                    android.R.layout.simple_spinner_item,
+                    options.videoChoices.map { it.label }
+                ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+                videoSpinner.setSelection(
+                    options.videoChoices.indexOfFirst {
+                        it.id == preferred.videoStreamChoice?.id &&
+                            it.codecs == preferred.videoStreamChoice?.codecs
+                    }.coerceAtLeast(0)
+                )
+                body.addView(videoSpinner, LinearLayout.LayoutParams(match, dp(48)))
+            }
+            if (needsAudio) {
+                heading("当前分P的音频轨道")
+                audioSpinner.adapter = android.widget.ArrayAdapter(
+                    this,
+                    android.R.layout.simple_spinner_item,
+                    options.audioChoices.map { it.label }
+                ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+                audioSpinner.setSelection(
+                    options.audioChoices.indexOfFirst {
+                        it.id == preferred.audioStreamChoice?.id &&
+                            it.codecs == preferred.audioStreamChoice?.codecs
+                    }.coerceAtLeast(0)
+                )
+                body.addView(audioSpinner, LinearLayout.LayoutParams(match, dp(48)))
+            }
+            body.addView(TextView(this).apply {
+                text = "该分P没有首个分P所选的完全匹配规格。这里只显示 B 站当前实际返回的轨道。"
+                textSize = 11f
+                setTextColor(sub)
+                setPadding(0, dp(10), 0, dp(2))
+            }, LinearLayout.LayoutParams(match, wrap))
+
+            val dialog = AlertDialog.Builder(this)
+                .setTitle("P${video.page} 规格不一致")
+                .setView(body)
+                .setNegativeButton("跳过此P") { _, _ -> latch.countDown() }
+                .setNeutralButton("取消整批") { _, _ ->
+                    cancelled.set(true)
+                    latch.countDown()
+                }
+                .setPositiveButton("使用所选规格", null)
+                .create()
+            dialogRef.set(dialog)
+            dialog.setOnCancelListener { latch.countDown() }
+            dialog.setOnShowListener {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    val selectedVideo = if (needsVideo) {
+                        options.videoChoices.getOrNull(videoSpinner.selectedItemPosition)
+                    } else null
+                    val selectedAudio = if (needsAudio) {
+                        options.audioChoices.getOrNull(audioSpinner.selectedItemPosition)
+                    } else null
+                    if ((needsVideo && selectedVideo == null) || (needsAudio && selectedAudio == null)) {
+                        toast("当前分P没有可选的完整音视频规格")
+                        return@setOnClickListener
+                    }
+                    result.set(BatchStreamSelection(selectedVideo, selectedAudio))
+                    dialog.dismiss()
+                    latch.countDown()
+                }
+            }
+            dialog.show()
+        }
+
+        while (!latch.await(100, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            if (cancelled.get() || isFinishing || isDestroyed) {
+                runOnUiThread { dialogRef.getAndSet(null)?.dismiss() }
+                return null
+            }
+        }
+        return result.get()
+    }
+
     private fun enqueueBatchPages(
         sourceVideo: BiliVideo,
         pages: List<BiliPage>,
@@ -2845,37 +2968,60 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         preferred.qualityId
                     )
 
-                    val videoChoice = if (options.direct) {
-                        null
-                    } else {
-                        BiliBatchStreamPolicy.selectCompatible(
+                    val mode = BatchQualityMismatchMode.fromPreference(
+                        prefs.getInt("batch_quality_mismatch", 0)
+                    )
+                    val videoChoice = when {
+                        options.direct || preferred.audioOnly -> null
+                        mode == BatchQualityMismatchMode.AUTO_FALLBACK ->
+                            BiliBatchStreamPolicy.selectCompatible(
+                                preferred.videoStreamChoice,
+                                options.videoChoices
+                            )
+                        else -> BiliBatchStreamPolicy.selectExact(
                             preferred.videoStreamChoice,
                             options.videoChoices
                         )
                     }
-                    val audioChoice = if (!preferred.includeAudio ||
-                        preferred.audioStreamChoice == null
-                    ) {
-                        null
-                    } else {
-                        BiliBatchStreamPolicy.selectCompatible(
+                    val audioChoice = when {
+                        !preferred.includeAudio || preferred.audioStreamChoice == null -> null
+                        mode == BatchQualityMismatchMode.AUTO_FALLBACK ->
+                            BiliBatchStreamPolicy.selectCompatible(
+                                preferred.audioStreamChoice,
+                                options.audioChoices
+                            )
+                        else -> BiliBatchStreamPolicy.selectExact(
                             preferred.audioStreamChoice,
                             options.audioChoices
                         )
                     }
-                    val missingVideo = preferred.videoStreamChoice != null &&
-                        !options.direct && videoChoice == null
+                    val missingVideo = !options.direct && !preferred.audioOnly &&
+                        preferred.videoStreamChoice != null && videoChoice == null
                     val missingAudio = preferred.includeAudio &&
                         preferred.audioStreamChoice != null && audioChoice == null
                     val incompatibleDirect = options.direct &&
                         (preferred.videoStreamChoice != null || preferred.audioStreamChoice != null)
+                    val noUsableVideo = !options.direct && !preferred.audioOnly &&
+                        options.videoChoices.isEmpty()
+                    val noUsableAudio = preferred.includeAudio && options.audioChoices.isEmpty()
+                    val mismatch = missingVideo || missingAudio || incompatibleDirect ||
+                        noUsableVideo || noUsableAudio
 
-                    if (missingVideo || missingAudio || incompatibleDirect ||
-                        (!options.direct && options.videoChoices.isEmpty())
+                    val finalSelection = when {
+                        !mismatch -> BatchStreamSelection(videoChoice, audioChoice)
+                        mode == BatchQualityMismatchMode.ASK ->
+                            awaitBatchStreamSelection(partVideo, options, preferred, cancelled)
+                        else -> null
+                    }
+                    if (cancelled.get()) break
+
+                    if (finalSelection == null ||
+                        (!options.direct && !preferred.audioOnly && finalSelection.video == null) ||
+                        (preferred.includeAudio && finalSelection.audio == null)
                     ) {
                         skipped += page.pageNumber
                     } else {
-                        val targetQuality = videoChoice?.id
+                        val targetQuality = finalSelection.video?.id
                             ?: partVideo.qualities.firstOrNull()?.id
                             ?: preferred.qualityId
                         prepared += DownloadSpec(
@@ -2885,8 +3031,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                             downloadDanmaku = preferred.downloadDanmaku,
                             downloadSubtitles = preferred.downloadSubtitles,
                             downloadCover = preferred.downloadCover,
-                            videoStreamChoice = videoChoice,
-                            audioStreamChoice = audioChoice,
+                            videoStreamChoice = finalSelection.video,
+                            audioStreamChoice = finalSelection.audio,
                             includeAudio = preferred.includeAudio
                         )
                     }
@@ -3173,6 +3319,11 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
     private var parsedVideo: BiliVideo? = null
     private var selectedQualityId = 0
+    private data class BatchStreamSelection(
+        val video: BiliStreamChoice?,
+        val audio: BiliStreamChoice?
+    )
+
     private data class DownloadSpec(
         val video: BiliVideo,
         val qualityId: Int,
@@ -3609,7 +3760,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             downloadDanmaku = prefs.getBoolean("danmaku", false),
             downloadSubtitles = prefs.getBoolean("subtitles", false),
             audioOnly = prefs.getBoolean("audio_only", false),
-            downloadPath = "Download/BiliDl"
+            downloadPath = "Download/BiliDl",
+            batchQualityMismatchIndex = prefs.getInt("batch_quality_mismatch", 0)
+                .coerceIn(0, BatchQualityMismatchMode.values().lastIndex)
         )
         runOnUiThread { callback(settings) }
     }
@@ -3621,6 +3774,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 val last = if (key == "quality") qualityOptions.lastIndex else concurrentOptions.lastIndex
                 prefs.edit().putInt(key, index.coerceIn(0, last)).apply()
                 if (key == "quality") refreshQuality()
+            }
+            "batch_quality_mismatch" -> {
+                val index = (value as? Int) ?: return
+                prefs.edit()
+                    .putInt("batch_quality_mismatch", index.coerceIn(0, BatchQualityMismatchMode.values().lastIndex))
+                    .apply()
             }
             "wifi_only", "danmaku", "subtitles", "audio_only" -> {
                 val enabled = value as? Boolean ?: return

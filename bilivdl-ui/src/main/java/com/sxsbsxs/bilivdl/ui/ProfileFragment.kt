@@ -17,6 +17,11 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
 
     private val qualityOptions = arrayOf("自动（最高可用）", "1080P", "720P", "480P", "360P")
     private val concurrencyOptions = arrayOf("1 个", "2 个", "3 个", "5 个")
+    private val batchMismatchOptions = arrayOf(
+        "自动兼容较低规格",
+        "不兼容时逐P选择",
+        "不兼容时跳过"
+    )
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
@@ -37,6 +42,11 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
             concurrencyOptions,
             currentConcurrencyIndex
         ) { host.updateSetting("concurrent", it) } }
+        binding?.settingBatchMismatchValue?.setOnClickListener { chooseSetting(
+            "批量分P规格不一致时",
+            batchMismatchOptions,
+            currentBatchMismatchIndex
+        ) { host.updateSetting("batch_quality_mismatch", it) } }
         binding?.settingClearCache?.setOnClickListener {
             AlertDialog.Builder(requireContext())
                 .setTitle("清理临时缓存")
@@ -54,6 +64,7 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
 
     private var currentQualityIndex = 0
     private var currentConcurrencyIndex = 1
+    private var currentBatchMismatchIndex = 0
 
     private fun bindSwitches() {
         binding?.settingWifiOnly?.setOnCheckedChangeListener { _, checked ->
@@ -95,6 +106,9 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
                 settings.concurrencyIndex.coerceIn(concurrencyOptions.indices)
             b.settingQualityValue.text = qualityOptions[currentQualityIndex]
             b.settingConcurrencyValue.text = concurrencyOptions[currentConcurrencyIndex]
+            currentBatchMismatchIndex = settings.batchQualityMismatchIndex
+                .coerceIn(batchMismatchOptions.indices)
+            b.settingBatchMismatchValue.text = batchMismatchOptions[currentBatchMismatchIndex]
             b.settingDownloadPath.text = settings.downloadPath
 
             // Prevent loading stored values from firing preference writes.

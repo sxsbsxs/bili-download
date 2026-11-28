@@ -52,5 +52,6 @@ data class BiliVdlSettings(
     val downloadDanmaku: Boolean,
     val downloadSubtitles: Boolean,
     val audioOnly: Boolean,
-    val downloadPath: String
+    val downloadPath: String,
+    val batchQualityMismatchIndex: Int = 0
 )

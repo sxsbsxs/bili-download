@@ -9,6 +9,29 @@ class BiliBatchStreamPolicyTest {
         BiliStreamChoice(id = id, codecs = codec, bandwidth = bandwidth)
 
     @Test
+    fun exactMatchRequiresSameRepresentationIdAndCodec() {
+        val chosen = BiliBatchStreamPolicy.selectExact(
+            stream(80, "avc1.640028"),
+            listOf(
+                stream(80, "hev1.1.6.L120.90"),
+                stream(64, "avc1.640028"),
+                stream(80, "avc1.640028", 2_000_000)
+            )
+        )
+        assertEquals(2_000_000L, chosen?.bandwidth)
+    }
+
+    @Test
+    fun exactMatchReturnsNullWhenOnlyDifferentOrLowerRepresentationsExist() {
+        assertNull(
+            BiliBatchStreamPolicy.selectExact(
+                stream(80, "avc1.640028"),
+                listOf(stream(80, "hev1.1.6.L120.90"), stream(64, "avc1.640028"))
+            )
+        )
+    }
+
+    @Test
     fun exactQualityAndCodecFamilyWins() {
         val chosen = BiliBatchStreamPolicy.selectCompatible(
             stream(80, "avc1.640028"),
