@@ -31,6 +31,7 @@ import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
+import android.util.LruCache
 import android.content.Intent
 import android.net.Uri
 import androidx.work.ExistingWorkPolicy
@@ -40,6 +41,7 @@ import androidx.work.WorkManager
 import androidx.work.workDataOf
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.ConcurrentHashMap
 import java.io.IOException
 import android.text.TextUtils
 import android.text.TextWatcher
@@ -324,12 +326,21 @@ class MainActivity : ComponentActivity() {
         root.setOnClickListener { onSearchItemClicked(item) }
         val coverUrl = item.coverUrl
         if (!coverUrl.isNullOrBlank()) {
-            imageExecutor.execute {
-                val bitmap = runCatching {
-                    BiliRepository().loadCoverImage(coverUrl)
-                }.getOrNull()
-                if (bitmap != null) runOnUiThread {
-                    if (!isFinishing && cover.tag == coverUrl) cover.setImageBitmap(bitmap)
+            val cached = coverCache.get(coverUrl)
+            if (cached != null) {
+                cover.setImageBitmap(cached)
+            } else if (loadingCovers.add(coverUrl)) {
+                imageExecutor.execute {
+                    val bitmap = runCatching {
+                        BiliRepository().loadCoverImage(coverUrl)
+                    }.getOrNull()
+                    loadingCovers.remove(coverUrl)
+                    if (bitmap != null) {
+                        coverCache.put(coverUrl, bitmap)
+                        runOnUiThread {
+                            if (!isFinishing && cover.tag == coverUrl) cover.setImageBitmap(bitmap)
+                        }
+                    }
                 }
             }
         }
@@ -1543,6 +1554,12 @@ class MainActivity : ComponentActivity() {
     private var detailLoadToken = 0
     private var detailSearchItem: BiliSearchVideo? = null
     private val imageExecutor = Executors.newFixedThreadPool(3)
+    private val coverCache = object : LruCache<String, Bitmap>(
+        (Runtime.getRuntime().maxMemory() / 1024L / 8L).toInt().coerceAtLeast(1024)
+    ) {
+        override fun sizeOf(key: String, value: Bitmap): Int = (value.byteCount / 1024).coerceAtLeast(1)
+    }
+    private val loadingCovers = ConcurrentHashMap.newKeySet<String>()
     private val searchResults = ArrayList<BiliSearchVideo>()
     private var searchKeyword = ""
     private var searchPage = 1
