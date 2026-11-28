@@ -188,13 +188,14 @@ class SearchActivity : ComponentActivity() {
         }
         if (isLoading) return
 
-        if (clear || keyword != currentKeyword) {
+        val requestedPage = if (clear || keyword != currentKeyword) {
             currentKeyword = keyword
             page = 1
             resultList.removeAllViews()
             loadMoreButton.visibility = android.view.View.GONE
+            1
         } else {
-            page += 1
+            (page + 1).also { page = it }
         }
 
         isLoading = true
@@ -202,7 +203,7 @@ class SearchActivity : ComponentActivity() {
         loadMoreButton.isEnabled = false
         searchExecutor.execute {
             try {
-                val results = repository.searchBilibili(currentKeyword, page, category)
+                val results = repository.searchBilibili(currentKeyword, requestedPage, category)
                 runOnUiThread {
                     isLoading = false
                     loadMoreButton.isEnabled = true
@@ -220,9 +221,10 @@ class SearchActivity : ComponentActivity() {
             } catch (error: Exception) {
                 runOnUiThread {
                     isLoading = false
+                    page = (requestedPage - 1).coerceAtLeast(0)
                     loadMoreButton.isEnabled = true
                     statusText.text = error.message ?: "搜索失败，请稍后重试"
-                    loadMoreButton.visibility = android.view.View.GONE
+                    loadMoreButton.visibility = if (resultList.childCount > 0) android.view.View.VISIBLE else android.view.View.GONE
                 }
             }
         }
