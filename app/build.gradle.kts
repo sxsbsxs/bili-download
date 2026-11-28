@@ -1,3 +1,6 @@
+import java.awt.image.BufferedImage
+import java.util.ArrayDeque
+import javax.imageio.ImageIO
 import org.gradle.api.tasks.testing.Test
 
 plugins {
@@ -15,12 +18,12 @@ val generateLauncherIcon = tasks.register("generateLauncherIcon") {
     inputs.file(launcherIconSource)
     outputs.file(generatedLauncherRes.map { it.file("mipmap-nodpi/bilidl_icon.png") })
     doLast {
-        val sourceImage = javax.imageio.ImageIO.read(launcherIconSource)
+        val sourceImage = ImageIO.read(launcherIconSource)
             ?: error("Unable to decode the supplied BiliDl launcher PNG")
         val width = sourceImage.width
         val height = sourceImage.height
         val exteriorMatte = BooleanArray(width * height)
-        val queue = java.util.ArrayDeque<Int>()
+        val queue = ArrayDeque<Int>()
 
         fun isWhiteMatte(index: Int): Boolean {
             val argb = sourceImage.getRGB(index % width, index / width)
@@ -57,8 +60,8 @@ val generateLauncherIcon = tasks.register("generateLauncherIcon") {
             if (y + 1 < height) visitEdge(index + width)
         }
 
-        val output = java.awt.image.BufferedImage(
-            width, height, java.awt.image.BufferedImage.TYPE_INT_ARGB
+        val output = BufferedImage(
+            width, height, BufferedImage.TYPE_INT_ARGB
         )
         for (y in 0 until height) {
             for (x in 0 until width) {
@@ -69,7 +72,7 @@ val generateLauncherIcon = tasks.register("generateLauncherIcon") {
         }
         val outputFile = generatedLauncherRes.get().file("mipmap-nodpi/bilidl_icon.png").asFile
         outputFile.parentFile.mkdirs()
-        check(javax.imageio.ImageIO.write(output, "png", outputFile)) {
+        check(ImageIO.write(output, "png", outputFile)) {
             "Unable to encode the transparent BiliDl launcher PNG"
         }
     }

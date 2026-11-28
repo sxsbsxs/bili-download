@@ -459,7 +459,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             text = "视频详情"
             textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor("#181A1F"))
         }, LinearLayout.LayoutParams(0, wrap, 1f))
         page.addView(toolbar, LinearLayout.LayoutParams(match, dp(52)))
 
