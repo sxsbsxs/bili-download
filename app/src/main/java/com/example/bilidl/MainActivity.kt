@@ -628,7 +628,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         )
         detailCommentSortButton?.text = if (commentsSort == 2) "按热度" else "按时间"
         detailCommentSortButton?.setOnClickListener {
-            commentsSort = if (commentsSort == 2) 1 else 2
+            commentsSort = if (commentsSort == 2) 0 else 2
             detailCommentSortButton?.text = if (commentsSort == 2) "按热度" else "按时间"
             loadVideoComments(video, true)
         }
@@ -1160,22 +1160,31 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             detailComments.clear()
             commentsPage = 1
             commentsHasMore = true
-            renderDetailComments()
+            detailCommentsAdapter?.submit(emptyList())
+            detailCommentsStatus?.text = "正在加载评论…"
         } else if (!commentsHasMore) {
             return
         }
+
         val requestToken = ++commentsRequestToken
-        val page = if (reset) 1 else commentsPage
+        val requestedPage = if (reset) 1 else commentsPage
         commentsLoading = true
-        detailCommentsMore.visibility = View.VISIBLE
-        detailCommentsMore.text = "正在加载评论…"
+        detailCommentsStatus?.text =
+            if (detailComments.isEmpty()) "正在加载评论…" else "正在加载更多评论…"
+
         backgroundExecutor.execute {
             try {
-                val result = repositoryWithSavedCookie().getVideoComments(video.aid, page)
+                val result = repositoryWithSavedCookie().getVideoComments(
+                    aid = video.aid,
+                    page = requestedPage,
+                    sort = commentsSort
+                )
                 runOnUiThread {
-                    if (requestToken != commentsRequestToken || detailPage == null ||
+                    if (requestToken != commentsRequestToken ||
+                        detailPage == null ||
                         parsedVideo?.aid != video.aid
                     ) return@runOnUiThread
+
                     commentsLoading = false
                     val known = detailComments.mapTo(HashSet()) { it.id }
                     result.comments.filter { known.add(it.id) }.forEach(detailComments::add)
@@ -1186,15 +1195,17 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 }
             } catch (error: Exception) {
                 runOnUiThread {
-                    if (requestToken != commentsRequestToken) return@runOnUiThread
+                    if (requestToken != commentsRequestToken ||
+                        detailPage == null ||
+                        parsedVideo?.aid != video.aid
+                    ) return@runOnUiThread
                     commentsLoading = false
-                    detailCommentsMore.visibility = View.VISIBLE
-                    detailCommentsMore.text = if (detailComments.isEmpty()) {
-                        "评论加载失败，点此重试"
-                    } else {
-                        "加载更多评论"
-                    }
-                    detailCommentsMore.setOnClickListener { loadVideoComments(video, reset = detailComments.isEmpty()) }
+                    detailCommentsStatus?.text =
+                        if (detailComments.isEmpty()) {
+                            "评论加载失败：${error.message ?: "网络异常"} · 下拉或重试"
+                        } else {
+                            "已加载 ${detailComments.size} 条 · 继续上滑加载更多"
+                        }
                     if (detailComments.isEmpty()) toast(error.message ?: "评论加载失败")
                 }
             }
@@ -1202,91 +1213,26 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
 
     private fun renderDetailComments() {
-        if (!::detailCommentsContainer.isInitialized) return
-        detailCommentsTitle.text = if (commentsTotalCount > 0L) {
-            "评论 · " + formatCount(commentsTotalCount)
-        } else "评论"
-        detailCommentsContainer.removeAllViews()
-        if (detailComments.isEmpty()) {
-            detailCommentsContainer.addView(TextView(this).apply {
-                text = if (commentsLoading) "正在加载评论…" else "还没有评论"
-                textSize = 12f
-                setTextColor(sub)
-                setPadding(0, dp(12), 0, dp(12))
-            })
-        } else {
-            detailComments.forEachIndexed { index, comment ->
-                if (index > 0) detailCommentsContainer.addView(View(this).apply {
-                    setBackgroundColor(field)
-                }, LinearLayout.LayoutParams(match, dp(1)).apply {
-                    topMargin = dp(8)
-                    bottomMargin = dp(8)
-                })
-                val item = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                val top = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                }
-                top.addView(TextView(this).apply {
-                    text = comment.userName
-                    textSize = 12f
-                    typeface = Typeface.DEFAULT_BOLD
-                    setTextColor(ink)
-                }, LinearLayout.LayoutParams(0, wrap, 1f))
-                top.addView(TextView(this).apply {
-                    text = formatPublishDate(comment.createTime)
-                    textSize = 10f
-                    setTextColor(sub)
-                })
-                item.addView(top)
-                item.addView(TextView(this).apply {
-                    text = comment.message
-                    textSize = 13f
-                    setTextColor(ink)
-                    setLineSpacing(dp(2).toFloat(), 1.08f)
-                    setPadding(0, dp(6), 0, dp(6))
-                })
-                val actions = LinearLayout(this).apply {
-                    orientation = LinearLayout.HORIZONTAL
-                    gravity = Gravity.CENTER_VERTICAL
-                }
-                actions.addView(chip(
-                    (if (comment.likedByMe) "已赞 " else "点赞 ") + formatCount(comment.likeCount),
-                    comment.likedByMe
-                ).apply {
-                    setOnClickListener {
-                        parsedVideo?.let { currentVideo -> performCommentLike(currentVideo, comment) }
-                    }
-                })
-                actions.addView(chip(
-                    if (comment.replyCount > 0L) formatCount(comment.replyCount) + " 条回复" else "回复",
-                    false
-                ).apply {
-                    setOnClickListener {
-                        parsedVideo?.let { currentVideo ->
-                            showCommentReplyDialog(currentVideo, comment)
-                        }
-                    }
-                })
-                item.addView(actions)
-                detailCommentsContainer.addView(item, LinearLayout.LayoutParams(match, wrap))
-            }
+        val mapped = detailComments.map { comment ->
+            BiliVdlComment(
+                id = comment.id,
+                user = comment.userName,
+                text = comment.message,
+                likes = comment.likeCount,
+                replyCount = comment.replyCount,
+                liked = comment.likedByMe
+            )
         }
-        detailCommentsMore.visibility = if (commentsHasMore || commentsLoading || detailComments.isEmpty()) {
-            View.VISIBLE
-        } else View.GONE
-        detailCommentsMore.text = when {
-            commentsLoading -> "正在加载评论…"
-            commentsHasMore -> "加载更多评论"
-            detailComments.isEmpty() -> "评论加载失败，点此重试"
-            else -> "已经到底了"
+        detailCommentsAdapter?.submit(mapped)
+
+        detailCommentsStatus?.text = when {
+            commentsLoading && detailComments.isEmpty() -> "正在加载评论…"
+            commentsLoading -> "已加载 ${detailComments.size} 条 · 正在加载更多…"
+            detailComments.isEmpty() -> "暂无评论"
+            commentsHasMore -> "评论 · ${formatCount(commentsTotalCount)} · 已加载 ${detailComments.size} 条，上滑加载更多"
+            else -> "评论 · ${formatCount(commentsTotalCount)} · 已显示全部评论"
         }
-        detailCommentsMore.setOnClickListener {
-            if (!commentsLoading) {
-                if (detailComments.isEmpty()) loadVideoComments(parsedVideo ?: return@setOnClickListener, true)
-                else if (commentsHasMore) loadVideoComments(parsedVideo ?: return@setOnClickListener, false)
-            }
-        }
+        detailCommentSortButton?.text = if (commentsSort == 2) "按热度" else "按时间"
     }
 
     private fun showCommentReplyDialog(video: BiliVideo, rootComment: BiliComment) {
