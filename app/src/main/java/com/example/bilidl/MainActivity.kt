@@ -1286,7 +1286,7 @@ class MainActivity : ComponentActivity() {
                         if (!cookie.isNullOrBlank()) {
                             put(
                                 "Cookie",
-                                if (cookie.contains(Regex("""(?:^|;\\s*)SESSDATA="""))) cookie
+                                if (cookie.contains(Regex("""(?:^|;\s*)SESSDATA="""))) cookie
                                 else "SESSDATA=" + cookie
                             )
                         }
