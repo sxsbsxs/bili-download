@@ -36,7 +36,7 @@ internal object BiliWebLoginPolicy {
                 if (name.isBlank() ||
                     ignoredAttributes.any { it.equals(name, ignoreCase = true) } ||
                     !name.matches(Regex("[A-Za-z0-9_]+")) ||
-                    value.any { it == '\\r' || it == '\\n' }
+                    value.any { it == '\r' || it == '\n' }
                 ) continue
                 cookies[name] = value
             }
