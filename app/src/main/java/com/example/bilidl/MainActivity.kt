@@ -1815,10 +1815,14 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     private fun showCommentReportDialog(video: BiliVideo, comment: BiliComment) {
         if (!requireInteractionLogin()) return
-        val reasonCodes = intArrayOf(1, 2, 3, 4, 5, 7, 8, 9, 10, 15, 0)
+        val reasonCodes = intArrayOf(
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 0
+        )
         val reasons = arrayOf(
-            "垃圾广告", "色情低俗", "刷屏灌水", "引战或攻击", "剧透", "人身攻击",
-            "无关内容", "违法违规", "低俗内容", "侵犯隐私", "其他原因"
+            "垃圾广告", "色情", "刷屏", "引战", "剧透", "政治", "人身攻击",
+            "内容不相关", "违法违规", "低俗", "非法网站", "赌博诈骗",
+            "传播不实信息", "怂恿教唆", "侵犯隐私", "抢楼", "青少年不良信息",
+            "其他原因"
         )
         AlertDialog.Builder(this)
             .setTitle("举报评论 · ${comment.userName}")
@@ -1826,7 +1830,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 val reason = reasonCodes[which]
                 if (reason == 0) {
                     val input = EditText(this).apply {
-                        hint = "请简要说明举报原因"
+                        hint = "补充说明（可选）"
                         minLines = 2
                         maxLines = 4
                         textSize = 14f
