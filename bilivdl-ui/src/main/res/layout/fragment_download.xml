@@ -25,18 +25,10 @@
             android:textSize="25sp"
             android:textStyle="bold" />
 
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="5dp"
-            android:text="查看进度、管理任务，失败任务可以继续重试"
-            android:textColor="@color/text_secondary"
-            android:textSize="12sp" />
-
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="18dp"
+            android:layout_marginTop="14dp"
             app:cardBackgroundColor="@color/surface_dark"
             app:cardCornerRadius="@dimen/card_corner_radius"
             app:cardElevation="0dp"
