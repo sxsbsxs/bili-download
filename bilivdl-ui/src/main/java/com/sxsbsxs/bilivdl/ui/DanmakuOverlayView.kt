@@ -93,10 +93,6 @@ class DanmakuOverlayView @JvmOverloads constructor(
         positionProvider = provider
     }
 
-    fun setDanmakuEnabled(value: Boolean) {
-        danmakuEnabled = value
-    }
-
     fun setPlaying(value: Boolean) {
         playing = value
         if (value) postInvalidateOnAnimation()
