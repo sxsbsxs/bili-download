@@ -18,6 +18,12 @@ interface DownloadResourceDao {
     @Query("SELECT * FROM download_resources WHERE taskId = :taskId ORDER BY createdAt, displayName")
     suspend fun getByTask(taskId: String): List<DownloadResourceEntity>
 
+    @Query("SELECT * FROM download_resources ORDER BY createdAt DESC, displayName")
+    suspend fun getAll(): List<DownloadResourceEntity>
+
+    @Query("DELETE FROM download_resources WHERE resourceId = :resourceId")
+    suspend fun deleteById(resourceId: String)
+
     @Query("SELECT * FROM download_resources WHERE taskId = :taskId ORDER BY createdAt, displayName")
     fun observeByTask(taskId: String): Flow<List<DownloadResourceEntity>>
 

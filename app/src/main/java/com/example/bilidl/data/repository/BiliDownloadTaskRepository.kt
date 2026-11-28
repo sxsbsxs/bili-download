@@ -45,6 +45,10 @@ class BiliDownloadTaskRepository private constructor(
     suspend fun getResources(taskId: String): List<DownloadResourceEntity> =
         resources.getByTask(taskId)
 
+    suspend fun getAllResources(): List<DownloadResourceEntity> = resources.getAll()
+
+    suspend fun deleteResource(resourceId: String) = resources.deleteById(resourceId)
+
     suspend fun registerTask(task: DownloadTaskEntity, preferIncomingSpec: Boolean = false) {
         database.withTransaction {
             val existing = tasks.getById(task.taskId)

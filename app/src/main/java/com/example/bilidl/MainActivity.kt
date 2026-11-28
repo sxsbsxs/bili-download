@@ -2128,6 +2128,15 @@ class MainActivity : ComponentActivity() {
             ), sideMargins(20)
         )
 
+        col.addView(
+            group(
+                "资源管理",
+                settingRow("本地资源", "播放、导出或删除已下载的视频、音频、弹幕和字幕", valueText("打开  ›")) {
+                    startActivity(Intent(this, LocalResourceCenterActivity::class.java))
+                }
+            ), sideMargins(20)
+        )
+
         // 通用
         col.addView(
             group(
