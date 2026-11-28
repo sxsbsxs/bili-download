@@ -209,6 +209,10 @@ internal object SegmentedHttpDownloader {
         val total = probe.totalBytes
         val inFlightBytes = AtomicLong(0L)
         val lock = Any()
+        val resumedPercent = ((completedBytes.get() * 100L) / total)
+            .toInt()
+            .coerceIn(0, 99)
+        onProgress(resumedPercent)
 
         ParcelFileDescriptor.open(
             target,
