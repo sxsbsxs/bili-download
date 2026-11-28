@@ -202,7 +202,7 @@ class BiliDownloadWorker(
         }
         val isComplete = progress != null && progress >= 100
         val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setSmallIcon(R.drawable.ic_stat_download)
             .setContentTitle(if (isComplete) "BiliDl 下载完成" else "BiliDl 正在下载")
             .setContentText(detail.ifBlank { inputData.getString(KEY_TITLE).orEmpty() })
             .setOngoing(!isComplete)
