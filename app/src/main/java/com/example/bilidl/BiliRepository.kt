@@ -116,6 +116,12 @@ data class BiliFavoriteFolder(
     val favState: Boolean = false
 )
 
+data class BiliVideoRelationState(
+    val liked: Boolean,
+    val coinCount: Int,
+    val favorited: Boolean
+)
+
 data class BiliCommentPage(
     val comments: List<BiliComment>,
     val totalCount: Long,
@@ -374,9 +380,18 @@ class BiliRepository(
             categoryId = data.optInt("tid"),
             copyright = data.optInt("copyright"),
             ownerMid = data.optJSONObject("owner")?.optLong("mid") ?: 0L,
-            userLiked = data.optJSONObject("req_user")?.optInt("like") == 1,
-            userCoin = data.optJSONObject("req_user")?.optInt("coin") ?: 0,
-            userFavorited = data.optJSONObject("req_user")?.optInt("favorite") == 1,
+            userLiked = runCatching {
+                if (!cookieProvider().isNullOrBlank()) getVideoRelationState(aid).liked
+                else data.optJSONObject("req_user")?.optInt("like") == 1
+            }.getOrDefault(data.optJSONObject("req_user")?.optInt("like") == 1),
+            userCoin = runCatching {
+                if (!cookieProvider().isNullOrBlank()) getVideoRelationState(aid).coinCount
+                else data.optJSONObject("req_user")?.optInt("coin") ?: 0
+            }.getOrDefault(data.optJSONObject("req_user")?.optInt("coin") ?: 0),
+            userFavorited = runCatching {
+                if (!cookieProvider().isNullOrBlank()) getVideoRelationState(aid).favorited
+                else data.optJSONObject("req_user")?.optInt("favorite") == 1
+            }.getOrDefault(data.optJSONObject("req_user")?.optInt("favorite") == 1),
             ownerAvatarUrl = data.optJSONObject("owner")?.optString("face")
                 ?.takeIf { it.startsWith("http") },
             tags = getVideoTags(aid, actualBvid)
@@ -562,6 +577,23 @@ class BiliRepository(
             throw IOException("读取弹幕失败：" + (firstError.message ?: "B站弹幕接口不可用"))
         }
         return result.sortedBy { it.progressMs }
+    }
+
+    fun getVideoRelationState(aid: Long): BiliVideoRelationState {
+        require(aid > 0L) { "视频 AV 号无效" }
+        val data = checkedData(
+            requestJson("https://api.bilibili.com/x/web-interface/archive/relation?aid=$aid")
+        )
+        fun flag(name: String): Boolean = when (val value = data.opt(name)) {
+            is Boolean -> value
+            is Number -> value.toInt() != 0
+            else -> value?.toString() == "1" || value?.toString().equals("true", true)
+        }
+        return BiliVideoRelationState(
+            liked = flag("like"),
+            coinCount = data.optInt("coin").coerceIn(0, 2),
+            favorited = flag("favorite")
+        )
     }
 
     private fun getVideoTags(aid: Long, bvid: String?): List<String> {
