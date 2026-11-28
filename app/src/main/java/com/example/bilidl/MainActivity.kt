@@ -30,6 +30,12 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.media3.common.util.UnstableApi
 import android.app.AlertDialog
+import android.app.ProgressDialog
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.FileProvider
+import com.sxsbsxs.bilivdl.ui.OnboardingDialogFragment
 import java.io.File
 import android.content.ClipboardManager
 import android.content.ClipData
@@ -99,6 +105,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
+        private const val APP_REPOSITORY_URL = "https://github.com/sxsbsxs/bili-download"
+        private const val APP_RELEASES_URL = "https://github.com/sxsbsxs/bili-download/releases"
+        private const val PREF_PENDING_UPDATE_FILE = "pending_update_file"
         const val ST_DOWNLOADING = DownloadTaskStatus.RUNNING
         const val ST_WAITING = DownloadTaskStatus.QUEUED
         const val ST_PAUSED = DownloadTaskStatus.PAUSED
@@ -2484,6 +2493,24 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     // ---------------- 状态 ----------------
     private lateinit var prefs: SharedPreferences
+
+    private val installUpdatePermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            val pendingPath = prefs.getString(PREF_PENDING_UPDATE_FILE, null)
+            prefs.edit().remove(PREF_PENDING_UPDATE_FILE).apply()
+            if (pendingPath.isNullOrBlank()) return@registerForActivityResult
+
+            val apk = File(pendingPath)
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                packageManager.canRequestPackageInstalls() &&
+                apk.isFile
+            ) {
+                installUpdateApk(apk)
+            } else {
+                Toast.makeText(this, "未获得安装授权，更新包仍保留在缓存中。", Toast.LENGTH_LONG).show()
+            }
+        }
     private lateinit var pages: List<View>
     private lateinit var rootFrame: FrameLayout
     private lateinit var mainContainer: LinearLayout
@@ -3014,6 +3041,201 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         onLogoutClicked()
     }
 
+    override fun openRepository() {
+        openExternalPage(APP_REPOSITORY_URL)
+    }
+
+    override fun checkForUpdates() {
+        checkLatestGitHubRelease()
+    }
+
+    private fun openExternalPage(url: String) {
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }.onFailure {
+            Toast.makeText(this, "无法打开链接，请检查浏览器。", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun checkLatestGitHubRelease() {
+        val checking = ProgressDialog(this).apply {
+            setMessage("正在检查 GitHub Releases…")
+            setCancelable(false)
+            show()
+        }
+        backgroundExecutor.execute {
+            val result = GitHubReleaseUpdater.checkLatest(this)
+            runOnUiThread {
+                if (checking.isShowing) checking.dismiss()
+                if (isFinishing || isDestroyed) return@runOnUiThread
+
+                when (result) {
+                    is GitHubReleaseUpdater.CheckResult.UpdateAvailable -> {
+                        val notes = result.release.notes
+                            .take(1400)
+                            .ifBlank { "仓库已发布新版本。" }
+                        val message = buildString {
+                            append("当前版本：")
+                            append(result.currentVersion.ifBlank { "未知" })
+                            append("\n最新版本：")
+                            append(result.release.tagName)
+                            append("\n安装包：")
+                            append(result.release.assetName)
+                            append("\n\n")
+                            append(notes)
+                        }
+                        AlertDialog.Builder(this)
+                            .setTitle("发现新版本")
+                            .setMessage(message)
+                            .setNegativeButton("稍后", null)
+                            .setPositiveButton("下载并安装") { _, _ ->
+                                downloadAndInstallRelease(result.release)
+                            }
+                            .show()
+                    }
+                    is GitHubReleaseUpdater.CheckResult.AlreadyLatest -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("已经是最新版本")
+                            .setMessage("当前版本 ${result.currentVersion} 已经是仓库发布的最新版本。")
+                            .setPositiveButton("知道了", null)
+                            .show()
+                    }
+                    GitHubReleaseUpdater.CheckResult.NoReleasePublished -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("暂未发布正式安装包")
+                            .setMessage(
+                                "仓库目前还没有发布 GitHub Release，因此暂时没有可供应用内更新的正式 APK。发布带 APK 的正式版本后，这里会自动识别最新版本。"
+                            )
+                            .setNegativeButton("关闭", null)
+                            .setPositiveButton("打开 Releases") { _, _ ->
+                                openExternalPage(APP_RELEASES_URL)
+                            }
+                            .show()
+                    }
+                    is GitHubReleaseUpdater.CheckResult.NoApkAsset -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("没有找到 APK")
+                            .setMessage("Release ${result.releaseTag} 已发布，但没有附带可安装的 APK 文件。")
+                            .setPositiveButton("打开 Releases") { _, _ ->
+                                openExternalPage(APP_RELEASES_URL)
+                            }
+                            .setNegativeButton("关闭", null)
+                            .show()
+                    }
+                    is GitHubReleaseUpdater.CheckResult.Failed -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("检查更新失败")
+                            .setMessage(result.message)
+                            .setNegativeButton("关闭", null)
+                            .setPositiveButton("重试") { _, _ ->
+                                checkLatestGitHubRelease()
+                            }
+                            .show()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun downloadAndInstallRelease(release: GitHubReleaseUpdater.ReleaseInfo) {
+        val progress = ProgressDialog(this).apply {
+            setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
+            max = 100
+            progress = 0
+            setMessage("正在下载更新包…")
+            setCancelable(false)
+            show()
+        }
+
+        backgroundExecutor.execute {
+            try {
+                var lastShown = -2
+                val apk = GitHubReleaseUpdater.download(this, release) { percent ->
+                    if (percent != lastShown) {
+                        lastShown = percent
+                        runOnUiThread {
+                            if (progress.isShowing && percent >= 0) {
+                                progress.progress = percent
+                            } else if (progress.isShowing && percent < 0) {
+                                progress.setMessage("正在下载更新包…")
+                            }
+                        }
+                    }
+                }
+                runOnUiThread {
+                    if (progress.isShowing) progress.dismiss()
+                    if (!isFinishing && !isDestroyed) promptInstallUpdate(apk)
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (progress.isShowing) progress.dismiss()
+                    if (!isFinishing && !isDestroyed) {
+                        AlertDialog.Builder(this)
+                            .setTitle("下载更新失败")
+                            .setMessage(error.message ?: "网络异常，请稍后重试。")
+                            .setPositiveButton("重试") { _, _ ->
+                                downloadAndInstallRelease(release)
+                            }
+                            .setNegativeButton("关闭", null)
+                            .show()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun promptInstallUpdate(apk: File) {
+        if (!apk.isFile) {
+            Toast.makeText(this, "更新安装包不存在，请重新下载。", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
+            prefs.edit().putString(PREF_PENDING_UPDATE_FILE, apk.absolutePath).apply()
+            AlertDialog.Builder(this)
+                .setTitle("需要安装授权")
+                .setMessage("Android 需要你允许 BiliDl 安装从 GitHub 下载的更新包。")
+                .setNegativeButton("取消") { _, _ ->
+                    prefs.edit().remove(PREF_PENDING_UPDATE_FILE).apply()
+                }
+                .setPositiveButton("前往授权") { _, _ ->
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName")
+                    )
+                    installUpdatePermissionLauncher.launch(intent)
+                }
+                .show()
+            return
+        }
+
+        installUpdateApk(apk)
+    }
+
+    private fun installUpdateApk(apk: File) {
+        try {
+            val uri = FileProvider.getUriForFile(
+                this,
+                "$packageName.fileprovider",
+                apk
+            )
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(installIntent)
+        } catch (error: Exception) {
+            AlertDialog.Builder(this)
+                .setTitle("无法打开安装程序")
+                .setMessage(error.message ?: "请确认系统允许安装此来源的应用。")
+                .setPositiveButton("知道了", null)
+                .show()
+        }
+    }
+
     private fun formatUiCount(value: Long): String = when {
         value >= 100_000_000L -> String.format(java.util.Locale.US, "%.1f亿", value / 100_000_000.0)
         value >= 10_000L -> String.format(java.util.Locale.US, "%.1f万", value / 10_000.0)
@@ -3087,6 +3309,24 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     }
                 } catch (_: Exception) {
                     SecureCookieStore.clear(this)
+                }
+            }
+        }
+
+        if (
+            savedInstanceState == null &&
+            !prefs.getBoolean(OnboardingDialogFragment.KEY_COMPLETED, false)
+        ) {
+            rootFrame.post {
+                if (
+                    !isFinishing &&
+                    !isDestroyed &&
+                    supportFragmentManager.findFragmentByTag(OnboardingDialogFragment.TAG) == null
+                ) {
+                    OnboardingDialogFragment().show(
+                        supportFragmentManager,
+                        OnboardingDialogFragment.TAG
+                    )
                 }
             }
         }
