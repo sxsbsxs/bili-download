@@ -678,6 +678,531 @@ class MainActivity : ComponentActivity() {
         return page
     }
 
+    private fun repositoryWithSavedCookie() = BiliRepository {
+        SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+    }
+
+    private fun requireInteractionLogin(): Boolean {
+        if (!loggedIn) {
+            toast("请先登录 B 站账号")
+            showLogin()
+            return false
+        }
+        if (SecureCookieStore.csrf(this).isNullOrBlank()) {
+            toast("当前登录凭据缺少 bili_jct，请重新扫码登录后再互动")
+            showLogin()
+            return false
+        }
+        return true
+    }
+
+    private fun loadVideoDanmaku(video: BiliVideo) {
+        val requestToken = ++danmakuRequestToken
+        detailDanmakuOverlay?.clear()
+        backgroundExecutor.execute {
+            try {
+                val xml = repositoryWithSavedCookie().getDanmakuXml(video.cid)
+                runOnUiThread {
+                    if (requestToken != danmakuRequestToken ||
+                        detailDanmakuOverlay == null ||
+                        parsedVideo?.cid != video.cid
+                    ) return@runOnUiThread
+                    detailDanmakuOverlay?.setXml(xml)
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (requestToken == danmakuRequestToken && parsedVideo?.cid == video.cid) {
+                        detailPlaybackStatus?.text = error.message?.let { "弹幕暂不可用：$it" }
+                            ?: "弹幕暂不可用"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showDanmakuComposer(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        val editor = EditText(this).apply {
+            hint = "发送一条弹幕（最多 50 个字）"
+            setTextColor(ink)
+            setHintTextColor(sub)
+            textSize = 15f
+            minLines = 2
+            maxLines = 3
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            filters = arrayOf(android.text.InputFilter.LengthFilter(50))
+            background = shape(field, 12)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        val modeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("滚动弹幕", "顶部弹幕", "底部弹幕")
+            )
+        }
+        val colorChoices = listOf(
+            "白色" to 0xFFFFFF,
+            "黄色" to 0xFFFF00,
+            "粉色" to 0xFF79B8,
+            "蓝色" to 0x66CCFF,
+            "绿色" to 0x66CC66
+        )
+        val colorSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                colorChoices.map { it.first }
+            )
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+            addView(editor, LinearLayout.LayoutParams(match, wrap))
+            addView(TextView(this@MainActivity).apply {
+                text = "显示方式"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(12), 0, dp(2))
+            })
+            addView(modeSpinner, LinearLayout.LayoutParams(match, dp(44)))
+            addView(TextView(this@MainActivity).apply {
+                text = "弹幕颜色"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(8), 0, dp(2))
+            })
+            addView(colorSpinner, LinearLayout.LayoutParams(match, dp(44)))
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("发送弹幕")
+            .setView(content)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("发送", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val message = editor.text?.toString()?.trim().orEmpty()
+                if (message.isBlank()) {
+                    editor.error = "请输入弹幕内容"
+                    return@setOnClickListener
+                }
+                val modes = listOf(1, 5, 4)
+                val selectedMode = modes.getOrElse(modeSpinner.selectedItemPosition) { 1 }
+                val selectedColor = colorChoices.getOrElse(colorSpinner.selectedItemPosition) {
+                    colorChoices.first()
+                }.second
+                val progressMs = currentPlayer?.currentPosition ?: 0L
+                setBusy(dialog.getButton(AlertDialog.BUTTON_POSITIVE), true)
+                backgroundExecutor.execute {
+                    try {
+                        repositoryWithSavedCookie().sendDanmaku(
+                            video = video,
+                            text = message,
+                            progressMs = progressMs,
+                            color = selectedColor,
+                            mode = selectedMode
+                        )
+                        runOnUiThread {
+                            if (parsedVideo?.cid == video.cid) {
+                                detailDanmakuOverlay?.addLocalDanmaku(
+                                    message, selectedColor, selectedMode, progressMs
+                                )
+                            }
+                            toast("弹幕发送成功")
+                            dialog.dismiss()
+                        }
+                    } catch (error: Exception) {
+                        runOnUiThread {
+                            setBusy(dialog.getButton(AlertDialog.BUTTON_POSITIVE), false)
+                            toast(error.message ?: "弹幕发送失败")
+                        }
+                    }
+                }
+            }
+        }
+        dialog.show()
+        editor.requestFocus()
+    }
+
+    private fun performVideoLike(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        val targetLiked = !video.userLiked
+        backgroundExecutor.execute {
+            try {
+                repositoryWithSavedCookie().setVideoLike(video.aid, targetLiked)
+                runOnUiThread {
+                    val updated = video.copy(userLiked = targetLiked)
+                    parsedVideo = updated
+                    detailLikeButton.text = if (targetLiked) "已点赞" else "点赞"
+                    detailLikeButton.setTextColor(if (targetLiked) Color.WHITE else sub)
+                    detailLikeButton.background = rippleShape(if (targetLiked) pink else field, 18)
+                    toast(if (targetLiked) "点赞成功" else "已取消点赞")
+                }
+            } catch (error: Exception) {
+                runOnUiThread { toast(error.message ?: "点赞失败") }
+            }
+        }
+    }
+
+    private fun performTripleLike(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        backgroundExecutor.execute {
+            try {
+                repositoryWithSavedCookie().tripleLike(video.aid)
+                runOnUiThread {
+                    parsedVideo = video.copy(userLiked = true)
+                    detailLikeButton.text = "已点赞"
+                    detailLikeButton.setTextColor(Color.WHITE)
+                    detailLikeButton.background = rippleShape(pink, 18)
+                    toast("一键三连成功")
+                }
+            } catch (error: Exception) {
+                runOnUiThread { toast(error.message ?: "一键三连失败") }
+            }
+        }
+    }
+
+    private fun showCoinDialog(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        val options = arrayOf("投 1 个币", "投 2 个币")
+        AlertDialog.Builder(this)
+            .setTitle("给 UP 主投币")
+            .setItems(options) { _, index ->
+                backgroundExecutor.execute {
+                    try {
+                        repositoryWithSavedCookie().addVideoCoin(video.aid, index + 1)
+                        runOnUiThread { toast("投币成功") }
+                    } catch (error: Exception) {
+                        runOnUiThread { toast(error.message ?: "投币失败") }
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showFavoriteFolderPicker(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        toast("正在读取你的收藏夹…")
+        backgroundExecutor.execute {
+            try {
+                val folders = repositoryWithSavedCookie().getFavoriteFolders(video.aid)
+                runOnUiThread {
+                    if (folders.isEmpty()) {
+                        toast("没有可用收藏夹，请先在 B 站创建收藏夹")
+                        return@runOnUiThread
+                    }
+                    val labels = folders.map { it.title + "  ·  " + it.mediaCount + " 个视频" }.toTypedArray()
+                    AlertDialog.Builder(this)
+                        .setTitle("选择收藏夹")
+                        .setItems(labels) { _, index ->
+                            val folder = folders[index]
+                            backgroundExecutor.execute {
+                                try {
+                                    repositoryWithSavedCookie().addVideoToFavorite(video.aid, folder.id)
+                                    runOnUiThread {
+                                        detailFavoriteButton.text = "已收藏"
+                                        detailFavoriteButton.setTextColor(Color.WHITE)
+                                        detailFavoriteButton.background = rippleShape(pink, 18)
+                                        parsedVideo = video.copy(userFavorited = true)
+                                        toast("已收藏到「" + folder.title + "」")
+                                    }
+                                } catch (error: Exception) {
+                                    runOnUiThread { toast(error.message ?: "收藏失败") }
+                                }
+                            }
+                        }
+                        .setNegativeButton("取消", null)
+                        .show()
+                }
+            } catch (error: Exception) {
+                runOnUiThread { toast(error.message ?: "读取收藏夹失败") }
+            }
+        }
+    }
+
+    private fun buildCommentsSection(video: BiliVideo): View {
+        val section = card()
+        detailCommentsTitle = TextView(this).apply {
+            text = "评论"
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }
+        section.addView(detailCommentsTitle, LinearLayout.LayoutParams(match, wrap))
+
+        val composer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(10), 0, dp(8))
+        }
+        detailCommentInput = EditText(this).apply {
+            hint = if (loggedIn) "说点什么…" else "登录后参与评论"
+            setHintTextColor(sub)
+            setTextColor(ink)
+            textSize = 13f
+            minLines = 1
+            maxLines = 3
+            background = shape(field, 12)
+            setPadding(dp(12), dp(9), dp(12), dp(9))
+        }
+        detailCommentSend = chip("发送", true)
+        detailCommentSend.setOnClickListener { sendDetailComment(video) }
+        composer.addView(detailCommentInput, LinearLayout.LayoutParams(0, wrap, 1f).apply {
+            rightMargin = dp(8)
+        })
+        composer.addView(detailCommentSend, LinearLayout.LayoutParams(wrap, dp(42)))
+        section.addView(composer, LinearLayout.LayoutParams(match, wrap))
+
+        detailCommentsContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        section.addView(detailCommentsContainer, LinearLayout.LayoutParams(match, wrap))
+        detailCommentsMore = TextView(this).apply {
+            text = "加载更多评论"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(pink)
+            setPadding(dp(10), dp(12), dp(10), dp(8))
+            visibility = View.GONE
+            setOnClickListener {
+                if (!commentsLoading && commentsHasMore) loadVideoComments(video, false)
+            }
+        }
+        section.addView(detailCommentsMore, LinearLayout.LayoutParams(match, wrap))
+        return section
+    }
+
+    private fun buildRelatedSection(): View {
+        val section = card()
+        section.addView(TextView(this).apply {
+            text = "相关推荐"
+            textSize = 16f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }, LinearLayout.LayoutParams(match, wrap))
+        detailRelatedContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        section.addView(detailRelatedContainer, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(10)
+        })
+        return section
+    }
+
+    private fun sendDetailComment(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        val message = detailCommentInput.text?.toString()?.trim().orEmpty()
+        if (message.isBlank()) {
+            detailCommentInput.error = "请输入评论内容"
+            return
+        }
+        setBusy(detailCommentSend, true)
+        backgroundExecutor.execute {
+            try {
+                repositoryWithSavedCookie().sendVideoComment(video.aid, message)
+                runOnUiThread {
+                    setBusy(detailCommentSend, false)
+                    detailCommentInput.setText("")
+                    toast("评论发送成功")
+                    loadVideoComments(video, true)
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    setBusy(detailCommentSend, false)
+                    toast(error.message ?: "评论发送失败")
+                }
+            }
+        }
+    }
+
+    private fun loadVideoComments(video: BiliVideo, reset: Boolean) {
+        if (commentsLoading) return
+        if (reset) {
+            commentsRequestToken++
+            detailComments.clear()
+            commentsPage = 1
+            commentsHasMore = true
+            renderDetailComments()
+        } else if (!commentsHasMore) {
+            return
+        }
+        val requestToken = ++commentsRequestToken
+        val page = if (reset) 1 else commentsPage
+        commentsLoading = true
+        detailCommentsMore.visibility = View.VISIBLE
+        detailCommentsMore.text = "正在加载评论…"
+        backgroundExecutor.execute {
+            try {
+                val result = repositoryWithSavedCookie().getVideoComments(video.aid, page)
+                runOnUiThread {
+                    if (requestToken != commentsRequestToken || detailPage == null ||
+                        parsedVideo?.aid != video.aid
+                    ) return@runOnUiThread
+                    commentsLoading = false
+                    val known = detailComments.mapTo(HashSet()) { it.id }
+                    result.comments.filter { known.add(it.id) }.forEach(detailComments::add)
+                    commentsPage = result.nextPage
+                    commentsHasMore = result.hasMore
+                    commentsTotalCount = result.totalCount
+                    renderDetailComments()
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (requestToken != commentsRequestToken) return@runOnUiThread
+                    commentsLoading = false
+                    detailCommentsMore.visibility = View.VISIBLE
+                    detailCommentsMore.text = if (detailComments.isEmpty()) {
+                        "评论加载失败，点此重试"
+                    } else {
+                        "加载更多评论"
+                    }
+                    detailCommentsMore.setOnClickListener { loadVideoComments(video, reset = detailComments.isEmpty()) }
+                    if (detailComments.isEmpty()) toast(error.message ?: "评论加载失败")
+                }
+            }
+        }
+    }
+
+    private fun renderDetailComments() {
+        if (!::detailCommentsContainer.isInitialized) return
+        detailCommentsTitle.text = if (commentsTotalCount > 0L) {
+            "评论 · " + formatCount(commentsTotalCount)
+        } else "评论"
+        detailCommentsContainer.removeAllViews()
+        if (detailComments.isEmpty()) {
+            detailCommentsContainer.addView(TextView(this).apply {
+                text = if (commentsLoading) "正在加载评论…" else "还没有评论"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(12), 0, dp(12))
+            })
+        } else {
+            detailComments.forEachIndexed { index, comment ->
+                if (index > 0) detailCommentsContainer.addView(View(this).apply {
+                    setBackgroundColor(field)
+                }, LinearLayout.LayoutParams(match, dp(1)).apply {
+                    topMargin = dp(8)
+                    bottomMargin = dp(8)
+                })
+                val item = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                val top = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                top.addView(TextView(this).apply {
+                    text = comment.userName
+                    textSize = 12f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(ink)
+                }, LinearLayout.LayoutParams(0, wrap, 1f))
+                top.addView(TextView(this).apply {
+                    text = formatPublishDate(comment.createTime)
+                    textSize = 10f
+                    setTextColor(sub)
+                })
+                item.addView(top)
+                item.addView(TextView(this).apply {
+                    text = comment.message
+                    textSize = 13f
+                    setTextColor(ink)
+                    setLineSpacing(dp(2).toFloat(), 1.08f)
+                    setPadding(0, dp(6), 0, dp(6))
+                })
+                val actions = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                }
+                actions.addView(chip(
+                    (if (comment.likedByMe) "已赞 " else "点赞 ") + formatCount(comment.likeCount),
+                    comment.likedByMe
+                ).apply {
+                    setOnClickListener { performCommentLike(video, comment) }
+                })
+                actions.addView(TextView(this).apply {
+                    text = if (comment.replyCount > 0L) "  " + formatCount(comment.replyCount) + " 条回复" else ""
+                    textSize = 10f
+                    setTextColor(sub)
+                    setPadding(dp(8), 0, 0, 0)
+                })
+                item.addView(actions)
+                detailCommentsContainer.addView(item, LinearLayout.LayoutParams(match, wrap))
+            }
+        }
+        detailCommentsMore.visibility = if (commentsHasMore || commentsLoading || detailComments.isEmpty()) {
+            View.VISIBLE
+        } else View.GONE
+        detailCommentsMore.text = when {
+            commentsLoading -> "正在加载评论…"
+            commentsHasMore -> "加载更多评论"
+            detailComments.isEmpty() -> "评论加载失败，点此重试"
+            else -> "已经到底了"
+        }
+        detailCommentsMore.setOnClickListener {
+            if (!commentsLoading) {
+                if (detailComments.isEmpty()) loadVideoComments(parsedVideo ?: return@setOnClickListener, true)
+                else if (commentsHasMore) loadVideoComments(parsedVideo ?: return@setOnClickListener, false)
+            }
+        }
+    }
+
+    private fun performCommentLike(video: BiliVideo, comment: BiliComment) {
+        if (!requireInteractionLogin()) return
+        backgroundExecutor.execute {
+            try {
+                repositoryWithSavedCookie().likeVideoComment(video.aid, comment.id, !comment.likedByMe)
+                runOnUiThread { loadVideoComments(video, true) }
+            } catch (error: Exception) {
+                runOnUiThread { toast(error.message ?: "评论点赞失败") }
+            }
+        }
+    }
+
+    private fun loadRelatedVideos(video: BiliVideo) {
+        if (!::detailRelatedContainer.isInitialized) return
+        detailRelatedContainer.removeAllViews()
+        backgroundExecutor.execute {
+            try {
+                val related = repositoryWithSavedCookie().getRelatedVideos(video.aid)
+                runOnUiThread {
+                    if (detailPage == null || parsedVideo?.aid != video.aid) return@runOnUiThread
+                    detailRelatedContainer.removeAllViews()
+                    related.filterNot { it.aid == video.aid }.take(8).chunked(2).forEach { pair ->
+                        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                        pair.forEachIndexed { index, item ->
+                            row.addView(buildSearchCard(item), LinearLayout.LayoutParams(0, wrap, 1f).apply {
+                                if (index == 0) rightMargin = dp(6) else leftMargin = dp(6)
+                            })
+                        }
+                        if (pair.size == 1) row.addView(View(this), LinearLayout.LayoutParams(0, wrap, 1f))
+                        detailRelatedContainer.addView(row, LinearLayout.LayoutParams(match, wrap).apply {
+                            bottomMargin = dp(10)
+                        })
+                    }
+                    if (related.isEmpty()) {
+                        detailRelatedContainer.addView(TextView(this).apply {
+                            text = "暂无相关推荐"
+                            textSize = 12f
+                            setTextColor(sub)
+                        })
+                    }
+                }
+            } catch (_: Exception) {
+                runOnUiThread {
+                    if (detailPage != null && parsedVideo?.aid == video.aid) {
+                        detailRelatedContainer.addView(TextView(this).apply {
+                            text = "相关推荐暂不可用"
+                            textSize = 12f
+                            setTextColor(sub)
+                        })
+                    }
+                }
+            }
+        }
+    }
+
     private fun xmlEscape(value: String): String {
         return value.replace("&", "&amp;")
             .replace("\"", "&quot;")
@@ -743,7 +1268,7 @@ class MainActivity : ComponentActivity() {
 
         backgroundExecutor.execute {
             try {
-                val cookie = SecureCookieStore.load(this)
+                val cookie = SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
                 val source = BiliRepository { cookie }.getPlaySource(video, selectedQualityId)
                 runOnUiThread {
                     if (requestToken != playerRequestToken || detailPlayerView !== playerView || detailPage == null) {
@@ -1364,11 +1889,11 @@ class MainActivity : ComponentActivity() {
         qrLoginGeneration++
     }
 
-    private fun onCookieLogin(sessdata: String) {
+    private fun onCookieLogin(cookie: String) {
         backgroundExecutor.execute {
             try {
-                val (name, vip) = BiliRepository().verifyCookie(sessdata)
-                SecureCookieStore.save(this, sessdata)
+                val (name, vip) = BiliRepository().verifyCookie(cookie)
+                SecureCookieStore.save(this, cookie)
                 runOnUiThread { loginSuccess(name, null, vip) }
             } catch (error: Exception) {
                 loginFailed(error.message ?: "授权验证失败")
