@@ -136,7 +136,7 @@ class SearchActivity : ComponentActivity() {
         root.addView(categoryRow)
 
         statusText = TextView(this).apply {
-            text = "输入关键词，搜索 B站公开视频、番剧和影视"
+            text = "搜索视频、番剧和影视；长按结果或点圆圈可多选"
             textSize = 12f
             setTextColor(Color.rgb(125, 133, 146))
             setPadding(dp(18), dp(5), dp(18), dp(10))
@@ -254,7 +254,11 @@ class SearchActivity : ComponentActivity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = rounded(Color.WHITE, 14, Color.rgb(232, 235, 240))
+            background = rounded(
+                if (item.url in selectedUrls) Color.rgb(255, 246, 249) else Color.WHITE,
+                14,
+                if (item.url in selectedUrls) Color.rgb(255, 204, 220) else Color.rgb(232, 235, 240)
+            )
             setPadding(dp(10), dp(10), dp(10), dp(10))
             isClickable = true
             isFocusable = true
@@ -321,6 +325,7 @@ class SearchActivity : ComponentActivity() {
             setTextColor(if (item.url in selectedUrls) Color.WHITE else Color.rgb(218, 69, 113))
             background = if (item.url in selectedUrls) rounded(Color.rgb(226, 69, 117), 16, null) else null
             tag = "selection"
+            setOnClickListener { toggleSelection(item.url) }
         }, LinearLayout.LayoutParams(dp(28), dp(34)))
         resultList.addView(row, LinearLayout.LayoutParams(-1, -2).apply {
             bottomMargin = dp(8)

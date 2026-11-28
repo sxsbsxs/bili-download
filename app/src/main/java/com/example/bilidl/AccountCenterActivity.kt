@@ -456,13 +456,18 @@ class AccountCenterActivity : ComponentActivity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = rounded(Color.WHITE, 13, Color.rgb(231, 234, 239))
+            background = rounded(
+                if (item.url in selectedUrls) Color.rgb(255, 246, 249) else Color.WHITE,
+                13,
+                if (item.url in selectedUrls) Color.rgb(255, 204, 220) else Color.rgb(231, 234, 239)
+            )
             setPadding(dp(12), dp(12), dp(12), dp(12))
             isClickable = true
             isFocusable = true
             setOnClickListener {
                 favoriteFolderId = folder.id
                 favoriteFolderTitle = folder.title
+                clearSelection()
                 page = 1
                 loadContent(reset = true)
             }
@@ -566,6 +571,7 @@ class AccountCenterActivity : ComponentActivity() {
             setTextColor(if (item.url in selectedUrls) Color.WHITE else Color.rgb(218, 69, 113))
             background = if (item.url in selectedUrls) rounded(Color.rgb(226, 69, 117), 16, null) else null
             tag = "selection"
+            setOnClickListener { toggleSelection(item.url) }
         }, LinearLayout.LayoutParams(dp(28), dp(34)))
         contentList.addView(row, LinearLayout.LayoutParams(-1, -2).apply {
             bottomMargin = dp(8)
