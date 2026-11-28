@@ -84,6 +84,7 @@ object BiliDownloadEngine {
                     } else {
                         progress(3, "正在下载音频流")
                         downloadStreamWithRefresh(
+                            context = context,
                             repository = repository,
                             video = video,
                             qualityId = qualityId,
@@ -139,6 +140,7 @@ object BiliDownloadEngine {
                     } else {
                         progress(2, "正在下载视频流")
                         downloadStreamWithRefresh(
+                            context = context,
                             repository = repository,
                             video = video,
                             qualityId = qualityId,
@@ -156,6 +158,7 @@ object BiliDownloadEngine {
                         if (source.audioUrls.isNotEmpty()) {
                             progress(49, "正在下载音频流")
                             downloadStreamWithRefresh(
+                                context = context,
                                 repository = repository,
                                 video = video,
                                 qualityId = qualityId,
@@ -222,6 +225,7 @@ object BiliDownloadEngine {
                         progress(96, "恢复已下载的视频文件")
                     } else {
                         downloadStreamWithRefresh(
+                            context = context,
                             repository = repository,
                             video = video,
                             qualityId = qualityId,
@@ -256,6 +260,7 @@ object BiliDownloadEngine {
                             if (isCancelled()) throw CancellationException("下载已取消")
                             val target = directSegmentTemps[index]
                             downloadStreamWithRefresh(
+                                context = context,
                                 repository = repository,
                                 video = video,
                                 qualityId = qualityId,
@@ -489,6 +494,7 @@ object BiliDownloadEngine {
     }
 
     private suspend fun downloadStreamWithRefresh(
+        context: Context,
         repository: BiliRepository,
         video: BiliVideo,
         qualityId: Int,
@@ -504,6 +510,7 @@ object BiliDownloadEngine {
     ) {
         try {
             downloadStream(
+                context,
                 initialCandidates, target, cookie, concurrency, isCancelled, referer, onProgress
             )
         } catch (error: Exception) {
@@ -526,12 +533,14 @@ object BiliDownloadEngine {
                 throw IOException("CDN 返回 HTTP 403，刷新后没有同类型可用地址", error)
             }
             downloadStream(
+                context,
                 candidates, target, cookie, concurrency, isCancelled, referer, onProgress
             )
         }
     }
 
     private suspend fun downloadStream(
+        context: Context,
         candidates: List<String>,
         target: File,
         cookie: String?,
@@ -540,8 +549,29 @@ object BiliDownloadEngine {
         referer: String,
         onProgress: (Int) -> Unit
     ) {
-        SegmentedHttpDownloader.download(
+        val preferences = context.applicationContext.getSharedPreferences(
+            BiliDownloadSourcePolicy.PREFERENCES_FILE,
+            Context.MODE_PRIVATE
+        )
+        val sourceMode = BiliDownloadSourceMode.fromCode(
+            preferences.getInt(
+                BiliDownloadSourcePolicy.KEY_MODE,
+                BiliDownloadSourceMode.DEFAULT.code
+            )
+        )
+        val customHost = preferences.getString(
+            BiliDownloadSourcePolicy.KEY_CUSTOM_HOST,
+            ""
+        ).orEmpty()
+        val orderedCandidates = BiliDownloadSourceSelector.orderCandidates(
             urls = candidates,
+            mode = sourceMode,
+            customHost = customHost,
+            sessionCookie = cookie
+        ).ifEmpty { candidates }
+
+        SegmentedHttpDownloader.download(
+            urls = orderedCandidates,
             target = target,
             cookie = cookie,
             concurrency = concurrency,
