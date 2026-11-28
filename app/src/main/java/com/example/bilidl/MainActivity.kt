@@ -74,6 +74,16 @@ class MainActivity : ComponentActivity() {
             refreshQr()
         }
     }
+    private val searchLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val selectedUrl = result.data?.getStringExtra(SearchActivity.EXTRA_SELECTED_URL)
+        if (result.resultCode == Activity.RESULT_OK && !selectedUrl.isNullOrBlank()) {
+            input.setText(selectedUrl)
+            input.setSelection(input.text.length)
+            mainViewModel.parse(selectedUrl)
+        }
+    }
     private var activeQrLoginUrl: String? = null
     private var downloadSourceHostValue: TextView? = null
     private val downloadSourceModeIndicators = mutableMapOf<Int, TextView>()
@@ -1190,6 +1200,7 @@ class MainActivity : ComponentActivity() {
         rootFrame.addView(loginPage, FrameLayout.LayoutParams(match, match))
 
         setContentView(rootFrame)
+        handleIncomingShare(intent)
         observeParseState()
         observeLoginState()
         selectTab(0)
@@ -1199,6 +1210,24 @@ class MainActivity : ComponentActivity() {
         restoreRoomTasks()
         setDownloadPathText("Download/BiliDl")
         loginViewModel.restoreSession()
+    }
+
+    private fun handleIncomingShare(incoming: Intent?) {
+        val sharedText = when (incoming?.action) {
+            Intent.ACTION_SEND -> incoming.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            Intent.ACTION_VIEW -> incoming.dataString
+            else -> null
+        }?.trim().orEmpty()
+        if (sharedText.isBlank() || !::input.isInitialized) return
+        input.setText(sharedText)
+        input.setSelection(input.text.length)
+        toast("已导入分享内容，点击「解析视频」继续")
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingShare(intent)
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -1355,6 +1384,13 @@ class MainActivity : ComponentActivity() {
         inputActions.addView(helper, LinearLayout.LayoutParams(0, wrap, 1f))
         val pasteBtn = chip("粘贴", false)
         inputActions.addView(pasteBtn, LinearLayout.LayoutParams(wrap, dp(38)))
+        val siteSearchBtn = chip("站内搜索", false)
+        siteSearchBtn.setOnClickListener {
+            searchLauncher.launch(Intent(this, SearchActivity::class.java))
+        }
+        inputActions.addView(siteSearchBtn, LinearLayout.LayoutParams(wrap, dp(38)).apply {
+            leftMargin = dp(6)
+        })
         inputCard.addView(inputActions, LinearLayout.LayoutParams(match, wrap).apply {
             topMargin = dp(10)
         })
