@@ -20,15 +20,15 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
         binding?.accountLogin?.setOnClickListener { host.requestLogin() }
         binding?.accountRefresh?.setOnClickListener { refresh() }
         binding?.accountLogout?.setOnClickListener { host.requestLogout(); refresh() }
-        refresh()
+        refreshAccount()
     }
 
     override fun onResume() {
         super.onResume()
-        refresh()
+        refreshAccount()
     }
 
-    private fun refresh() {
+    fun refreshAccount() {
         host.loadAccount { account ->
             val b = binding ?: return@loadAccount
             b.accountName.text = account.name
