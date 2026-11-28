@@ -69,6 +69,7 @@ object BiliDownloadEngine {
         downloadCover: Boolean = false,
         videoChoice: BiliStreamChoice? = null,
         audioChoice: BiliStreamChoice? = null,
+        includeAudio: Boolean = true,
         isCancelled: () -> Boolean = { false },
         progress: (Int, String) -> Unit
     ): SavedDownload = withContext(Dispatchers.IO) {
@@ -77,7 +78,8 @@ object BiliDownloadEngine {
             video = video,
             requestedQuality = qualityId,
             videoChoice = videoChoice,
-            audioChoice = audioChoice
+            audioChoice = audioChoice,
+            includeAudio = includeAudio
         )
         val workDir = File(context.filesDir, "bilidl_transfers").apply { mkdirs() }
         val safeId = transferId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)

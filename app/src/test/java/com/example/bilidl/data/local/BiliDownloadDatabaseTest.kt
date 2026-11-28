@@ -168,6 +168,17 @@ class BiliDownloadDatabaseTest {
         assertEquals(DownloadTaskStatus.RUNNING, database.downloadTaskDao().getById("task-running")?.status)
     }
 
+    @Test
+    fun videoOnlySelectionIsDurableAndLegacyTasksDefaultToAudio() = runBlocking {
+        val videoOnlyId = "task-video-only"
+        val legacyId = "task-legacy-audio-default"
+        database.downloadTaskDao().upsert(task(videoOnlyId).copy(includeAudio = false))
+        database.downloadTaskDao().upsert(task(legacyId))
+
+        assertEquals(false, database.downloadTaskDao().getById(videoOnlyId)?.includeAudio)
+        assertEquals(true, database.downloadTaskDao().getById(legacyId)?.includeAudio)
+    }
+
     private fun task(
         id: String,
         status: Int = DownloadTaskStatus.QUEUED,

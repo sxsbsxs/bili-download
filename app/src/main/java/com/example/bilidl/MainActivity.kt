@@ -1998,15 +1998,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
         addSection("音频流 · 编码 / 码率")
         val audioSpinner = android.widget.Spinner(this)
-        val audioLabels = options.audioChoices.map { it.label }.ifEmpty {
-            listOf("当前没有兼容的 AAC 音频流")
-        }
+        val audioLabels = listOf("不合并音频（仅保存视频流）") + options.audioChoices.map { it.label }
         audioSpinner.adapter = android.widget.ArrayAdapter(
             this,
             android.R.layout.simple_spinner_item,
             audioLabels
         ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-        audioSpinner.isEnabled = options.audioChoices.isNotEmpty()
+        audioSpinner.setSelection(if (options.audioChoices.isNotEmpty()) 1 else 0)
         content.addView(audioSpinner, LinearLayout.LayoutParams(match, dp(48)))
 
         val mediaGroup = android.widget.RadioGroup(this).apply {
@@ -2014,7 +2012,14 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }
         val combinedOption = android.widget.RadioButton(this).apply {
             id = View.generateViewId()
-            text = if (options.direct) "视频文件（B站直连流）" else "视频 + 音频（MP4）"
+            text = "视频 + 音频（合并 MP4）"
+            textSize = 14f
+            isEnabled = !options.direct && options.videoChoices.isNotEmpty() &&
+                options.audioChoices.isNotEmpty()
+        }
+        val videoOnlyOption = android.widget.RadioButton(this).apply {
+            id = View.generateViewId()
+            text = if (options.direct) "保存 B站直连视频" else "仅视频（不合并音频）"
             textSize = 14f
             isEnabled = options.direct || options.videoChoices.isNotEmpty()
         }
@@ -2025,20 +2030,23 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             isEnabled = options.audioChoices.isNotEmpty()
         }
         mediaGroup.addView(combinedOption)
+        mediaGroup.addView(videoOnlyOption)
         mediaGroup.addView(audioOption)
         val preferAudioOnly = prefs.getBoolean("audio_only", false) && audioOption.isEnabled
         val defaultMediaOption = when {
             preferAudioOnly -> audioOption.id
-            !combinedOption.isEnabled && audioOption.isEnabled -> audioOption.id
-            else -> combinedOption.id
+            combinedOption.isEnabled -> combinedOption.id
+            videoOnlyOption.isEnabled -> videoOnlyOption.id
+            else -> audioOption.id
         }
         mediaGroup.check(defaultMediaOption)
         content.addView(mediaGroup, LinearLayout.LayoutParams(match, wrap))
 
         fun updateStreamEnabledState() {
             val audioOnly = mediaGroup.checkedRadioButtonId == audioOption.id
-            videoSpinner.isEnabled = !audioOnly && options.videoChoices.isNotEmpty()
-            audioSpinner.isEnabled = options.audioChoices.isNotEmpty()
+            val videoOnly = mediaGroup.checkedRadioButtonId == videoOnlyOption.id
+            videoSpinner.isEnabled = !audioOnly && !options.direct && options.videoChoices.isNotEmpty()
+            audioSpinner.isEnabled = !videoOnly && options.audioChoices.isNotEmpty()
         }
         mediaGroup.setOnCheckedChangeListener { _, _ -> updateStreamEnabledState() }
         updateStreamEnabledState()
@@ -2079,10 +2087,22 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             .setNegativeButton("取消", null)
             .setPositiveButton("加入下载") { _, _ ->
                 val audioOnly = mediaGroup.checkedRadioButtonId == audioOption.id
+                val videoOnly = mediaGroup.checkedRadioButtonId == videoOnlyOption.id
+                val includeAudio = !videoOnly
                 val videoChoice = if (!audioOnly && !options.direct) {
                     options.videoChoices.getOrNull(videoSpinner.selectedItemPosition)
                 } else null
-                val audioChoice = options.audioChoices.getOrNull(audioSpinner.selectedItemPosition)
+                val audioChoice = if (includeAudio) {
+                    options.audioChoices.getOrNull(audioSpinner.selectedItemPosition - 1)
+                } else null
+                if (audioOnly && audioChoice == null) {
+                    toast("当前没有可用的 AAC 音频流")
+                    return@setPositiveButton
+                }
+                if (combinedOption.isChecked && audioChoice == null) {
+                    toast("请选择一个实际可用的 AAC 音频流")
+                    return@setPositiveButton
+                }
                 val selectedQuality = videoChoice?.id
                     ?: video.qualities.firstOrNull()?.id
                     ?: quality
@@ -2094,7 +2114,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     downloadSubtitles = subtitleOption.isChecked,
                     downloadCover = coverOption.isChecked,
                     videoStreamChoice = videoChoice,
-                    audioStreamChoice = audioChoice
+                    audioStreamChoice = audioChoice,
+                    includeAudio = includeAudio
                 )
                 prefs.edit().putBoolean("audio_only", audioOnly).apply()
                 if (batchPages.isNullOrEmpty()) {
@@ -2141,6 +2162,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     BiliDownloadWorker.KEY_DOWNLOAD_COVER to spec.downloadCover,
                     BiliDownloadWorker.KEY_VIDEO_CHOICE to (spec.videoStreamChoice?.toStorage() ?: ""),
                     BiliDownloadWorker.KEY_AUDIO_CHOICE to (spec.audioStreamChoice?.toStorage() ?: ""),
+                    BiliDownloadWorker.KEY_INCLUDE_AUDIO to spec.includeAudio,
                     BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[prefs.getInt("concurrent", 1).coerceIn(0, 3)]
                 )
             )
@@ -2178,6 +2200,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             .put("coverUrl", spec.video.coverUrl ?: "")
             .put("quality", spec.qualityId)
             .put("audioOnly", spec.audioOnly)
+            .put("includeAudio", spec.includeAudio)
             .put("videoStreamChoice", spec.videoStreamChoice?.toStorage() ?: "")
             .put("audioStreamChoice", spec.audioStreamChoice?.toStorage() ?: "")
             .put("downloadDanmaku", spec.downloadDanmaku)
@@ -2203,7 +2226,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             downloadSubtitles = spec.downloadSubtitles,
             downloadCover = spec.downloadCover,
             videoStreamChoice = spec.videoStreamChoice?.toStorage(),
-            audioStreamChoice = spec.audioStreamChoice?.toStorage()
+            audioStreamChoice = spec.audioStreamChoice?.toStorage(),
+            includeAudio = spec.includeAudio
         )
         backgroundExecutor.execute {
             runCatching {
@@ -2280,7 +2304,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 json.optBoolean("downloadSubtitles", false),
                 json.optBoolean("downloadCover", false),
                 BiliStreamChoice.fromStorage(json.optString("videoStreamChoice")),
-                BiliStreamChoice.fromStorage(json.optString("audioStreamChoice"))
+                BiliStreamChoice.fromStorage(json.optString("audioStreamChoice")),
+                json.optBoolean("includeAudio", true)
             )
             downloadSpecs[id] = spec
             if (!items.containsKey(id)) addDownload(id, video.title, null)
@@ -2826,7 +2851,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                             options.videoChoices
                         )
                     }
-                    val audioChoice = if (preferred.audioStreamChoice == null) {
+                    val audioChoice = if (!preferred.includeAudio ||
+                        preferred.audioStreamChoice == null
+                    ) {
                         null
                     } else {
                         BiliBatchStreamPolicy.selectCompatible(
@@ -2836,7 +2863,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     }
                     val missingVideo = preferred.videoStreamChoice != null &&
                         !options.direct && videoChoice == null
-                    val missingAudio = preferred.audioStreamChoice != null && audioChoice == null
+                    val missingAudio = preferred.includeAudio &&
+                        preferred.audioStreamChoice != null && audioChoice == null
                     val incompatibleDirect = options.direct &&
                         (preferred.videoStreamChoice != null || preferred.audioStreamChoice != null)
 
@@ -2856,7 +2884,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                             downloadSubtitles = preferred.downloadSubtitles,
                             downloadCover = preferred.downloadCover,
                             videoStreamChoice = videoChoice,
-                            audioStreamChoice = audioChoice
+                            audioStreamChoice = audioChoice,
+                            includeAudio = preferred.includeAudio
                         )
                     }
                 } catch (_: Exception) {
@@ -3150,7 +3179,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         val downloadSubtitles: Boolean = false,
         val downloadCover: Boolean = false,
         val videoStreamChoice: BiliStreamChoice? = null,
-        val audioStreamChoice: BiliStreamChoice? = null
+        val audioStreamChoice: BiliStreamChoice? = null,
+        val includeAudio: Boolean = true
     )
     private val downloadSpecs = HashMap<String, DownloadSpec>()
     private val savedFileUris = HashMap<String, Uri>()

@@ -33,10 +33,20 @@ class BiliBatchStreamPolicyTest {
     }
 
     @Test
-    fun sameQualityOtherCodecPrecedesLowerQualityAnyCodec() {
+    fun sameCodecFamilyLowerQualityPrecedesSameQualityOtherCodec() {
         val chosen = BiliBatchStreamPolicy.selectCompatible(
             stream(80, "avc1.640028"),
             listOf(stream(80, "hev1.1.6.L120.90"), stream(64, "avc1.640028"))
+        )
+        assertEquals(64, chosen?.id)
+        assertEquals("avc", chosen?.codecFamily())
+    }
+
+    @Test
+    fun sameQualityOtherCodecIsUsedWhenNoSameFamilyLowerTrackExists() {
+        val chosen = BiliBatchStreamPolicy.selectCompatible(
+            stream(80, "avc1.640028"),
+            listOf(stream(80, "hev1.1.6.L120.90"), stream(32, "av01.0.08M.08"))
         )
         assertEquals(80, chosen?.id)
         assertEquals("hevc", chosen?.codecFamily())

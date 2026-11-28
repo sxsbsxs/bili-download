@@ -19,7 +19,7 @@ import com.example.bilidl.data.local.entity.DownloadTaskEventEntity
         DownloadResourceEntity::class,
         DownloadTaskEventEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class BiliDownloadDatabase : RoomDatabase() {
@@ -43,6 +43,12 @@ abstract class BiliDownloadDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE download_tasks ADD COLUMN includeAudio INTEGER NOT NULL DEFAULT 1")
+            }
+        }
+
         @Volatile
         private var instance: BiliDownloadDatabase? = null
 
@@ -53,7 +59,7 @@ abstract class BiliDownloadDatabase : RoomDatabase() {
                     BiliDownloadDatabase::class.java,
                     "bili_download.db"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                     .build()
                     .also { instance = it }
             }

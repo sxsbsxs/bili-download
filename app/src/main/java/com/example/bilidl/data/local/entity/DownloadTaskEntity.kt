@@ -38,6 +38,8 @@ data class DownloadTaskEntity(
     val downloadCover: Boolean = false,
     val videoStreamChoice: String? = null,
     val audioStreamChoice: String? = null,
+    @ColumnInfo(defaultValue = "1")
+    val includeAudio: Boolean = true,
     val status: Int = DownloadTaskStatus.QUEUED,
     val progress: Int = 0,
     val stage: String = "等待下载",

@@ -40,6 +40,7 @@ class BiliDownloadWorker(
             val downloadCover = inputData.getBoolean(KEY_DOWNLOAD_COVER, false)
             val videoChoice = BiliStreamChoice.fromStorage(inputData.getString(KEY_VIDEO_CHOICE))
             val audioChoice = BiliStreamChoice.fromStorage(inputData.getString(KEY_AUDIO_CHOICE))
+            val includeAudio = inputData.getBoolean(KEY_INCLUDE_AUDIO, true)
             val coverUrl = inputData.getString(KEY_COVER_URL)?.takeIf { it.isNotBlank() }
             val durationSeconds = inputData.getInt(KEY_DURATION, 0)
             val page = inputData.getInt(KEY_PAGE, 1)
@@ -66,7 +67,8 @@ class BiliDownloadWorker(
                     downloadSubtitles = downloadSubtitles,
                     downloadCover = downloadCover,
                     videoStreamChoice = videoChoice?.toStorage(),
-                    audioStreamChoice = audioChoice?.toStorage()
+                    audioStreamChoice = audioChoice?.toStorage(),
+                    includeAudio = includeAudio
                 )
             )
             if (cid <= 0L || (bvid.isNullOrBlank() && aid <= 0L)) {
@@ -113,6 +115,7 @@ class BiliDownloadWorker(
                 downloadCover = downloadCover,
                 videoChoice = videoChoice,
                 audioChoice = audioChoice,
+                includeAudio = includeAudio,
                 isCancelled = { isStopped }
             ) { percent, detail ->
                 synchronized(progressLock) {
@@ -245,6 +248,7 @@ class BiliDownloadWorker(
         const val KEY_DOWNLOAD_COVER = "download_cover"
         const val KEY_VIDEO_CHOICE = "video_stream_choice"
         const val KEY_AUDIO_CHOICE = "audio_stream_choice"
+        const val KEY_INCLUDE_AUDIO = "include_audio"
         const val KEY_COVER_URL = "cover_url"
         const val KEY_DURATION = "duration_seconds"
         const val KEY_PAGE = "page_number"

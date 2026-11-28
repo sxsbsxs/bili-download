@@ -584,7 +584,8 @@ class BiliRepository(
         video: BiliVideo,
         requestedQuality: Int,
         videoChoice: BiliStreamChoice? = null,
-        audioChoice: BiliStreamChoice? = null
+        audioChoice: BiliStreamChoice? = null,
+        includeAudio: Boolean = true
     ): BiliPlaySource {
         // When a concrete track has been selected, re-query without qn so Bilibili
         // returns the full candidate set again. CDN URLs expire; stored tasks keep
@@ -622,7 +623,9 @@ class BiliRepository(
             val compatibleAudio = audioCandidates.filter {
                 it.optString("codecs").contains("mp4a", ignoreCase = true)
             }
-            val audioItem = if (audioChoice == null) {
+            val audioItem = if (!includeAudio) {
+                null
+            } else if (audioChoice == null) {
                 compatibleAudio.maxByOrNull { it.optLong("bandwidth") }
             } else {
                 compatibleAudio.firstOrNull {
@@ -634,7 +637,7 @@ class BiliRepository(
                         ).codecFamily() == audioChoice.codecFamily()
                 } ?: throw IOException("所选音频流已变化，请重新打开下载选项并选择规格")
             }
-            if (audioCandidates.isNotEmpty() && compatibleAudio.isEmpty()) {
+            if (includeAudio && audioCandidates.isNotEmpty() && compatibleAudio.isEmpty()) {
                 val codecs = audioCandidates.map { it.optString("codecs").ifBlank { "未知编码" } }
                     .distinct()
                     .joinToString("、")
