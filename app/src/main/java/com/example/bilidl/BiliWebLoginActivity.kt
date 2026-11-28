@@ -88,8 +88,8 @@ class BiliWebLoginActivity : ComponentActivity() {
             webViewClient = createWebViewClient()
             webChromeClient = object : WebChromeClient() {
                 override fun onProgressChanged(view: WebView, newProgress: Int) {
-                    progress.progress = newProgress
-                    progress.visibility = if (newProgress >= 100) android.view.View.GONE else android.view.View.VISIBLE
+                    this@BiliWebLoginActivity.progress.progress = newProgress
+                    this@BiliWebLoginActivity.progress.visibility = if (newProgress >= 100) android.view.View.GONE else android.view.View.VISIBLE
                 }
             }
         }
