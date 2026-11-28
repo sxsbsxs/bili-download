@@ -10,9 +10,13 @@ import com.sxsbsxs.bilivdl.ui.HomeFragment
 import com.sxsbsxs.bilivdl.ui.DownloadsFragment
 import com.sxsbsxs.bilivdl.ui.ProfileFragment
 import com.sxsbsxs.bilivdl.ui.DiscoverFragment
+import com.sxsbsxs.bilivdl.ui.CommentAdapter
+import com.sxsbsxs.bilivdl.ui.BiliVdlComment
+import com.sxsbsxs.bilivdl.ui.BiliVdlDanmaku
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.DefaultDataSource
@@ -27,6 +31,7 @@ import androidx.media3.common.util.UnstableApi
 import android.app.AlertDialog
 import java.io.File
 import android.content.ClipboardManager
+import android.content.ClipData
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.res.ColorStateList
@@ -58,6 +63,10 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.button.MaterialButton
+import com.bumptech.glide.Glide
 import org.json.JSONObject
 import com.example.bilidl.data.local.entity.DownloadTaskEntity
 import com.example.bilidl.data.local.entity.DownloadTaskStatus
@@ -2562,7 +2571,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private lateinit var mainContainer: LinearLayout
     private var detailPage: View? = null
     private var detailPlayerView: PlayerView? = null
-    private var detailDanmakuOverlay: BiliDanmakuOverlay? = null
+    private var detailDanmakuOverlay: com.sxsbsxs.bilivdl.ui.DanmakuOverlayView? = null
     private var detailPlaybackStatus: TextView? = null
     private var detailQualityLabel: TextView? = null
     private var currentPlayer: ExoPlayer? = null
@@ -2582,6 +2591,11 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private lateinit var detailCommentInput: EditText
     private lateinit var detailCommentSend: TextView
     private lateinit var detailCommentsMore: TextView
+    private var detailCommentsList: RecyclerView? = null
+    private var detailCommentsStatus: TextView? = null
+    private var detailCommentSortButton: MaterialButton? = null
+    private var detailCommentsAdapter: CommentAdapter? = null
+    private var commentsSort = 2
     private lateinit var detailRelatedContainer: LinearLayout
     private lateinit var detailLikeButton: TextView
     private lateinit var detailFavoriteButton: TextView
