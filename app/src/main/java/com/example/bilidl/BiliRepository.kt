@@ -53,8 +53,7 @@ data class BiliPlaySource(
 class BiliRepository(
     private val cookieProvider: () -> String? = { null }
 ) {
-    private val userAgent =
-        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+    private val userAgent = BiliCdnRequestPolicy.USER_AGENT
     private var mixinKeyCache: String? = null
     private var mixinKeyExpiresAt = 0L
     @Volatile private var sessionCookieRejected = false
@@ -684,14 +683,10 @@ class BiliRepository(
             connectTimeout = 15_000
             readTimeout = 25_000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", userAgent)
-            setRequestProperty("Referer", "https://www.bilibili.com/")
-            setRequestProperty("Origin", "https://www.bilibili.com")
+            BiliCdnRequestPolicy.configure(this, cookieOverride)
+            // BVD uses okhttp/4.12.0 for view metadata, but a browser UA for playurl.
+            setRequestProperty("User-Agent", BiliApiRequestPolicy.userAgent(url))
             setRequestProperty("Accept", "application/json, text/plain, */*")
-            setRequestProperty("Accept-Encoding", "identity")
-            if (!cookieOverride.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
-            }
         }
         try {
             val status = connection.responseCode
