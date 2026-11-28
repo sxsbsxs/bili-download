@@ -386,6 +386,8 @@ class MainActivity : ComponentActivity() {
         parsedVideo = video
         selectedQualityId = preferredQualityId(video.qualities)
         detailSearchItem = searchItem
+        commentsRequestToken++
+        danmakuRequestToken++
         currentPlayer?.release()
         currentPlayer = null
         detailPage?.let { rootFrame.removeView(it) }
@@ -393,6 +395,9 @@ class MainActivity : ComponentActivity() {
         val page = buildVideoDetailPage(video, searchItem)
         detailPage = page
         rootFrame.addView(page, FrameLayout.LayoutParams(match, match))
+        loadVideoDanmaku(video)
+        loadVideoComments(video, true)
+        loadRelatedVideos(video)
         val playerView = detailPlayerView
         val statusView = detailPlaybackStatus
         if (playerView != null && statusView != null) {
@@ -440,13 +445,22 @@ class MainActivity : ComponentActivity() {
         scroll.addView(column, LinearLayout.LayoutParams(match, wrap))
         page.addView(scroll, LinearLayout.LayoutParams(match, 0, 1f))
 
+        val playerFrame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
         val playerView = PlayerView(this).apply {
             useController = true
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             setBackgroundColor(Color.BLACK)
         }
         detailPlayerView = playerView
-        column.addView(playerView, LinearLayout.LayoutParams(match, dp(218)))
+        playerFrame.addView(playerView, FrameLayout.LayoutParams(match, match))
+        val danmakuOverlay = BiliDanmakuOverlay(this).apply {
+            positionProvider = { currentPlayer?.currentPosition ?: 0L }
+            playingProvider = { currentPlayer?.isPlaying == true }
+            danmakuEnabled = detailDanmakuVisible
+        }
+        detailDanmakuOverlay = danmakuOverlay
+        playerFrame.addView(danmakuOverlay, FrameLayout.LayoutParams(match, match))
+        column.addView(playerFrame, LinearLayout.LayoutParams(match, dp(218)))
 
         val playbackStatus = TextView(this).apply {
             text = "正在准备播放器…"
@@ -457,6 +471,22 @@ class MainActivity : ComponentActivity() {
         }
         detailPlaybackStatus = playbackStatus
         column.addView(playbackStatus, LinearLayout.LayoutParams(match, wrap))
+        val danmakuControls = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(3), dp(14), dp(3))
+        }
+        val danmakuToggle = chip(if (detailDanmakuVisible) "弹幕：开" else "弹幕：关", false)
+        danmakuToggle.setOnClickListener {
+            detailDanmakuVisible = !detailDanmakuVisible
+            detailDanmakuOverlay?.danmakuEnabled = detailDanmakuVisible
+            danmakuToggle.text = if (detailDanmakuVisible) "弹幕：开" else "弹幕：关"
+        }
+        danmakuControls.addView(danmakuToggle, LinearLayout.LayoutParams(0, wrap, 1f))
+        val sendDanmaku = chip("发送弹幕", true)
+        sendDanmaku.setOnClickListener { showDanmakuComposer(video) }
+        danmakuControls.addView(sendDanmaku)
+        column.addView(danmakuControls, LinearLayout.LayoutParams(match, wrap))
 
         val info = card()
         info.addView(TextView(this).apply {
@@ -474,6 +504,35 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(9), 0, 0)
         }
         info.addView(author, LinearLayout.LayoutParams(match, wrap))
+        val identityText = buildString {
+            if (video.categoryName.isNotBlank()) append(video.categoryName)
+            if (video.categoryId > 0) {
+                if (isNotEmpty()) append("  ·  ")
+                append("分区 ")
+                append(video.categoryId)
+            }
+            if (video.bvid != null) {
+                if (isNotEmpty()) append("  ·  ")
+                append(video.bvid)
+            } else if (video.aid > 0L) {
+                if (isNotEmpty()) append("  ·  ")
+                append("AV")
+                append(video.aid)
+            }
+            if (video.cid > 0L) {
+                if (isNotEmpty()) append("  ·  ")
+                append("CID ")
+                append(video.cid)
+            }
+        }
+        if (identityText.isNotBlank()) {
+            info.addView(TextView(this).apply {
+                text = identityText
+                textSize = 11f
+                setTextColor(sub)
+                setPadding(0, dp(5), 0, 0)
+            }, LinearLayout.LayoutParams(match, wrap))
+        }
 
         val views = if (video.viewCount > 0L) video.viewCount else searchItem?.viewCount ?: 0L
         val danmaku = if (video.danmakuCount > 0L) video.danmakuCount else searchItem?.danmakuCount ?: 0L
@@ -501,6 +560,35 @@ class MainActivity : ComponentActivity() {
             setTextColor(sub)
             setPadding(0, dp(5), 0, 0)
         }, LinearLayout.LayoutParams(match, wrap))
+
+        val interactionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        detailLikeButton = chip(if (video.userLiked) "已点赞" else "点赞", video.userLiked)
+        detailLikeButton.setOnClickListener { performVideoLike(video) }
+        interactionRow.addView(detailLikeButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
+            rightMargin = dp(4)
+        })
+        interactionRow.addView(chip("投币", false).apply {
+            setOnClickListener { showCoinDialog(video) }
+        }, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
+            leftMargin = dp(4)
+            rightMargin = dp(4)
+        })
+        detailFavoriteButton = chip(if (video.userFavorited) "已收藏" else "收藏", video.userFavorited)
+        detailFavoriteButton.setOnClickListener { showFavoriteFolderPicker(video) }
+        interactionRow.addView(detailFavoriteButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
+            leftMargin = dp(4)
+        })
+        info.addView(interactionRow, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(12)
+        })
+        info.addView(chip("一键三连", false).apply {
+            setOnClickListener { performTripleLike(video) }
+        }, LinearLayout.LayoutParams(match, dp(42)).apply {
+            topMargin = dp(6)
+        })
 
         val published = if (video.publishTime > 0L) video.publishTime else searchItem?.publishTime ?: 0L
         if (published > 0L) {
@@ -577,6 +665,8 @@ class MainActivity : ComponentActivity() {
             topMargin = dp(12)
         })
         column.addView(info, sideMargins(14).apply { topMargin = dp(14) })
+        column.addView(buildCommentsSection(video), sideMargins(14).apply { topMargin = dp(12) })
+        column.addView(buildRelatedSection(), sideMargins(14).apply { topMargin = dp(12) })
 
         val note = TextView(this).apply {
             text = "播放地址实时向 B 站获取；能否播放和画质取决于该视频的公开状态及账号权限。"
@@ -749,6 +839,10 @@ class MainActivity : ComponentActivity() {
         playerRequestToken++
         currentPlayer?.release()
         currentPlayer = null
+        danmakuRequestToken++
+        commentsRequestToken++
+        detailDanmakuOverlay?.clear()
+        detailDanmakuOverlay = null
         detailPlayerView?.player = null
         detailPlayerView = null
         detailPlaybackStatus = null
@@ -1551,12 +1645,29 @@ class MainActivity : ComponentActivity() {
     private lateinit var mainContainer: LinearLayout
     private var detailPage: View? = null
     private var detailPlayerView: PlayerView? = null
+    private var detailDanmakuOverlay: BiliDanmakuOverlay? = null
     private var detailPlaybackStatus: TextView? = null
     private var detailQualityLabel: TextView? = null
     private var currentPlayer: ExoPlayer? = null
     private var playerRequestToken = 0
+    private var danmakuRequestToken = 0
     private var detailLoadToken = 0
+    private var commentsRequestToken = 0
     private var detailSearchItem: BiliSearchVideo? = null
+    private var detailDanmakuVisible = true
+    private var commentsLoading = false
+    private var commentsPage = 1
+    private var commentsHasMore = false
+    private var commentsTotalCount = 0L
+    private val detailComments = ArrayList<BiliComment>()
+    private lateinit var detailCommentsContainer: LinearLayout
+    private lateinit var detailCommentsTitle: TextView
+    private lateinit var detailCommentInput: EditText
+    private lateinit var detailCommentSend: TextView
+    private lateinit var detailCommentsMore: TextView
+    private lateinit var detailRelatedContainer: LinearLayout
+    private lateinit var detailLikeButton: TextView
+    private lateinit var detailFavoriteButton: TextView
     private val imageExecutor = Executors.newFixedThreadPool(3)
     private val coverCache = object : LruCache<String, Bitmap>(
         (Runtime.getRuntime().maxMemory() / 1024L / 8L).toInt().coerceAtLeast(1024)
