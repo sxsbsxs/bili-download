@@ -585,8 +585,10 @@ class MainActivity : ComponentActivity() {
                         showQrCode(state.bitmap, state.url)
                         setQrStatus("请使用哔哩哔哩 App 扫描二维码")
                     }
-                    LoginUiState.Scanned ->
+                    LoginUiState.Scanned -> {
+                        qrLoginLinkTv.visibility = View.GONE
                         setQrStatus("已扫描，请在哔哩哔哩 App 中确认登录")
+                    }
                     LoginUiState.Expired -> showQrExpired()
                     LoginUiState.VerifyingCookie -> {
                         setBusy(cookieBtn, true)
