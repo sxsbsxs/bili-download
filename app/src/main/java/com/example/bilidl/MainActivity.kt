@@ -1165,6 +1165,20 @@ class MainActivity : ComponentActivity() {
     private val savedFileUris = HashMap<String, Uri>()
 
 
+    // 首页推荐 / 热门
+    private lateinit var homeFeedList: LinearLayout
+    private lateinit var homeFeedStatus: TextView
+    private lateinit var homeFeedMore: TextView
+    private lateinit var homeFeedRecommendTab: TextView
+    private lateinit var homeFeedPopularTab: TextView
+    private var homeFeedType = BiliHomeFeedType.RECOMMEND
+    private var homeFeedPage = 1
+    private var homeFeedHasMore = true
+    private var homeFeedLoading = false
+    private val homeFeedItems = ArrayList<BiliHomeFeedItem>()
+    private val homeFeedExecutor = Executors.newSingleThreadExecutor()
+    private val homeFeedImageExecutor = Executors.newFixedThreadPool(3)
+
     // 首页
     private lateinit var input: EditText
     private lateinit var parseBtn: Button
@@ -1447,6 +1461,7 @@ class MainActivity : ComponentActivity() {
         val savedTree = settingsViewModel.getString(KEY_DOWNLOAD_TREE_URI)
         setDownloadPathText(if (savedTree.isBlank()) "Download/BiliDl" else downloadFolderLabel(Uri.parse(savedTree)))
         loginViewModel.restoreSession()
+        loadHomeFeed(reset = true)
     }
 
     private fun handleIncomingShare(incoming: Intent?) {
@@ -1476,6 +1491,8 @@ class MainActivity : ComponentActivity() {
         stopQrLogin()
         backgroundExecutor.shutdownNow()
         batchExecutor.shutdownNow()
+        homeFeedExecutor.shutdownNow()
+        homeFeedImageExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -1532,6 +1549,186 @@ class MainActivity : ComponentActivity() {
             tabText[index].setTextColor(tint)
             tabText[index].typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         }
+    }
+
+    private fun switchHomeFeed(type: BiliHomeFeedType) {
+        if (homeFeedType == type) {
+            loadHomeFeed(reset = true)
+            return
+        }
+        homeFeedType = type
+        homeFeedPage = 1
+        homeFeedHasMore = true
+        homeFeedItems.clear()
+        if (::homeFeedList.isInitialized) homeFeedList.removeAllViews()
+        refreshHomeFeedTabs()
+        loadHomeFeed(reset = true)
+    }
+
+    private fun refreshHomeFeedTabs() {
+        if (!::homeFeedRecommendTab.isInitialized || !::homeFeedPopularTab.isInitialized) return
+        val recommend = homeFeedType == BiliHomeFeedType.RECOMMEND
+        homeFeedRecommendTab.setTextColor(if (recommend) Color.WHITE else ink)
+        homeFeedRecommendTab.background = if (recommend) shape(pink, 18) else shape(field, 18)
+        homeFeedPopularTab.setTextColor(if (!recommend) Color.WHITE else ink)
+        homeFeedPopularTab.background = if (!recommend) shape(pink, 18) else shape(field, 18)
+    }
+
+    private fun loadHomeFeed(reset: Boolean) {
+        if (homeFeedLoading) return
+        if (!reset && !homeFeedHasMore) return
+        val requestedType = homeFeedType
+        val requestedPage = if (reset) 1 else homeFeedPage + 1
+        homeFeedLoading = true
+        homeFeedMore.isEnabled = false
+        homeFeedStatus.text = if (reset) {
+            "正在加载" + requestedType.title + "…"
+        } else {
+            "正在加载更多…"
+        }
+        if (reset) {
+            homeFeedPage = 1
+            homeFeedHasMore = true
+            homeFeedItems.clear()
+            homeFeedList.removeAllViews()
+            homeFeedMore.visibility = View.GONE
+        }
+
+        homeFeedExecutor.execute {
+            val result = runCatching {
+                BiliRepository { SecureCookieStore.load(applicationContext) }
+                    .fetchHomeFeed(requestedType, requestedPage)
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                homeFeedLoading = false
+                homeFeedMore.isEnabled = true
+                if (homeFeedType != requestedType) return@runOnUiThread
+                result.onSuccess { data ->
+                    homeFeedPage = requestedPage
+                    homeFeedHasMore = data.hasMore
+                    val newItems = data.items.filter { incoming ->
+                        homeFeedItems.none { it.url == incoming.url }
+                    }
+                    homeFeedItems += newItems
+                    newItems.forEach(::addHomeFeedItem)
+                    homeFeedStatus.text = when {
+                        homeFeedItems.isNotEmpty() ->
+                            requestedType.title + " · 已加载 " + homeFeedItems.size + " 条"
+                        requestedType == BiliHomeFeedType.RECOMMEND ->
+                            "暂无推荐内容；可切换「热门」浏览公开内容"
+                        else -> "暂时没有热门内容"
+                    }
+                    homeFeedMore.visibility =
+                        if (homeFeedHasMore && homeFeedItems.isNotEmpty()) View.VISIBLE else View.GONE
+                }.onFailure { error ->
+                    val message = error.message.orEmpty()
+                    homeFeedStatus.text = if (
+                        requestedType == BiliHomeFeedType.RECOMMEND &&
+                        (message.contains("-101") || message.contains("未登录"))
+                    ) {
+                        "B站推荐流暂时要求账号授权；登录后可查看个性化推荐，也可先浏览「热门」"
+                    } else {
+                        message.ifBlank { "加载失败，请点击刷新重试" }
+                    }
+                    homeFeedMore.visibility = View.GONE
+                }
+            }
+        }
+    }
+
+    private fun addHomeFeedItem(item: BiliHomeFeedItem) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = shape(Color.WHITE, 12, Color.parseColor("#EEF0F4"))
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                input.setText(item.url)
+                input.setSelection(input.text.length)
+                resultCard.visibility = View.GONE
+                say("已选择：" + item.title + " · 点击解析视频继续", sub)
+                mainViewModel.parse(item.url)
+            }
+        }
+        val cover = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = shape(field, 8)
+            setImageResource(R.drawable.ic_video_placeholder)
+        }
+        row.addView(cover, LinearLayout.LayoutParams(dp(116), dp(76)))
+        val info = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), 0, 0, 0)
+        }
+        info.addView(TextView(this).apply {
+            text = item.title
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(match, wrap))
+        val authorLine = TextView(this).apply {
+            text = item.uploader + if (item.duration.isNotBlank()) " · " + item.duration else ""
+            textSize = 11f
+            setTextColor(sub)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(4), 0, 0)
+        }
+        info.addView(authorLine)
+        val stats = TextView(this).apply {
+            text = "▶ " + compactFeedNumber(item.viewCount) +
+                "   弹幕 " + compactFeedNumber(item.danmakuCount) +
+                "   赞 " + compactFeedNumber(item.likeCount)
+            textSize = 10f
+            setTextColor(sub)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(3), 0, 0)
+        }
+        info.addView(stats)
+        if (item.reason.isNotBlank()) {
+            info.addView(TextView(this).apply {
+                text = item.reason
+                textSize = 10f
+                setTextColor(pink)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                setPadding(0, dp(2), 0, 0)
+            })
+        }
+        row.addView(info, LinearLayout.LayoutParams(0, wrap, 1f))
+        homeFeedList.addView(row, LinearLayout.LayoutParams(match, wrap).apply {
+            bottomMargin = dp(8)
+        })
+
+        val coverUrl = item.coverUrl
+        if (!coverUrl.isNullOrBlank()) {
+            homeFeedImageExecutor.execute {
+                val bitmap = runCatching {
+                    BiliRepository { SecureCookieStore.load(applicationContext) }.fetchCover(coverUrl)
+                }.getOrNull()
+                if (bitmap != null) {
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed && cover.parent != null) {
+                            cover.setImageBitmap(bitmap)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun compactFeedNumber(value: Long): String = when {
+        value >= 100_000_000L -> String.format(java.util.Locale.US, "%.1f亿", value / 100_000_000.0)
+        value >= 10_000L -> String.format(java.util.Locale.US, "%.1f万", value / 10_000.0)
+        value > 0L -> value.toString()
+        else -> "—"
     }
 
     // ================= 首页 =================
@@ -1637,6 +1834,81 @@ class MainActivity : ComponentActivity() {
             topMargin = dp(12)
         })
         col.addView(inputCard, sideMargins(4))
+
+        val feedCard = card().apply {
+            setPadding(dp(14), dp(14), dp(14), dp(12))
+        }
+        val feedHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        feedHeader.addView(TextView(this).apply {
+            text = "B站首页"
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }, LinearLayout.LayoutParams(0, wrap, 1f))
+        feedHeader.addView(TextView(this).apply {
+            text = "刷新"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(pink)
+            setPadding(dp(12), dp(7), dp(4), dp(7))
+            setOnClickListener { loadHomeFeed(reset = true) }
+        })
+        feedCard.addView(feedHeader, LinearLayout.LayoutParams(match, dp(34)))
+
+        val feedTabRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(7), 0, dp(8))
+        }
+        homeFeedRecommendTab = TextView(this).apply {
+            text = "推荐"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+            setOnClickListener { switchHomeFeed(BiliHomeFeedType.RECOMMEND) }
+        }
+        homeFeedPopularTab = TextView(this).apply {
+            text = "热门"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+            setOnClickListener { switchHomeFeed(BiliHomeFeedType.POPULAR) }
+        }
+        feedTabRow.addView(homeFeedRecommendTab)
+        feedTabRow.addView(homeFeedPopularTab)
+        feedCard.addView(feedTabRow)
+
+        homeFeedStatus = TextView(this).apply {
+            text = "正在加载 B站首页…"
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+        }
+        feedCard.addView(homeFeedStatus)
+
+        homeFeedList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        feedCard.addView(homeFeedList, LinearLayout.LayoutParams(match, wrap))
+
+        homeFeedMore = TextView(this).apply {
+            text = "加载更多"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(pink)
+            background = shape(field, 12)
+            visibility = View.GONE
+            setOnClickListener { loadHomeFeed(reset = false) }
+        }
+        feedCard.addView(homeFeedMore, LinearLayout.LayoutParams(match, dp(42)).apply {
+            topMargin = dp(8)
+        })
+        refreshHomeFeedTabs()
+        col.addView(feedCard, sideMargins(12))
 
         resultCard = card().apply { visibility = View.GONE }
         val previewRow = LinearLayout(this).apply {

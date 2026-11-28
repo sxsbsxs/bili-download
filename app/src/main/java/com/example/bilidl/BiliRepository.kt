@@ -270,6 +270,104 @@ class BiliRepository(
     }
 
     /**
+     * Fetch Bilibili's homepage recommendation or global popular feed.
+     * Recommendation uses the current WBI feed endpoint; hot videos are public.
+     * Non-video cards (live rooms, ads, OGV) are filtered out before returning.
+     */
+    fun fetchHomeFeed(
+        type: BiliHomeFeedType,
+        page: Int = 1
+    ): BiliHomeFeedPage {
+        require(page >= 1) { "页码无效" }
+        val root: JSONObject
+        val rows: JSONArray
+        val hasMore: Boolean
+        when (type) {
+            BiliHomeFeedType.RECOMMEND -> {
+                val pageIndex = page.coerceAtMost(200)
+                val query = signWbi(
+                    mapOf(
+                        "fresh_type" to "4",
+                        "ps" to "20",
+                        "fresh_idx" to pageIndex.toString(),
+                        "fresh_idx_1h" to pageIndex.toString(),
+                        "brush" to pageIndex.toString(),
+                        "fetch_row" to ((pageIndex - 1) * 20).toString(),
+                        "web_location" to "1430650",
+                        "feed_version" to "V8",
+                        "homepage_ver" to "1"
+                    )
+                )
+                root = requestJson(
+                    "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd?$query"
+                )
+                val data = checkedData(root)
+                rows = data.optJSONArray("item") ?: JSONArray()
+                hasMore = rows.length() >= 10
+            }
+            BiliHomeFeedType.POPULAR -> {
+                root = requestJson(
+                    "https://api.bilibili.com/x/web-interface/popular?pn=$page&ps=20"
+                )
+                val data = checkedData(root)
+                rows = data.optJSONArray("list") ?: JSONArray()
+                hasMore = !data.optBoolean("no_more", rows.length() < 20) && rows.length() > 0
+            }
+        }
+
+        val items = (0 until rows.length()).mapNotNull { index ->
+            val item = rows.optJSONObject(index) ?: return@mapNotNull null
+            if (type == BiliHomeFeedType.RECOMMEND) {
+                val goto = item.optString("goto")
+                if (goto.isNotBlank() && goto != "av") return@mapNotNull null
+                if (item.optJSONObject("business_info") != null) return@mapNotNull null
+            }
+            val bvid = item.optString("bvid").takeIf {
+                it.matches(Regex("""BV[0-9A-Za-z]{10}"""))
+            }
+            val aid = item.optLong("aid").takeIf { it > 0L }
+                ?: item.optLong("id").takeIf { it > 0L }
+                ?: 0L
+            if (bvid == null && aid <= 0L) return@mapNotNull null
+            val url = if (bvid != null) {
+                "https://www.bilibili.com/video/$bvid"
+            } else {
+                "https://www.bilibili.com/video/av$aid"
+            }
+            val owner = item.optJSONObject("owner") ?: JSONObject()
+            val stat = item.optJSONObject("stat") ?: JSONObject()
+            val title = android.text.Html.fromHtml(
+                item.optString("title").ifBlank { "B站视频" },
+                android.text.Html.FROM_HTML_MODE_LEGACY
+            ).toString().replace(Regex("\\s+"), " ").trim()
+            val durationValue = item.opt("duration")
+            val duration = when (durationValue) {
+                is Number -> formatSearchDuration(durationValue.toInt())
+                else -> durationValue?.toString()?.takeIf { it.isNotBlank() && it != "null" }.orEmpty()
+            }
+            val reason = item.optJSONObject("rcmd_reason")?.optString("content").orEmpty()
+            BiliHomeFeedItem(
+                url = url,
+                bvid = bvid,
+                aid = aid,
+                title = title.ifBlank { "B站视频" },
+                uploader = owner.optString("name").ifBlank { "B站创作者" },
+                coverUrl = BiliCoverUrlPolicy.normalize(item.optString("pic")),
+                duration = duration,
+                viewCount = stat.optLong("view"),
+                danmakuCount = stat.optLong("danmaku"),
+                likeCount = stat.optLong("like"),
+                reason = reason
+            )
+        }.distinctBy { it.bvid ?: it.aid.toString() }
+
+        return BiliHomeFeedPage(
+            items = items,
+            hasMore = hasMore && items.isNotEmpty()
+        )
+    }
+
+    /**
      * Load the account pages exposed by BVD: submissions, viewing history,
      * watch-later, recent likes and favorite folders / folder contents.
      */
