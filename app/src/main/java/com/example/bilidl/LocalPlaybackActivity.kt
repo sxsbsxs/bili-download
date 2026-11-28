@@ -68,7 +68,9 @@ class LocalPlaybackActivity : ComponentActivity() {
         player.setOnPreparedListener { prepared ->
             prepared.isLooping = false
             if (prepared.videoWidth > 0 && prepared.videoHeight > 0) {
-                pipAspectRatio = Rational(prepared.videoWidth, prepared.videoHeight)
+                val ratio = prepared.videoWidth.toDouble() / prepared.videoHeight.toDouble()
+                val safeRatio = ratio.coerceIn(1.0 / 2.39, 2.39)
+                pipAspectRatio = Rational((safeRatio * 1000).toInt(), 1000)
             }
             player.start()
         }

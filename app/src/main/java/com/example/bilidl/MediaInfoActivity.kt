@@ -169,7 +169,8 @@ class MediaInfoActivity : ComponentActivity() {
         val actualMime = mimeType.ifBlank { contentResolver.getType(uri) ?: "未知" }
         val size = runCatching {
             contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) cursor.getLong(0).takeIf { it > 0L } else null
+                val sizeColumn = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (cursor.moveToFirst() && sizeColumn >= 0) cursor.getLong(sizeColumn).takeIf { it > 0L } else null
             }
         }.getOrNull()
         val extractor = MediaExtractor()
@@ -212,7 +213,7 @@ class MediaInfoActivity : ComponentActivity() {
                 }
                 val language = runCatching { format.getString(MediaFormat.KEY_LANGUAGE) }.getOrNull()
                 if (!language.isNullOrBlank() && language != "und") details += "语言" to language
-                tracks += MediaTrackSummary(index, type, streamMime.removePrefix(type.lowercase(Locale.US) + "/"), details)
+                tracks += MediaTrackSummary(index, type, streamMime.substringAfter('/', streamMime), details)
             }
         } catch (error: Exception) {
             throw IllegalStateException("系统无法解析此媒体容器：${error.message ?: error.javaClass.simpleName}", error)

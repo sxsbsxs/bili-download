@@ -42,3 +42,11 @@ data class BiliAccountLibraryPage(
     val nextHistoryCursor: BiliHistoryCursorState? = null,
     val hasMore: Boolean = false
 )
+
+internal object BiliHistoryCursorPolicy {
+    fun buildQuery(cursor: BiliHistoryCursorState?): String {
+        val value = cursor ?: BiliHistoryCursorState()
+        val business = java.net.URLEncoder.encode(value.business, "UTF-8")
+        return "max=${value.max}&view_at=${value.viewAt}&business=${business}&ps=20&type=archive"
+    }
+}

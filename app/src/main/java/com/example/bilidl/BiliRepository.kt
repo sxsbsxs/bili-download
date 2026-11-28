@@ -309,11 +309,7 @@ class BiliRepository(
 
             BiliAccountSection.HISTORY -> {
                 // BVD preserves all three cursor fields; max alone can repeat or skip history rows.
-                val cursor = historyCursor ?: BiliHistoryCursorState()
-                val query = "max=${cursor.max}" +
-                    "&view_at=${cursor.viewAt}" +
-                    "&business=${encode(cursor.business)}" +
-                    "&ps=20&type=archive"
+                val query = BiliHistoryCursorPolicy.buildQuery(historyCursor)
                 val data = checkedData(
                     requestJson("https://api.bilibili.com/x/web-interface/history/cursor?$query")
                 )
