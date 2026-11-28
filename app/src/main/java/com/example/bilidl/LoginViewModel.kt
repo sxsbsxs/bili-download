@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Owns Bilibili authorization jobs and local SESSDATA storage.
+ * Owns Bilibili authorization jobs and encrypted local Cookie-header storage.
  *
  * QR generation, polling and cookie verification run on IO. Polling waits
  * cooperatively, so changing tabs or leaving the login screen cancels the job
