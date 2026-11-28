@@ -304,6 +304,7 @@ class MainActivity : ComponentActivity() {
                 input.isEnabled = true
                 setParseLoading(false)
                 parseBtn.text = "解析视频"
+                say("", sub)
                 if (mismatchMode == BatchQualityMismatchMode.ASK && mismatches.isNotEmpty()) {
                     val details = mismatches.take(8).mapNotNull { it.mismatchDescription }
                         .joinToString("\n\n")
@@ -1932,6 +1933,14 @@ class MainActivity : ComponentActivity() {
         })
 
         resultCard = card().apply { visibility = View.GONE }
+        resultCard.addView(TextView(this).apply {
+            text = "解析结果"
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }, LinearLayout.LayoutParams(match, wrap).apply {
+            bottomMargin = dp(12)
+        })
         val previewRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
