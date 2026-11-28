@@ -13,6 +13,7 @@ import com.sxsbsxs.bilivdl.ui.DiscoverFragment
 import com.sxsbsxs.bilivdl.ui.CommentAdapter
 import com.sxsbsxs.bilivdl.ui.BiliVdlComment
 import com.sxsbsxs.bilivdl.ui.BiliVdlDanmaku
+import com.sxsbsxs.bilivdl.ui.BiliVdlSettings
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -2214,7 +2215,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         logoutDone()
     }
 
-    private fun onSettingChanged(key: String, value: Any) {}
+    private fun onSettingChanged(key: String, value: Any) {
+        if (key == "quality") refreshQuality()
+    }
     private fun onChoosePathClicked() {
         toast("视频保存位置：Download/BiliDl")
     }
@@ -2963,6 +2966,40 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             }
             runOnUiThread { callback(account) }
         }
+    }
+
+    override fun loadSettings(callback: (BiliVdlSettings) -> Unit) {
+        val settings = BiliVdlSettings(
+            qualityIndex = prefs.getInt("quality", 0).coerceIn(0, qualityOptions.lastIndex),
+            concurrencyIndex = prefs.getInt("concurrent", 1).coerceIn(0, concurrentOptions.lastIndex),
+            wifiOnly = prefs.getBoolean("wifi_only", true),
+            downloadDanmaku = prefs.getBoolean("danmaku", false),
+            downloadSubtitles = prefs.getBoolean("subtitles", false),
+            audioOnly = prefs.getBoolean("audio_only", false),
+            downloadPath = "Download/BiliDl"
+        )
+        runOnUiThread { callback(settings) }
+    }
+
+    override fun updateSetting(key: String, value: Any) {
+        when (key) {
+            "quality", "concurrent" -> {
+                val index = (value as? Int) ?: return
+                val last = if (key == "quality") qualityOptions.lastIndex else concurrentOptions.lastIndex
+                prefs.edit().putInt(key, index.coerceIn(0, last)).apply()
+                if (key == "quality") refreshQuality()
+            }
+            "wifi_only", "danmaku", "subtitles", "audio_only" -> {
+                val enabled = value as? Boolean ?: return
+                prefs.edit().putBoolean(key, enabled).apply()
+            }
+            else -> return
+        }
+        onSettingChanged(key, value)
+    }
+
+    override fun clearTemporaryCache() {
+        onClearCacheClicked()
     }
 
     override fun requestLogin() {
