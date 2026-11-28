@@ -231,9 +231,9 @@ class BiliRepository(
             val detail = when (category) {
                 BiliSearchCategory.VIDEO -> buildList {
                     item.optString("duration").takeIf { it.isNotBlank() }?.let(::add)
-                    item.opt("play")?.toString()?.takeIf { it.isNotBlank() && it != "0" }
+                    item.opt("play")?.toString()?.takeIf { it.isNotBlank() && it != "0" && it != "null" }
                         ?.let { add("播放 $it") }
-                    item.opt("video_review")?.toString()?.takeIf { it.isNotBlank() && it != "0" }
+                    item.opt("video_review")?.toString()?.takeIf { it.isNotBlank() && it != "0" && it != "null" }
                         ?.let { add("弹幕 $it") }
                 }.joinToString(" · ")
                 else -> listOf(
