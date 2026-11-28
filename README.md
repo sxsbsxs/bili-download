@@ -18,12 +18,15 @@ BiliDl is a Bilibili-focused Android downloader. The project uses its own Bilibi
 - Optionally export segmented Bilibili danmaku as XML and BCC subtitles as SRT. The two options are controlled separately in Settings and are saved with each task.
 - Validate MP4 structure and FLV tag boundaries before publishing direct downloads; validate MP4 sample-table references after DASH remux. MediaStore copies are checked byte-for-byte before they become visible.
 - Save finished media and sidecar files in Download/BiliDl through MediaStore without requesting broad storage access.
+- Use the BiliVdl Android UI source from the user's `sxsbsxs/bilibilivdl` repository for the home, discovery, downloads, profile, video detail, video-card, and comment presentation. The screens call back into BiliDl's existing Bilibili repository, encrypted session store, Room task database, and WorkManager queue; they do not bundle a second download backend.
+- Expose working download preferences in the BiliVdl profile: preferred quality, task concurrency, Wi-Fi-only scheduling, danmaku/subtitle sidecars, audio-only downloads, and safe temporary-cache clearing.
 - Ship an original adaptive launcher icon, themed monochrome icon, and matching foreground download notification icon.
 - Include an original C++/JNI core for positional writes, durable file sync, and structural MP4 inspection. The inspector checks box boundaries, track/sample tables, timing-table counts, chunk mappings, and verifies that each media chunk points into an actual mdat payload.
 
 ## Repository layout
 
-- app: Android application, platform integration, download worker, and Bilibili API.
+- app: Android application, platform integration, download worker, Bilibili API, account authorization, and task orchestration.
+- bilivdl-ui: reusable Android UI library containing the adapted BiliVdl layouts, theme, navigation, fragments, player presentation, adapters, and UI-to-host callback contract.
 - app/src/main/java/com/example/bilidl/common/content: danmaku/subtitle models, protobuf parsing, and export.
 - app/src/main/cpp: native transfer and MP4 inspection core.
 - docs: architecture and feature status.
@@ -32,7 +35,7 @@ BiliDl is a Bilibili-focused Android downloader. The project uses its own Bilibi
 - tools/formatting: contributor formatting conventions.
 - .github/workflows: Android CI, source checks, and tagged debug test builds.
 
-The application remains a single Gradle app module for now; package boundaries are being established before any independent module split.
+`bilivdl-ui` is a presentation-only Android library. BiliDl remains the single owner of network access, credentials, database state, download scheduling, and media transfer. The imported UI source and GPL-3.0 notice are documented in `bilivdl-ui/UPSTREAM_NOTICES.md`.
 
 ## Build
 
