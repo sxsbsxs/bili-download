@@ -111,6 +111,15 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun loginWithSessdata(rawSessdata: String) {
+        verifyAndSaveCookie(rawSessdata, LoginFailureSource.COOKIE)
+    }
+
+    /** BVD-style official WebView login hands the verified site's SESSDATA here. */
+    fun loginWithWebCookie(rawCookieHeader: String) {
+        verifyAndSaveCookie(rawCookieHeader, LoginFailureSource.WEBVIEW)
+    }
+
+    private fun verifyAndSaveCookie(rawCookie: String, failureSource: LoginFailureSource) {
         qrJob?.cancel()
         qrJob = null
         authJob?.cancel()
@@ -118,8 +127,10 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
             _state.value = LoginUiState.VerifyingCookie
             try {
                 val account = withContext(Dispatchers.IO) {
-                    val verified = BiliRepository().verifyCookie(rawSessdata)
-                    SecureCookieStore.save(getApplication(), rawSessdata)
+                    // SecureCookieStore extracts and encrypts only SESSDATA.
+                    // Never persist the full WebView Cookie header in plaintext.
+                    val verified = BiliRepository().verifyCookie(rawCookie)
+                    SecureCookieStore.save(getApplication(), rawCookie)
                     verified
                 }
                 _state.value = LoginUiState.Success(account.first, account.second)
@@ -128,7 +139,7 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
             } catch (error: Exception) {
                 _state.value = LoginUiState.Error(
                     error.message ?: "授权验证失败",
-                    LoginFailureSource.COOKIE
+                    failureSource
                 )
             }
         }
