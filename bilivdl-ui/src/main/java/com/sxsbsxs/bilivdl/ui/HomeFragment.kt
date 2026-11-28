@@ -4,10 +4,10 @@ import android.os.Bundle
 import android.view.View
 import androidx.core.widget.NestedScrollView
 import androidx.fragment.app.Fragment
-import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.GridLayoutManager
 import com.sxsbsxs.bilivdl.ui.databinding.FragmentHomeBinding
 
-/** Original BiliVdl recommendation screen; data comes from the host repository. */
+/** Original BiliVdl feed flow, displayed as a Bilibili-style poster grid. */
 class HomeFragment : Fragment(R.layout.fragment_home) {
     private var binding: FragmentHomeBinding? = null
     private var page = 0
@@ -27,8 +27,10 @@ class HomeFragment : Fragment(R.layout.fragment_home) {
         val b = FragmentHomeBinding.bind(view)
         binding = b
         adapter = VideoAdapter(host::openVideo)
-        b.homeRecommendations.layoutManager = LinearLayoutManager(requireContext())
+        b.homeRecommendations.layoutManager = GridLayoutManager(requireContext(), 2)
         b.homeRecommendations.adapter = adapter
+        b.homeRecommendations.setHasFixedSize(true)
+        b.homeRecommendations.isNestedScrollingEnabled = false
         b.homeSearchButton.setOnClickListener { host.navigateToDiscover() }
         b.homeSearchEntry.setOnClickListener { host.navigateToDiscover() }
         b.homeSwipe.setOnRefreshListener { refresh() }
