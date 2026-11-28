@@ -17,6 +17,7 @@ import com.sxsbsxs.bilivdl.ui.databinding.FragmentDownloadBinding
 /** BiliVdl download-management presentation backed by the host WorkManager/Room queue. */
 class DownloadsFragment : Fragment(R.layout.fragment_download) {
     private var binding: FragmentDownloadBinding? = null
+    private var lastRenderedTasks: List<BiliVdlDownloadTask>? = null
     private val handler = Handler(Looper.getMainLooper())
     private val refreshRunnable = object : Runnable {
         override fun run() {
@@ -43,6 +44,8 @@ class DownloadsFragment : Fragment(R.layout.fragment_download) {
         val b = binding ?: return
         host.loadDownloadTasks { tasks ->
             val current = binding ?: return@loadDownloadTasks
+            if (lastRenderedTasks == tasks) return@loadDownloadTasks
+            lastRenderedTasks = tasks.toList()
             current.downloadTaskControls.removeAllViews()
             if (tasks.isEmpty()) {
                 current.downloadSummary.text = "共 0 个任务"
@@ -189,6 +192,7 @@ class DownloadsFragment : Fragment(R.layout.fragment_download) {
     override fun onDestroyView() {
         handler.removeCallbacks(refreshRunnable)
         binding = null
+        lastRenderedTasks = null
         super.onDestroyView()
     }
 }
