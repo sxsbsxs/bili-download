@@ -61,6 +61,7 @@ dependencies {
 
     // Native in-app playback for Bilibili DASH audio/video streams.
     implementation("androidx.media3:media3-exoplayer:1.11.1")
+    implementation("androidx.media3:media3-exoplayer-dash:1.11.1")
     implementation("androidx.media3:media3-ui:1.11.1")
 
     testImplementation("junit:junit:4.13.2")
