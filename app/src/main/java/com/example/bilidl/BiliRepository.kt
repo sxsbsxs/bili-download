@@ -1134,7 +1134,7 @@ class BiliRepository(
             "csrf" to csrf,
             "csrf_token" to csrf
         )
-        if (reason == 0) form["content"] = detail
+        if (reason == 0 && detail.isNotBlank()) form["content"] = detail
         val response = requestFormJson(
             "https://api.bilibili.com/x/v2/reply/report",
             form
