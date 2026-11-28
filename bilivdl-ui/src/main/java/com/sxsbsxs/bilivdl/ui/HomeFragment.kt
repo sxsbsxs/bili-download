@@ -53,6 +53,7 @@ class HomeFragment : Fragment(R.layout.fragment_home) {
         loading = false
         videos.clear()
         adapter.submitList(emptyList())
+        b.homeFeedStatus.visibility = View.GONE
         b.homeSwipe.isRefreshing = true
         loadPage(1)
     }
@@ -74,10 +75,11 @@ class HomeFragment : Fragment(R.layout.fragment_home) {
                     duplicatePages = if (fresh.isEmpty() && result.size >= 20) duplicatePages + 1 else 0
                     hasMore = result.size >= 20 && duplicatePages < 3
                     adapter.submitList(videos.toList())
-                    b.homeFeedStatus.text = when {
-                        videos.isEmpty() -> "暂时没有推荐视频 · 下拉重试"
-                        hasMore -> "已加载 " + videos.size + " 条 · 下滑继续加载"
-                        else -> "已加载全部推荐 · 下拉刷新换一批"
+                    if (videos.isEmpty()) {
+                        b.homeFeedStatus.text = "暂无推荐视频"
+                        b.homeFeedStatus.visibility = View.VISIBLE
+                    } else {
+                        b.homeFeedStatus.visibility = View.GONE
                     }
                     b.homeRecommendations.post {
                         val live = binding ?: return@post
@@ -86,7 +88,8 @@ class HomeFragment : Fragment(R.layout.fragment_home) {
                     }
                 },
                 onFailure = { error ->
-                    b.homeFeedStatus.text = "加载失败：" + (error.message ?: "网络异常") + " · 下拉重试"
+                    b.homeFeedStatus.text = "加载失败：" + (error.message ?: "网络异常")
+                    b.homeFeedStatus.visibility = View.VISIBLE
                 }
             )
             b.homeProgress.visibility = View.GONE
