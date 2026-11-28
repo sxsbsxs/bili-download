@@ -97,7 +97,8 @@ class BiliDownloadWorker(
                 audioOnly,
                 transferId.ifBlank { id.toString() },
                 concurrency,
-                SecureCookieStore.load(applicationContext),
+                SecureCookieStore.loadCookieHeader(applicationContext)
+                    ?: SecureCookieStore.load(applicationContext),
                 downloadDanmaku = downloadDanmaku,
                 downloadSubtitles = downloadSubtitles,
                 isCancelled = { isStopped }
