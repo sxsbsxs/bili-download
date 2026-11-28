@@ -197,7 +197,7 @@ class BiliRepository(
     private fun cleanSearchText(value: String): String {
         return android.text.Html.fromHtml(value, android.text.Html.FROM_HTML_MODE_LEGACY)
             .toString()
-            .replace(Regex("\\\\s+"), " ")
+            .replace(Regex("\\s+"), " ")
             .trim()
     }
 
