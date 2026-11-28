@@ -56,7 +56,18 @@ data class BiliPlaySource(
     val directUrls: List<String>,
     val format: String,
     val videoMime: String,
-    val audioMime: String
+    val audioMime: String,
+    val videoInitializationRange: String? = null,
+    val videoIndexRange: String? = null,
+    val audioInitializationRange: String? = null,
+    val audioIndexRange: String? = null,
+    val videoBandwidth: Long = 0L,
+    val audioBandwidth: Long = 0L,
+    val videoCodecs: String = "",
+    val audioCodecs: String = "",
+    val width: Int = 0,
+    val height: Int = 0,
+    val frameRate: String = ""
 )
 
 data class BiliSearchVideo(
@@ -94,6 +105,24 @@ class BiliRepository(
         val name = data.optString("uname").ifBlank { "B站用户" }
         val vip = data.optInt("vipStatus", 0) == 1
         return name to vip
+    }
+
+    /**
+     * Public hot-video feed used as the initial home timeline.
+     * The popular endpoint does not require a logged-in account.
+     */
+    fun getPopularVideos(page: Int = 1, pageSize: Int = 20): List<BiliSearchVideo> {
+        val safePage = page.coerceAtLeast(1)
+        val safeSize = pageSize.coerceIn(1, 50)
+        val root = requestJson(
+            "https://api.bilibili.com/x/web-interface/popular?ps=" +
+                safeSize + "&pn=" + safePage
+        )
+        val data = checkedData(root)
+        val list = data.optJSONArray("list") ?: data.optJSONArray("archives") ?: JSONArray()
+        val results = parseVideoItems(list)
+        if (results.isEmpty()) throw IOException("B站暂时没有返回热门视频，请稍后重试")
+        return results
     }
 
     /**
@@ -147,23 +176,28 @@ class BiliRepository(
     private fun parseVideoSearchResults(root: JSONObject): List<BiliSearchVideo> {
         val data = checkedData(root)
         val groups = data.optJSONArray("result") ?: return emptyList()
-        val directVideos = ArrayList<JSONObject>()
+        val directVideos = JSONArray()
         for (index in 0 until groups.length()) {
             val group = groups.optJSONObject(index) ?: continue
             if (group.optString("result_type") == "video") {
                 val nested = group.optJSONArray("data") ?: continue
                 for (nestedIndex in 0 until nested.length()) {
-                    nested.optJSONObject(nestedIndex)?.let(directVideos::add)
+                    nested.optJSONObject(nestedIndex)?.let(directVideos::put)
                 }
             } else if (
                 group.optString("type") == "video" ||
                 group.has("bvid") ||
                 group.has("aid") && group.has("pic")
             ) {
-                directVideos.add(group)
+                directVideos.put(group)
             }
         }
-        return directVideos.mapNotNull { item ->
+        return parseVideoItems(directVideos)
+    }
+
+    private fun parseVideoItems(items: JSONArray): List<BiliSearchVideo> {
+        return (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
             val bvid = item.optString("bvid").trim()
             val aid = item.optLong("aid", item.optLong("id"))
             if (bvid.isBlank() && aid <= 0L) return@mapNotNull null
@@ -174,24 +208,30 @@ class BiliRepository(
                 rawCover.startsWith("http://", true) || rawCover.startsWith("https://", true) -> rawCover
                 else -> null
             }
+            val owner = item.optJSONObject("owner")
+            val stat = item.optJSONObject("stat")
             val tagText = item.optString("tag")
             BiliSearchVideo(
                 bvid = bvid.ifBlank { "av$aid" },
                 aid = aid,
                 title = cleanSearchText(item.optString("title")).ifBlank { "B站视频" },
-                author = cleanSearchText(item.optString("author")).ifBlank { "未知 UP 主" },
+                author = cleanSearchText(
+                    item.optString("author").ifBlank { owner?.optString("name").orEmpty() }
+                ).ifBlank { "未知 UP 主" },
                 coverUrl = cover,
                 duration = item.optString("duration"),
-                viewCount = searchCount(item.opt("play")),
-                danmakuCount = searchCount(item.opt("video_review")),
-                likeCount = searchCount(item.opt("like")),
-                favoriteCount = searchCount(item.opt("favorites")),
-                commentCount = searchCount(item.opt("review")),
+                viewCount = searchCount(item.opt("play") ?: stat?.opt("view")),
+                danmakuCount = searchCount(item.opt("video_review") ?: stat?.opt("danmaku")),
+                likeCount = searchCount(item.opt("like") ?: stat?.opt("like")),
+                favoriteCount = searchCount(item.opt("favorites") ?: stat?.opt("favorite")),
+                commentCount = searchCount(item.opt("review") ?: stat?.opt("reply")),
                 publishTime = item.optLong("pubdate"),
-                description = cleanSearchText(item.optString("description")),
+                description = cleanSearchText(
+                    item.optString("description").ifBlank { item.optString("desc") }
+                ),
                 tags = tagText.split(",").map { cleanSearchText(it) }.filter { it.isNotBlank() }.take(8)
             )
-        }.distinctBy { it.bvid }.take(20)
+        }.distinctBy { it.bvid }.take(50)
     }
 
     private fun cleanSearchText(value: String): String {
@@ -351,10 +391,32 @@ class BiliRepository(
             val videoUrls = videoItem?.let { streamUrls(it) }.orEmpty()
             val audioUrls = audioItem?.let { streamUrls(it) }.orEmpty()
             if (videoUrls.isNotEmpty()) {
+                val videoSegmentBase = videoItem?.optJSONObject("SegmentBase")
+                    ?: videoItem?.optJSONObject("segment_base")
+                val audioSegmentBase = audioItem?.optJSONObject("SegmentBase")
+                    ?: audioItem?.optJSONObject("segment_base")
                 return BiliPlaySource(
-                    videoUrls, audioUrls, emptyList(),
-                    "dash", videoItem?.optString("mimeType").orEmpty(),
-                    audioItem?.optString("mimeType").orEmpty()
+                    videoUrls = videoUrls,
+                    audioUrls = audioUrls,
+                    directUrls = emptyList(),
+                    format = "dash",
+                    videoMime = videoItem?.optString("mimeType").orEmpty(),
+                    audioMime = audioItem?.optString("mimeType").orEmpty(),
+                    videoInitializationRange = videoSegmentBase?.optString("Initialization")
+                        ?.ifBlank { videoSegmentBase.optString("initialization") },
+                    videoIndexRange = videoSegmentBase?.optString("indexRange")
+                        ?.ifBlank { videoSegmentBase.optString("index_range") },
+                    audioInitializationRange = audioSegmentBase?.optString("Initialization")
+                        ?.ifBlank { audioSegmentBase.optString("initialization") },
+                    audioIndexRange = audioSegmentBase?.optString("indexRange")
+                        ?.ifBlank { audioSegmentBase.optString("index_range") },
+                    videoBandwidth = videoItem?.optLong("bandwidth") ?: 0L,
+                    audioBandwidth = audioItem?.optLong("bandwidth") ?: 0L,
+                    videoCodecs = videoItem?.optString("codecs").orEmpty(),
+                    audioCodecs = audioItem?.optString("codecs").orEmpty(),
+                    width = videoItem?.optInt("width") ?: 0,
+                    height = videoItem?.optInt("height") ?: 0,
+                    frameRate = videoItem?.optString("frameRate").orEmpty()
                 )
             }
         }
