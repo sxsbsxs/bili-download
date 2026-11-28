@@ -3,11 +3,14 @@ package com.sxsbsxs.bilivdl.ui
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import androidx.recyclerview.widget.RecyclerView
+import com.bumptech.glide.Glide
 import com.sxsbsxs.bilivdl.ui.databinding.ItemCommentBinding
 
 class CommentAdapter(
     private val onReplies: (BiliVdlComment) -> Unit,
-    private val onLike: (BiliVdlComment) -> Unit
+    private val onLike: (BiliVdlComment) -> Unit,
+    private val onUserProfile: (BiliVdlComment) -> Unit,
+    private val onReport: (BiliVdlComment) -> Unit
 ) : RecyclerView.Adapter<CommentAdapter.Holder>() {
     private val data = mutableListOf<BiliVdlComment>()
 
@@ -36,7 +39,7 @@ class CommentAdapter(
             parent,
             false
         )
-        return Holder(binding, onReplies, onLike)
+        return Holder(binding, onReplies, onLike, onUserProfile, onReport)
     }
 
     override fun getItemCount(): Int = data.size
@@ -48,11 +51,24 @@ class CommentAdapter(
     class Holder(
         private val binding: ItemCommentBinding,
         private val onReplies: (BiliVdlComment) -> Unit,
-        private val onLike: (BiliVdlComment) -> Unit
+        private val onLike: (BiliVdlComment) -> Unit,
+        private val onUserProfile: (BiliVdlComment) -> Unit,
+        private val onReport: (BiliVdlComment) -> Unit
     ) : RecyclerView.ViewHolder(binding.root) {
         fun bind(comment: BiliVdlComment) {
             binding.commentUser.text = comment.user
             binding.commentText.text = comment.text
+            Glide.with(binding.root)
+                .load(comment.avatarUrl)
+                .circleCrop()
+                .placeholder(R.drawable.ic_account_placeholder)
+                .error(R.drawable.ic_account_placeholder)
+                .into(binding.commentAvatar)
+
+            val openProfile = { onUserProfile(comment) }
+            binding.commentAvatar.setOnClickListener { openProfile() }
+            binding.commentUser.setOnClickListener { openProfile() }
+            binding.commentReport.setOnClickListener { onReport(comment) }
             binding.commentLikes.text =
                 (if (comment.liked) "👍 已赞 " else "👍 ") + comment.likes
             binding.commentReplies.text =
