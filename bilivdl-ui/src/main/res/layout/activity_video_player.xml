@@ -138,6 +138,8 @@
                     android:layout_marginStart="8dp"
                     android:text="下载"
                     android:textAllCaps="false"
+                    android:textColor="@color/white"
+                    app:backgroundTint="@color/brand"
                     app:cornerRadius="14dp" />
             </LinearLayout>
 
