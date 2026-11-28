@@ -15,6 +15,13 @@ class BiliDownloadRetryPolicyTest {
     }
 
     @Test
+    fun explainsAuthenticationAndRateLimitFailures() {
+        assertTrue(BiliHttpException(403, "CDN").message.orEmpty().contains("重新解析"))
+        assertTrue(BiliHttpException(429, "CDN").message.orEmpty().contains("限流"))
+        assertTrue(BiliHttpException(503, "CDN").message.orEmpty().contains("稍后重试"))
+    }
+
+    @Test
     fun retriesNetworkInterruptions() {
         assertTrue(BiliDownloadRetryPolicy.isRetryable(SocketTimeoutException("read timed out")))
         assertTrue(BiliDownloadRetryPolicy.isRetryable(RetryableDownloadException("partial response")))
