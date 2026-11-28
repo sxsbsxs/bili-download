@@ -512,18 +512,85 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 formatCount(video.likeCount) + " 点赞  ·  " +
                 formatCount(video.commentCount) + " 评论"
 
-        content.findViewById<TextView>(com.sxsbsxs.bilivdl.ui.R.id.video_description).text =
-            buildString {
-                if (video.categoryName.isNotBlank()) append("分区：").append(video.categoryName).append('\n')
-                val publishTime = if (video.publishTime > 0L) video.publishTime else searchItem?.publishTime ?: 0L
-                if (publishTime > 0L) append("投稿：").append(formatPublishDate(publishTime)).append('\n')
-                if (video.bvid.isNullOrBlank().not()) append("BV号：").append(video.bvid).append('\n')
-                append(video.description.ifBlank { "暂无简介" })
-                if (video.tags.isNotEmpty()) {
-                    append("\n\n标签：")
-                    append(video.tags.joinToString("  ·  "))
+        val pagesScroll = content.findViewById<HorizontalScrollView>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_pages_scroll
+        )
+        val pagesContainer = content.findViewById<LinearLayout>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_pages_container
+        )
+        pagesContainer.removeAllViews()
+        pagesScroll.visibility = if (video.pages.size > 1) View.VISIBLE else View.GONE
+        video.pages.sortedBy { it.pageNumber }.forEach { pageInfo ->
+            val currentPage = pageInfo.pageNumber == video.page
+            val pageCard = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = rippleShape(if (currentPage) Color.parseColor("#FFF0F5") else field, 12)
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    if (pageInfo.cid != video.cid) onParseClicked(pageUrl(video, pageInfo))
                 }
             }
+            pageCard.addView(TextView(this).apply {
+                text = "P${pageInfo.pageNumber}"
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(if (currentPage) pink else ink)
+            }, LinearLayout.LayoutParams(wrap, wrap))
+            pageCard.addView(TextView(this).apply {
+                text = pageInfo.part.ifBlank { formatDuration(pageInfo.durationSeconds) }
+                textSize = 11f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(sub)
+            }, LinearLayout.LayoutParams(dp(102), wrap))
+            pagesContainer.addView(
+                pageCard,
+                LinearLayout.LayoutParams(wrap, dp(52)).apply { marginEnd = dp(8) }
+            )
+        }
+
+        val tagsScroll = content.findViewById<HorizontalScrollView>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_tags_scroll
+        )
+        val tagsContainer = content.findViewById<LinearLayout>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_tags_container
+        )
+        tagsContainer.removeAllViews()
+        tagsScroll.visibility = if (video.tags.isNotEmpty()) View.VISIBLE else View.GONE
+        video.tags.take(12).forEach { tag ->
+            tagsContainer.addView(TextView(this).apply {
+                text = tag
+                textSize = 11f
+                setTextColor(ink)
+                background = rippleShape(field, 14)
+                setPadding(dp(10), dp(5), dp(10), dp(5))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    openExternalPage("https://search.bilibili.com/all?keyword=" + Uri.encode(tag))
+                }
+            }, LinearLayout.LayoutParams(wrap, wrap).apply { marginEnd = dp(7) })
+        }
+
+        val descriptionView = content.findViewById<TextView>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_description
+        )
+        descriptionView.text = buildString {
+            if (video.categoryName.isNotBlank()) append("分区：").append(video.categoryName).append('\n')
+            val publishTime = if (video.publishTime > 0L) video.publishTime else searchItem?.publishTime ?: 0L
+            if (publishTime > 0L) append("投稿：").append(formatPublishDate(publishTime)).append('\n')
+            if (video.bvid.isNullOrBlank().not()) append("BV号：").append(video.bvid).append('\n')
+            append(video.description.ifBlank { "暂无简介" })
+        }
+        var descriptionExpanded = false
+        descriptionView.setOnClickListener {
+            descriptionExpanded = !descriptionExpanded
+            descriptionView.maxLines = if (descriptionExpanded) Int.MAX_VALUE else 3
+            descriptionView.ellipsize = if (descriptionExpanded) null else android.text.TextUtils.TruncateAt.END
+        }
 
         detailPlaybackStatus = content.findViewById(
             com.sxsbsxs.bilivdl.ui.R.id.player_status
@@ -563,8 +630,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         val partButton = content.findViewById<MaterialButton>(
             com.sxsbsxs.bilivdl.ui.R.id.part_button
         )
-        partButton.visibility = if (video.pages.size > 1) View.VISIBLE else View.GONE
-        partButton.text = if (video.pages.size > 1) "选择分P（共 " + video.pages.size + " P）" else "单P视频"
+        partButton.visibility = if (video.pages.size > 4) View.VISIBLE else View.GONE
+        partButton.text = "全部分P（共 " + video.pages.size + " P）"
         partButton.setOnClickListener { showAvailablePages() }
 
         val danmakuButton = content.findViewById<MaterialButton>(
@@ -609,6 +676,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         content.findViewById<MaterialButton>(
             com.sxsbsxs.bilivdl.ui.R.id.video_triple
         ).setOnClickListener { performTripleLike(video) }
+
+        content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_share
+        ).setOnClickListener { showVideoMoreActions(video) }
 
         content.findViewById<MaterialButton>(
             com.sxsbsxs.bilivdl.ui.R.id.danmaku_send
