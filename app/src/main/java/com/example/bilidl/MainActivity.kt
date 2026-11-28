@@ -583,6 +583,7 @@ class MainActivity : ComponentActivity() {
         val audioUrl = source.audioUrls.firstOrNull()
         val audioInit = source.audioInitializationRange?.takeIf { it.isNotBlank() }
         val audioIndex = source.audioIndexRange?.takeIf { it.isNotBlank() }
+        if (!audioUrl.isNullOrBlank() && (audioInit == null || audioIndex == null)) return null
         val duration = durationSeconds.coerceAtLeast(1)
         val xml = StringBuilder()
         xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>")
