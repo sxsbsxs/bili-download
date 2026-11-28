@@ -162,6 +162,7 @@ object BiliDownloadEngine {
                 }
 
                 if (audioOnly) {
+                    inspectMp4OrThrow(directTemp, "源 MP4")
                     progress(84, "正在提取并封装 AAC 音频")
                     muxAudioToM4a(directTemp, audioOutputTemp)
                     val saved = publishFile(
@@ -194,6 +195,11 @@ object BiliDownloadEngine {
                 } else {
                     val ext = if (source.format.contains("flv", true)) "flv" else "mp4"
                     val mime = if (ext == "flv") "video/x-flv" else "video/mp4"
+                    if (ext == "flv") {
+                        FlvContainerValidator.validate(directTemp)
+                    } else {
+                        inspectMp4OrThrow(directTemp, "源 MP4")
+                    }
                     val saved = publishFile(context, directTemp, video.title, ext, mime)
                     publishedUris.add(saved.uri)
                     val sidecars = exportSidecars(
@@ -542,8 +548,11 @@ object BiliDownloadEngine {
         val declaredSize = runCatching {
             format.getInteger(MediaFormat.KEY_MAX_INPUT_SIZE)
         }.getOrDefault(0)
+        val maxSafeSampleBytes = 64 * 1024 * 1024
+        if (declaredSize > maxSafeSampleBytes) {
+            throw IOException("媒体关键帧声明超过 64 MiB 安全缓冲上限，已停止以避免内存耗尽")
+        }
         val capacity = maxOf(4 * 1024 * 1024, declaredSize)
-            .coerceAtMost(64 * 1024 * 1024)
         return java.nio.ByteBuffer.allocate(capacity)
     }
 
@@ -636,10 +645,10 @@ object BiliDownloadEngine {
         try {
             val expectedBytes = source.length()
             if (expectedBytes <= 0L) throw IOException("待保存文件为空")
-            val output = resolver.openOutputStream(uri, "w")
-                ?: throw IOException("无法写入下载文件")
             val copiedBytes = source.inputStream().buffered().use { input ->
-                output.use { destination -> input.copyTo(destination) }
+                resolver.openOutputStream(uri, "w")?.use { output ->
+                    input.copyTo(output)
+                } ?: throw IOException("无法写入下载文件")
             }
             if (copiedBytes != expectedBytes) {
                 throw IOException("保存文件时长度不匹配：$copiedBytes / $expectedBytes 字节")
