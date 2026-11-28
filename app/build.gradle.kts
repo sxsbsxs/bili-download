@@ -133,6 +133,7 @@ dependencies {
 
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
     implementation("com.google.zxing:core:3.5.3")
 
