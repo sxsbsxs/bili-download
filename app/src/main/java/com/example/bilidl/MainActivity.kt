@@ -3003,7 +3003,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         (preferred.videoStreamChoice != null || preferred.audioStreamChoice != null)
                     val noUsableVideo = !options.direct && !preferred.audioOnly &&
                         options.videoChoices.isEmpty()
-                    val noUsableAudio = preferred.includeAudio && options.audioChoices.isEmpty()
+                    // A direct MP4 already carries its own media tracks; it has no separate
+                    // DASH audio representation to select or compare.
+                    val noUsableAudio = !options.direct &&
+                        preferred.includeAudio && options.audioChoices.isEmpty()
                     val mismatch = missingVideo || missingAudio || incompatibleDirect ||
                         noUsableVideo || noUsableAudio
 
@@ -3017,7 +3020,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
                     if (finalSelection == null ||
                         (!options.direct && !preferred.audioOnly && finalSelection.video == null) ||
-                        (preferred.includeAudio && finalSelection.audio == null)
+                        (!options.direct && preferred.includeAudio && finalSelection.audio == null)
                     ) {
                         skipped += page.pageNumber
                     } else {
