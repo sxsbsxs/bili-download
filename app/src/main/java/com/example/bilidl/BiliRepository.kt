@@ -677,6 +677,7 @@ class BiliRepository(
                 "aid" to aid.toString(),
                 "multiply" to count.coerceIn(1, 2).toString(),
                 "select_like" to if (alsoLike) "1" else "0",
+                "cross_domain" to "true",
                 "csrf" to csrf,
                 "csrf_token" to csrf
             )
@@ -892,7 +893,11 @@ class BiliRepository(
             doOutput = true
             instanceFollowRedirects = true
             setRequestProperty("User-Agent", userAgent)
-            setRequestProperty("Referer", "https://www.bilibili.com/")
+            val archiveId = form["aid"] ?: form["oid"] ?: form["rid"]
+            val referer = archiveId?.takeIf { it.toLongOrNull() != null }
+                ?.let { "https://www.bilibili.com/video/av$it" }
+                ?: "https://www.bilibili.com/"
+            setRequestProperty("Referer", referer)
             setRequestProperty("Origin", "https://www.bilibili.com")
             setRequestProperty("Accept", "application/json, text/plain, */*")
             setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
