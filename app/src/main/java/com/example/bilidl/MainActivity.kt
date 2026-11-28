@@ -134,6 +134,8 @@ class MainActivity : ComponentActivity() {
             parseBtn.text = "搜索"
             searchKeyword = ""
             searchPage = 1
+            searchSortContainer.visibility = View.GONE
+            feedSectionTitle.text = "热门推荐"
             searchResults.clear()
             canLoadMoreSearch = true
             renderSearchResults()
@@ -178,6 +180,8 @@ class MainActivity : ComponentActivity() {
             searchLoading = false
             searchKeyword = query
             searchPage = 1
+            searchSortContainer.visibility = View.VISIBLE
+            feedSectionTitle.text = "搜索结果"
             searchResults.clear()
             canLoadMoreSearch = true
             renderSearchResults()
@@ -1570,6 +1574,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var resultGrid: LinearLayout
     private lateinit var loadMoreButton: TextView
     private lateinit var searchSortLabels: List<TextView>
+    private lateinit var searchSortContainer: View
+    private lateinit var feedSectionTitle: TextView
     private val tabIcon = ArrayList<TextView>()
     private val tabText = ArrayList<TextView>()
 
@@ -2018,14 +2024,14 @@ class MainActivity : ComponentActivity() {
         })
         col.addView(loginTip, sideMargins(12))
 
-        val sectionTitle = TextView(this).apply {
-            text = "视频"
+        feedSectionTitle = TextView(this).apply {
+            text = "热门推荐"
             textSize = 17f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(ink)
             setPadding(dp(2), dp(16), dp(2), dp(8))
         }
-        col.addView(sectionTitle, sideMargins(14))
+        col.addView(feedSectionTitle, sideMargins(14))
 
         val (sortBox, sortLabels) = buildSegmented(listOf("综合", "最多播放", "最新发布")) { index ->
             searchOrder = when (index) {
@@ -2038,6 +2044,8 @@ class MainActivity : ComponentActivity() {
             else loadHomeFeed(true)
         }
         searchSortLabels = sortLabels
+        searchSortContainer = sortBox
+        searchSortContainer.visibility = View.GONE
         styleSegs(searchSortLabels, 0)
         col.addView(sortBox, sideMargins(12))
 
