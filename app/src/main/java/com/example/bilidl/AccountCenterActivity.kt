@@ -172,7 +172,7 @@ class AccountCenterActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(2), dp(12), dp(12))
         }
-        scroll.addView(contentList, ScrollView.LayoutParams(-1, -2))
+        scroll.addView(contentList, android.view.ViewGroup.LayoutParams(-1, -2))
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
         loadMoreButton = actionButton("加载更多", false).apply {
