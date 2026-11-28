@@ -456,11 +456,7 @@ class AccountCenterActivity : ComponentActivity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = rounded(
-                if (item.url in selectedUrls) Color.rgb(255, 246, 249) else Color.WHITE,
-                13,
-                if (item.url in selectedUrls) Color.rgb(255, 204, 220) else Color.rgb(231, 234, 239)
-            )
+            background = rounded(Color.WHITE, 13, Color.rgb(231, 234, 239))
             setPadding(dp(12), dp(12), dp(12), dp(12))
             isClickable = true
             isFocusable = true
@@ -509,7 +505,11 @@ class AccountCenterActivity : ComponentActivity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = rounded(Color.WHITE, 13, Color.rgb(231, 234, 239))
+            background = rounded(
+                if (item.url in selectedUrls) Color.rgb(255, 246, 249) else Color.WHITE,
+                13,
+                if (item.url in selectedUrls) Color.rgb(255, 204, 220) else Color.rgb(231, 234, 239)
+            )
             setPadding(dp(10), dp(10), dp(10), dp(10))
             isClickable = true
             isFocusable = true
