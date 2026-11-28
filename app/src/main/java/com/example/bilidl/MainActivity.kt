@@ -574,13 +574,15 @@ class MainActivity : ComponentActivity() {
             return
         }
         try {
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, contentResolver.getType(uri) ?: "video/*")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(intent)
+            val mimeType = contentResolver.getType(uri) ?: "video/*"
+            val title = items[id]?.title ?: "BiliDl 媒体"
+            startActivity(
+                LocalPlaybackActivity.intent(uri, title, mimeType)
+                    .setClass(this, LocalPlaybackActivity::class.java)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            )
         } catch (_: Exception) {
-            toast("没有可打开此文件的播放器")
+            toast("无法在应用内打开此文件")
         }
     }
 
