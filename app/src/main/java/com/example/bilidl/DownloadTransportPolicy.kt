@@ -23,7 +23,7 @@ internal object DownloadTransportPolicy {
 
     fun cookieHeader(rawCookie: String?): String? {
         val raw = rawCookie?.trim()?.takeIf { it.isNotBlank() } ?: return null
-        val tokens = raw.replace("\\r", ";").replace("\\n", ";")
+        val tokens = raw.replace("\r", ";").replace("\n", ";")
             .split(';')
             .map(String::trim)
             .filter(String::isNotBlank)
