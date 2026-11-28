@@ -42,3 +42,13 @@ data class BiliVdlAccount(
     val status: String,
     val loggedIn: Boolean
 )
+
+data class BiliVdlSettings(
+    val qualityIndex: Int,
+    val concurrencyIndex: Int,
+    val wifiOnly: Boolean,
+    val downloadDanmaku: Boolean,
+    val downloadSubtitles: Boolean,
+    val audioOnly: Boolean,
+    val downloadPath: String
+)
