@@ -278,31 +278,47 @@ class BiliRepository(
         mid: Long,
         page: Int = 1,
         historyCursor: BiliHistoryCursorState? = null,
-        favoriteFolderId: Long = 0L
+        favoriteFolderId: Long = 0L,
+        submissionOrder: BiliSubmissionOrder = BiliSubmissionOrder.LATEST,
+        submissionTid: Long = 0L,
+        submissionKeyword: String = ""
     ): BiliAccountLibraryPage {
         require(mid > 0L) { "账号 ID 无效" }
         require(page >= 1) { "页码无效" }
 
         return when (section) {
             BiliAccountSection.SUBMISSIONS -> {
-                val query = signWbi(
-                    linkedMapOf(
-                        "mid" to mid.toString(),
-                        "order" to "pubdate",
-                        "pn" to page.toString(),
-                        "ps" to "20"
-                    )
+                // Match BVD's space search: sort, partition, keyword and page are WBI-signed.
+                val parameters = linkedMapOf(
+                    "mid" to mid.toString(),
+                    "order" to submissionOrder.apiValue,
+                    "pn" to page.toString(),
+                    "ps" to "20"
                 )
-                val root = requestJson(
-                    "https://api.bilibili.com/x/space/wbi/arc/search?$query"
+                if (submissionTid > 0L) parameters["tid"] = submissionTid.toString()
+                if (submissionKeyword.isNotBlank()) parameters["keyword"] = submissionKeyword.trim()
+                val query = signWbi(parameters)
+                val data = checkedData(
+                    requestJson("https://api.bilibili.com/x/space/wbi/arc/search?$query")
                 )
-                val data = checkedData(root)
                 val list = data.optJSONObject("list") ?: JSONObject()
                 val rows = list.optJSONArray("vlist") ?: JSONArray()
                 val count = data.optJSONObject("page")?.optLong("count") ?: rows.length().toLong()
-                val items = parseAccountItems(rows, "投稿")
+                val partitionJson = list.optJSONObject("tlist") ?: JSONObject()
+                val partitions = buildList {
+                    val keys = partitionJson.keys()
+                    while (keys.hasNext()) {
+                        val item = partitionJson.optJSONObject(keys.next()) ?: continue
+                        val tid = item.optLong("tid")
+                        val name = item.optString("name")
+                        if (tid > 0L && name.isNotBlank()) {
+                            add(BiliSubmissionPartition(tid, name, item.optInt("count")))
+                        }
+                    }
+                }.sortedBy { it.name }
                 BiliAccountLibraryPage(
-                    items = items,
+                    items = parseAccountItems(rows, "投稿"),
+                    partitions = partitions,
                     hasMore = (page * 20L) < count && rows.length() > 0
                 )
             }
@@ -417,9 +433,11 @@ class BiliRepository(
                 .ifBlank { item.optString("cover") }
                 .ifBlank { item.optString("cover_url") }
             val duration = item.optLong("duration")
+            val durationText = item.optString("length").takeIf { it.isNotBlank() }
             val detail = when {
                 item.optString("index_show").isNotBlank() -> item.optString("index_show")
                 item.optString("show_title").isNotBlank() -> item.optString("show_title")
+                durationText != null -> durationText
                 duration > 0L -> formatSearchDuration(duration.toInt())
                 else -> fallbackDetail
             }

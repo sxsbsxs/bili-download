@@ -8,6 +8,18 @@ enum class BiliAccountSection(val title: String) {
     FAVORITES("收藏夹")
 }
 
+enum class BiliSubmissionOrder(val title: String, val apiValue: String) {
+    LATEST("最新发布", "pubdate"),
+    MOST_PLAYED("最多播放", "click"),
+    MOST_FAVORITED("最多收藏", "stow")
+}
+
+data class BiliSubmissionPartition(
+    val tid: Long,
+    val name: String,
+    val count: Int
+)
+
 data class BiliAccountProfile(
     val mid: Long,
     val username: String,
@@ -39,6 +51,7 @@ data class BiliHistoryCursorState(
 data class BiliAccountLibraryPage(
     val items: List<BiliAccountLibraryItem> = emptyList(),
     val folders: List<BiliFavoriteFolder> = emptyList(),
+    val partitions: List<BiliSubmissionPartition> = emptyList(),
     val nextHistoryCursor: BiliHistoryCursorState? = null,
     val hasMore: Boolean = false
 )

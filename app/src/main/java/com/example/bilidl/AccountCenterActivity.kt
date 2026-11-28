@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.Gravity
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -29,6 +31,10 @@ class AccountCenterActivity : ComponentActivity() {
     private lateinit var loadMoreButton: TextView
     private lateinit var folderBackButton: TextView
     private lateinit var sectionButtons: List<TextView>
+    private lateinit var submissionControls: LinearLayout
+    private lateinit var submissionKeywordInput: EditText
+    private lateinit var submissionPartitionButton: TextView
+    private lateinit var submissionOrderButtons: List<TextView>
 
     private var profile: BiliAccountProfile? = null
     private var section = BiliAccountSection.WATCH_LATER
@@ -36,7 +42,12 @@ class AccountCenterActivity : ComponentActivity() {
     private var historyCursor: BiliHistoryCursorState? = null
     private var favoriteFolderId = 0L
     private var favoriteFolderTitle = ""
+    private var submissionOrder = BiliSubmissionOrder.LATEST
+    private var submissionTid = 0L
+    private var submissionKeyword = ""
+    private var submissionPartitions: List<BiliSubmissionPartition> = emptyList()
     private var isLoading = false
+    private var reloadAfterCurrent = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -132,6 +143,7 @@ class AccountCenterActivity : ComponentActivity() {
                         favoriteFolderTitle = ""
                         historyCursor = null
                         page = 1
+                        updateSubmissionControlsVisibility()
                         styleSectionButtons()
                         loadContent(reset = true)
                     }
@@ -143,6 +155,83 @@ class AccountCenterActivity : ComponentActivity() {
             }
         }
         root.addView(sectionRow)
+
+        submissionControls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), 0, dp(14), dp(8))
+            visibility = android.view.View.GONE
+        }
+        val submissionSearchRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        submissionKeywordInput = EditText(this).apply {
+            hint = "搜索我的投稿"
+            textSize = 13f
+            isSingleLine = true
+            imeOptions = EditorInfo.IME_ACTION_SEARCH
+            setTextColor(Color.rgb(40, 45, 54))
+            setHintTextColor(Color.rgb(135, 142, 154))
+            background = rounded(Color.WHITE, 10, Color.rgb(231, 234, 239))
+            setPadding(dp(12), 0, dp(12), 0)
+            setOnEditorActionListener { _, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_SEARCH) {
+                    runSubmissionSearch()
+                    true
+                } else false
+            }
+        }
+        submissionSearchRow.addView(
+            submissionKeywordInput,
+            LinearLayout.LayoutParams(0, dp(42), 1f)
+        )
+        submissionSearchRow.addView(
+            actionButton("搜索", false).apply {
+                setOnClickListener { runSubmissionSearch() }
+            },
+            LinearLayout.LayoutParams(dp(66), dp(42)).apply { leftMargin = dp(7) }
+        )
+        submissionControls.addView(submissionSearchRow)
+
+        val sortRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(7), 0, dp(6))
+        }
+        submissionOrderButtons = BiliSubmissionOrder.values().mapIndexed { index, value ->
+            TextView(this).apply {
+                text = value.title
+                textSize = 11f
+                gravity = Gravity.CENTER
+                setPadding(dp(5), dp(8), dp(5), dp(8))
+                setOnClickListener {
+                    if (submissionOrder != value) {
+                        submissionOrder = value
+                        styleSubmissionControls()
+                        loadContent(reset = true)
+                    }
+                }
+            }.also { button ->
+                sortRow.addView(button, LinearLayout.LayoutParams(0, dp(34), 1f).apply {
+                    if (index > 0) leftMargin = dp(6)
+                })
+            }
+        }
+        submissionControls.addView(sortRow)
+
+        submissionPartitionButton = TextView(this).apply {
+            text = "分区：全部  ▾"
+            textSize = 11f
+            gravity = Gravity.CENTER_VERTICAL
+            setTextColor(Color.rgb(90, 99, 113))
+            background = rounded(Color.WHITE, 9, Color.rgb(231, 234, 239))
+            setPadding(dp(11), 0, dp(11), 0)
+            setOnClickListener { showSubmissionPartitionPicker() }
+        }
+        submissionControls.addView(
+            submissionPartitionButton,
+            LinearLayout.LayoutParams(-1, dp(36))
+        )
+        root.addView(submissionControls)
 
         folderBackButton = TextView(this).apply {
             text = "‹  返回收藏夹"
@@ -184,7 +273,53 @@ class AccountCenterActivity : ComponentActivity() {
             topMargin = dp(4); bottomMargin = dp(12)
         })
         styleSectionButtons()
+        styleSubmissionControls()
+        updateSubmissionControlsVisibility()
         return root
+    }
+
+    private fun runSubmissionSearch() {
+        submissionKeyword = submissionKeywordInput.text?.toString()?.trim().orEmpty()
+        page = 1
+        loadContent(reset = true)
+    }
+
+    private fun showSubmissionPartitionPicker() {
+        val names = listOf("全部分区") + submissionPartitions.map { it.name }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("选择投稿分区")
+            .setItems(names.toTypedArray()) { _, which ->
+                submissionTid = if (which == 0) 0L else submissionPartitions[which - 1].tid
+                submissionPartitionButton.text =
+                    if (which == 0) "分区：全部  ▾" else "分区：${submissionPartitions[which - 1].name}  ▾"
+                loadContent(reset = true)
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun styleSubmissionControls() {
+        if (!::submissionOrderButtons.isInitialized) return
+        submissionOrderButtons.forEachIndexed { index, button ->
+            val selected = BiliSubmissionOrder.values()[index] == submissionOrder
+            button.background = rounded(
+                if (selected) Color.rgb(255, 235, 242) else Color.WHITE,
+                8,
+                if (selected) Color.rgb(255, 205, 221) else Color.rgb(231, 234, 239)
+            )
+            button.setTextColor(
+                if (selected) Color.rgb(218, 62, 106) else Color.rgb(96, 104, 117)
+            )
+            button.typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        }
+    }
+
+    private fun updateSubmissionControlsVisibility() {
+        if (::submissionControls.isInitialized) {
+            submissionControls.visibility =
+                if (section == BiliAccountSection.SUBMISSIONS) android.view.View.VISIBLE
+                else android.view.View.GONE
+        }
     }
 
     private fun loadProfile() {
@@ -211,35 +346,58 @@ class AccountCenterActivity : ComponentActivity() {
 
     private fun loadContent(reset: Boolean) {
         val account = profile ?: return
-        if (isLoading) return
+        if (isLoading) {
+            if (reset) reloadAfterCurrent = true
+            return
+        }
+        val requestedSection = section
         val requestedPage = if (reset) 1 else page + 1
         val requestedCursor = if (reset) null else historyCursor
+        val requestedFolderId = favoriteFolderId
+        val requestedSubmissionOrder = submissionOrder
+        val requestedSubmissionTid = submissionTid
+        val requestedSubmissionKeyword = submissionKeyword
         isLoading = true
         loadMoreButton.isEnabled = false
         statusText.text = when {
-            section == BiliAccountSection.FAVORITES && favoriteFolderId == 0L -> "正在读取收藏夹…"
-            section == BiliAccountSection.FAVORITES -> "正在读取「$favoriteFolderTitle」…"
-            else -> "正在读取" + section.title + "…"
+            requestedSection == BiliAccountSection.FAVORITES && requestedFolderId == 0L -> "正在读取收藏夹…"
+            requestedSection == BiliAccountSection.FAVORITES -> "正在读取「$favoriteFolderTitle」…"
+            else -> "正在读取" + requestedSection.title + "…"
         }
         dataExecutor.execute {
             try {
                 val data = repository.fetchAccountPage(
-                    section, account.mid, requestedPage, requestedCursor, favoriteFolderId
+                    section = requestedSection,
+                    mid = account.mid,
+                    page = requestedPage,
+                    historyCursor = requestedCursor,
+                    favoriteFolderId = requestedFolderId,
+                    submissionOrder = requestedSubmissionOrder,
+                    submissionTid = requestedSubmissionTid,
+                    submissionKeyword = requestedSubmissionKeyword
                 )
                 runOnUiThread {
                     isLoading = false
+                    loadMoreButton.isEnabled = true
+                    if (reloadAfterCurrent) {
+                        reloadAfterCurrent = false
+                        loadContent(reset = true)
+                        return@runOnUiThread
+                    }
                     page = requestedPage
                     historyCursor = data.nextHistoryCursor
-                    loadMoreButton.isEnabled = true
                     if (reset) contentList.removeAllViews()
-                    if (section == BiliAccountSection.FAVORITES && favoriteFolderId == 0L) {
+                    if (requestedSection == BiliAccountSection.SUBMISSIONS && data.partitions.isNotEmpty()) {
+                        submissionPartitions = data.partitions
+                    }
+                    if (requestedSection == BiliAccountSection.FAVORITES && requestedFolderId == 0L) {
                         data.folders.forEach(::addFavoriteFolder)
                         statusText.text = "收藏夹 · " + data.folders.size + " 个"
                     } else {
                         data.items.forEach(::addContentItem)
                         val total = contentList.childCount
                         statusText.text = if (total == 0) "这里还没有内容"
-                            else section.title + " · 已加载 " + total + " 条"
+                            else requestedSection.title + " · 已加载 " + total + " 条"
                     }
                     loadMoreButton.visibility =
                         if (data.hasMore) android.view.View.VISIBLE else android.view.View.GONE
@@ -247,16 +405,22 @@ class AccountCenterActivity : ComponentActivity() {
                         statusText.text = "暂无内容"
                     }
                     folderBackButton.visibility =
-                        if (section == BiliAccountSection.FAVORITES && favoriteFolderId > 0L) {
+                        if (requestedSection == BiliAccountSection.FAVORITES && requestedFolderId > 0L) {
                             android.view.View.VISIBLE
                         } else android.view.View.GONE
                 }
             } catch (error: Exception) {
                 runOnUiThread {
                     isLoading = false
+                    if (reloadAfterCurrent) {
+                        reloadAfterCurrent = false
+                        loadMoreButton.isEnabled = true
+                        loadContent(reset = true)
+                        return@runOnUiThread
+                    }
                     page = (requestedPage - 1).coerceAtLeast(0)
                     loadMoreButton.isEnabled = true
-                    statusText.text = error.message ?: "读取" + section.title + "失败"
+                    statusText.text = error.message ?: "读取" + requestedSection.title + "失败"
                     loadMoreButton.visibility =
                         if (contentList.childCount > 0) android.view.View.VISIBLE else android.view.View.GONE
                 }
