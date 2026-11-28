@@ -2983,7 +2983,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
 
     override fun cancelDownload(taskId: String) {
-        onPauseClicked(taskId)
+        removeDownload(taskId)
+        onDeleteClicked(taskId, false)
     }
 
     override fun deleteDownload(taskId: String, deleteSavedFile: Boolean) {
@@ -3017,6 +3018,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     override fun loadAccount(callback: (BiliVdlAccount) -> Unit) {
         val cookie = SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
         if (cookie.isNullOrBlank()) {
+            loggedIn = false
+            userName = ""
+            userVip = false
             callback(BiliVdlAccount("未登录", "尚未连接 B 站账号", false))
             return
         }
