@@ -1,6 +1,17 @@
 package com.example.bilidl
 
 import androidx.activity.ComponentActivity
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.MergingMediaSource
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
 import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.Context
@@ -69,34 +80,554 @@ class MainActivity : ComponentActivity() {
         const val ST_DONE = DownloadTaskStatus.COMPLETED
     }
 
-    // ===================== 真实业务接入 =====================
+    // ===================== 搜索、详情与播放 =====================
     private fun onParseClicked(text: String) {
         setBusy(parseBtn, true)
-        parseBtn.text = "解析中…"
+        parseBtn.text = "正在打开…"
         backgroundExecutor.execute {
             try {
                 val video = BiliRepository { SecureCookieStore.load(this) }.inspect(text)
                 runOnUiThread {
+                    setBusy(parseBtn, false)
+                    parseBtn.text = "搜索"
                     parsedVideo = video
                     selectedQualityId = preferredQualityId(video.qualities)
-                    val pageHint = if (video.pages.size > 1) {
-                        " · 共 " + video.pages.size + " P，点击选择或全部下载"
-                    } else {
-                        ""
-                    }
-                    showVideo(
-                        video.title,
-                        video.uploader,
-                        video.cover,
-                        "第 " + video.page + " P · " + formatDuration(video.durationSeconds) +
-                            " · " + video.qualities.size + " 种可用画质" + pageHint
-                    )
-                    homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
+                    showVideoDetail(video, null)
                 }
             } catch (error: Exception) {
-                showError(error.message ?: "解析失败，请检查网络后重试")
+                showError(error.message ?: "打开视频失败，请检查网络后重试")
             }
         }
+    }
+
+    private fun runHomeSearch() {
+        val query = input.text.toString().trim()
+        if (query.isBlank()) {
+            say("输入视频标题、UP主或关键词开始搜索", sub)
+            input.requestFocus()
+            return
+        }
+        val directTarget = normalizeBiliInput(query)
+        if (directTarget != null) {
+            onParseClicked(directTarget)
+            return
+        }
+        startVideoSearch(query, true)
+    }
+
+    private fun startVideoSearch(query: String, reset: Boolean) {
+        if (searchLoading) return
+        if (reset) {
+            searchKeyword = query
+            searchPage = 1
+            searchResults.clear()
+            canLoadMoreSearch = true
+            renderSearchResults()
+        } else if (!canLoadMoreSearch || searchKeyword.isBlank()) {
+            return
+        }
+
+        val requestedPage = if (reset) 1 else searchPage + 1
+        searchPage = requestedPage
+        searchLoading = true
+        val requestToken = ++searchRequestToken
+        setBusy(parseBtn, true)
+        parseBtn.text = "搜索中…"
+        say(if (reset) "正在搜索 B 站视频…" else "正在加载更多视频…", sub)
+
+        backgroundExecutor.execute {
+            try {
+                val results = BiliRepository { SecureCookieStore.load(this) }
+                    .searchVideos(query, requestedPage, searchOrder)
+                runOnUiThread {
+                    if (requestToken != searchRequestToken || isFinishing) return@runOnUiThread
+                    searchLoading = false
+                    setBusy(parseBtn, false)
+                    parseBtn.text = "搜索"
+                    if (reset) searchResults.clear()
+                    val known = searchResults.mapTo(HashSet()) { it.bvid }
+                    results.filter { known.add(it.bvid) }.forEach(searchResults::add)
+                    canLoadMoreSearch = results.size >= 20
+                    renderSearchResults()
+                    if (searchResults.isEmpty()) {
+                        say("没有找到相关视频，换个关键词试试", sub)
+                    } else {
+                        say("找到 " + searchResults.size + " 个视频", sub)
+                    }
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (requestToken != searchRequestToken || isFinishing) return@runOnUiThread
+                    searchLoading = false
+                    setBusy(parseBtn, false)
+                    parseBtn.text = "搜索"
+                    canLoadMoreSearch = false
+                    say(error.message ?: "搜索失败，请稍后重试", err)
+                    renderSearchResults()
+                }
+            }
+        }
+    }
+
+    private fun renderSearchResults() {
+        if (!::resultGrid.isInitialized) return
+        resultGrid.removeAllViews()
+        if (searchResults.isEmpty()) {
+            resultGrid.addView(TextView(this).apply {
+                text = if (searchLoading) "正在加载视频…" else "输入关键词，搜索 B 站视频"
+                textSize = 13f
+                setTextColor(sub)
+                gravity = Gravity.CENTER
+                setPadding(dp(12), dp(32), dp(12), dp(32))
+            }, LinearLayout.LayoutParams(match, wrap))
+            loadMoreButton.visibility = View.GONE
+            return
+        }
+
+        searchResults.chunked(2).forEach { pair ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.TOP
+            }
+            pair.forEachIndexed { index, item ->
+                val params = LinearLayout.LayoutParams(0, wrap, 1f).apply {
+                    if (index == 0) rightMargin = dp(6) else leftMargin = dp(6)
+                }
+                row.addView(buildSearchCard(item), params)
+            }
+            if (pair.size == 1) {
+                row.addView(View(this), LinearLayout.LayoutParams(0, wrap, 1f).apply {
+                    leftMargin = dp(6)
+                })
+            }
+            resultGrid.addView(row, LinearLayout.LayoutParams(match, wrap).apply {
+                bottomMargin = dp(12)
+            })
+        }
+        loadMoreButton.visibility = if (canLoadMoreSearch) View.VISIBLE else View.GONE
+        loadMoreButton.text = if (searchLoading) "加载中…" else "加载更多"
+        loadMoreButton.isEnabled = !searchLoading && canLoadMoreSearch
+    }
+
+    private fun buildSearchCard(item: BiliSearchVideo): View {
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = shape(Color.WHITE, 13)
+            clipToOutline = true
+            elevation = dp(1).toFloat()
+        }
+        val imageFrame = FrameLayout(this)
+        val cover = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = shape(Color.parseColor("#E8EAF0"), 0)
+            tag = item.coverUrl
+        }
+        imageFrame.addView(cover, FrameLayout.LayoutParams(match, dp(108)))
+        val duration = TextView(this).apply {
+            text = item.duration.ifBlank { "--:--" }
+            textSize = 10f
+            setTextColor(Color.WHITE)
+            setPadding(dp(5), dp(2), dp(5), dp(2))
+            background = shape(Color.parseColor("#B8000000"), 5)
+        }
+        imageFrame.addView(duration, FrameLayout.LayoutParams(wrap, wrap, Gravity.END or Gravity.BOTTOM).apply {
+            rightMargin = dp(6)
+            bottomMargin = dp(6)
+        })
+        root.addView(imageFrame, LinearLayout.LayoutParams(match, dp(108)))
+
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(9), dp(8), dp(9), dp(10))
+        }
+        body.addView(TextView(this).apply {
+            text = item.title
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            setLineSpacing(0f, 1.08f)
+        }, LinearLayout.LayoutParams(match, wrap))
+        body.addView(TextView(this).apply {
+            text = item.author
+            textSize = 11f
+            setTextColor(sub)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(6), 0, 0)
+        }, LinearLayout.LayoutParams(match, wrap))
+        body.addView(TextView(this).apply {
+            text = "播放 " + formatCount(item.viewCount) + "  ·  弹幕 " + formatCount(item.danmakuCount)
+            textSize = 10f
+            setTextColor(sub)
+            maxLines = 1
+            setPadding(0, dp(3), 0, 0)
+        }, LinearLayout.LayoutParams(match, wrap))
+        root.addView(body, LinearLayout.LayoutParams(match, wrap))
+        root.setOnClickListener { onSearchItemClicked(item) }
+        if (!item.coverUrl.isNullOrBlank()) {
+            imageExecutor.execute {
+                val bitmap = runCatching {
+                    BiliRepository().loadCoverImage(item.coverUrl)
+                }.getOrNull()
+                if (bitmap != null) runOnUiThread {
+                    if (!isFinishing && cover.tag == item.coverUrl) cover.setImageBitmap(bitmap)
+                }
+            }
+        }
+        return root
+    }
+
+    private fun onSearchItemClicked(item: BiliSearchVideo) {
+        val requestToken = ++detailLoadToken
+        say("正在加载视频详情…", sub)
+        backgroundExecutor.execute {
+            try {
+                val target = if (item.bvid.startsWith("av")) {
+                    "https://www.bilibili.com/video/" + item.bvid
+                } else {
+                    "https://www.bilibili.com/video/" + item.bvid
+                }
+                val video = BiliRepository { SecureCookieStore.load(this) }.inspect(target)
+                runOnUiThread {
+                    if (requestToken != detailLoadToken || isFinishing) return@runOnUiThread
+                    setBusy(parseBtn, false)
+                    parseBtn.text = "搜索"
+                    showVideoDetail(video, item)
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (requestToken != detailLoadToken || isFinishing) return@runOnUiThread
+                    say(error.message ?: "视频详情加载失败", err)
+                }
+            }
+        }
+    }
+
+    private fun showVideoDetail(video: BiliVideo, searchItem: BiliSearchVideo?) {
+        parsedVideo = video
+        selectedQualityId = preferredQualityId(video.qualities)
+        detailSearchItem = searchItem
+        currentPlayer?.release()
+        currentPlayer = null
+        detailPage?.let { rootFrame.removeView(it) }
+        mainContainer.visibility = View.GONE
+        val page = buildVideoDetailPage(video, searchItem)
+        detailPage = page
+        rootFrame.addView(page, FrameLayout.LayoutParams(match, match))
+        val playerView = detailPlayerView
+        val statusView = detailPlaybackStatus
+        if (playerView != null && statusView != null) {
+            startPlayback(video, playerView, statusView, true)
+        }
+    }
+
+    private fun buildVideoDetailPage(video: BiliVideo, searchItem: BiliSearchVideo?): View {
+        val page = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(bg)
+        }
+        val toolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            background = shape(Color.WHITE, 0)
+        }
+        toolbar.addView(TextView(this).apply {
+            text = "‹"
+            textSize = 32f
+            setTextColor(ink)
+            gravity = Gravity.CENTER
+            setOnClickListener { closeVideoDetail() }
+        }, LinearLayout.LayoutParams(dp(42), dp(48)))
+        toolbar.addView(TextView(this).apply {
+            text = "视频详情"
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }, LinearLayout.LayoutParams(0, wrap, 1f))
+        toolbar.addView(TextView(this).apply {
+            text = "BiliDl"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(pink)
+        })
+        page.addView(toolbar, LinearLayout.LayoutParams(match, dp(56)))
+
+        val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
+        val column = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, 0, 0, dp(26))
+        }
+        scroll.addView(column, LinearLayout.LayoutParams(match, wrap))
+        page.addView(scroll, LinearLayout.LayoutParams(match, 0, 1f))
+
+        val playerView = PlayerView(this).apply {
+            useController = true
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
+            setBackgroundColor(Color.BLACK)
+        }
+        detailPlayerView = playerView
+        column.addView(playerView, LinearLayout.LayoutParams(match, dp(218)))
+
+        val playbackStatus = TextView(this).apply {
+            text = "正在准备播放器…"
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            background = ColorDrawable(Color.WHITE)
+        }
+        detailPlaybackStatus = playbackStatus
+        column.addView(playbackStatus, LinearLayout.LayoutParams(match, wrap))
+
+        val info = card()
+        info.addView(TextView(this).apply {
+            text = video.title
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            setLineSpacing(0f, 1.15f)
+        }, LinearLayout.LayoutParams(match, wrap))
+
+        val author = TextView(this).apply {
+            text = "UP主  ·  " + video.uploader
+            textSize = 13f
+            setTextColor(sub)
+            setPadding(0, dp(9), 0, 0)
+        }
+        info.addView(author, LinearLayout.LayoutParams(match, wrap))
+
+        val views = if (video.viewCount > 0L) video.viewCount else searchItem?.viewCount ?: 0L
+        val danmaku = if (video.danmakuCount > 0L) video.danmakuCount else searchItem?.danmakuCount ?: 0L
+        val likes = if (video.likeCount > 0L) video.likeCount else searchItem?.likeCount ?: 0L
+        val favorites = if (video.favoriteCount > 0L) video.favoriteCount else searchItem?.favoriteCount ?: 0L
+        val comments = if (video.commentCount > 0L) video.commentCount else searchItem?.commentCount ?: 0L
+        info.addView(TextView(this).apply {
+            text = "播放 " + formatCount(views) + "  ·  弹幕 " + formatCount(danmaku) +
+                "  ·  评论 " + formatCount(comments)
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(0, dp(8), 0, 0)
+        }, LinearLayout.LayoutParams(match, wrap))
+        info.addView(TextView(this).apply {
+            text = "点赞 " + formatCount(likes) + "  ·  收藏 " + formatCount(favorites) +
+                "  ·  时长 " + formatDuration(video.durationSeconds)
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(0, dp(5), 0, 0)
+        }, LinearLayout.LayoutParams(match, wrap))
+
+        val published = if (video.publishTime > 0L) video.publishTime else searchItem?.publishTime ?: 0L
+        if (published > 0L) {
+            info.addView(TextView(this).apply {
+                text = "投稿时间  ·  " + formatPublishDate(published)
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(5), 0, 0)
+            }, LinearLayout.LayoutParams(match, wrap))
+        }
+
+        val description = video.description.ifBlank { searchItem?.description.orEmpty() }
+        if (description.isNotBlank()) {
+            info.addView(TextView(this).apply {
+                text = description
+                textSize = 13f
+                setTextColor(ink)
+                setLineSpacing(dp(3).toFloat(), 1.1f)
+                setPadding(0, dp(13), 0, 0)
+            }, LinearLayout.LayoutParams(match, wrap))
+        }
+        val tags = searchItem?.tags.orEmpty()
+        if (tags.isNotEmpty()) {
+            info.addView(TextView(this).apply {
+                text = "标签  ·  " + tags.joinToString("   ") { "#" + it }
+                textSize = 12f
+                setTextColor(pink)
+                setPadding(0, dp(12), 0, 0)
+            }, LinearLayout.LayoutParams(match, wrap))
+        }
+        val qualityRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = shape(field, 12)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        qualityRow.addView(TextView(this).apply {
+            text = "播放 / 下载画质"
+            textSize = 13f
+            setTextColor(ink)
+        }, LinearLayout.LayoutParams(0, wrap, 1f))
+        val qualityLabel = TextView(this).apply {
+            text = qualityLabelForSelection(video) + "  ▾"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(pink)
+        }
+        detailQualityLabel = qualityLabel
+        qualityRow.addView(qualityLabel)
+        qualityRow.setOnClickListener { showAvailableQualities() }
+        info.addView(qualityRow, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(16)
+        })
+
+        val actionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+        }
+        val downloadButton = pillButton("下载视频", true)
+        downloadButton.setOnClickListener { onDownloadClicked() }
+        actionRow.addView(downloadButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+            rightMargin = dp(6)
+        })
+        val pagesButton = pillButton(
+            if (video.pages.size > 1) "分P / 批量下载" else "加入下载",
+            false
+        )
+        pagesButton.setOnClickListener {
+            if (video.pages.size > 1) showAvailablePages() else onDownloadClicked()
+        }
+        actionRow.addView(pagesButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+            leftMargin = dp(6)
+        })
+        info.addView(actionRow, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(12)
+        })
+        column.addView(info, sideMargins(14).apply { topMargin = dp(14) })
+
+        val note = TextView(this).apply {
+            text = "播放地址实时向 B 站获取；能否播放和画质取决于该视频的公开状态及账号权限。"
+            textSize = 11f
+            setTextColor(sub)
+            setPadding(dp(20), dp(12), dp(20), 0)
+        }
+        column.addView(note, LinearLayout.LayoutParams(match, wrap))
+        return page
+    }
+
+    private fun startPlayback(
+        video: BiliVideo,
+        playerView: PlayerView,
+        statusView: TextView,
+        autoPlay: Boolean
+    ) {
+        val requestToken = ++playerRequestToken
+        currentPlayer?.release()
+        currentPlayer = null
+        playerView.player = null
+        statusView.text = "正在向 B 站获取播放地址…"
+
+        backgroundExecutor.execute {
+            try {
+                val cookie = SecureCookieStore.load(this)
+                val source = BiliRepository { cookie }.getPlaySource(video, selectedQualityId)
+                runOnUiThread {
+                    if (requestToken != playerRequestToken || detailPlayerView !== playerView || detailPage == null) {
+                        return@runOnUiThread
+                    }
+                    val headers = HashMap<String, String>().apply {
+                        put("Referer", "https://www.bilibili.com/")
+                        put("Origin", "https://www.bilibili.com")
+                        if (!cookie.isNullOrBlank()) put("Cookie", "SESSDATA=" + cookie)
+                    }
+                    val dataSourceFactory = DefaultHttpDataSource.Factory()
+                        .setUserAgent("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36")
+                        .setAllowCrossProtocolRedirects(true)
+                        .setDefaultRequestProperties(headers)
+                    val progressiveFactory = ProgressiveMediaSource.Factory(dataSourceFactory)
+                    val mediaSource: MediaSource = when {
+                        source.videoUrls.isNotEmpty() -> {
+                            val videoItem = MediaItem.Builder()
+                                .setUri(source.videoUrls.first())
+                                .setMimeType(MimeTypes.VIDEO_MP4)
+                                .build()
+                            val videoSource = progressiveFactory.createMediaSource(videoItem)
+                            val audioUrl = source.audioUrls.firstOrNull()
+                            if (audioUrl.isNullOrBlank()) {
+                                videoSource
+                            } else {
+                                val audioItem = MediaItem.Builder()
+                                    .setUri(audioUrl)
+                                    .setMimeType(MimeTypes.AUDIO_MP4)
+                                    .build()
+                                val audioSource = progressiveFactory.createMediaSource(audioItem)
+                                MergingMediaSource(videoSource, audioSource)
+                            }
+                        }
+                        source.directUrls.isNotEmpty() -> {
+                            progressiveFactory.createMediaSource(
+                                MediaItem.Builder()
+                                    .setUri(source.directUrls.first())
+                                    .setMimeType(MimeTypes.VIDEO_MP4)
+                                    .build()
+                            )
+                        }
+                        else -> throw IOException("B 站没有返回可播放的视频流")
+                    }
+
+                    val player = ExoPlayer.Builder(this).build()
+                    currentPlayer = player
+                    playerView.player = player
+                    player.addListener(object : Player.Listener {
+                        override fun onPlaybackStateChanged(playbackState: Int) {
+                            statusView.text = when (playbackState) {
+                                Player.STATE_BUFFERING -> "正在缓冲视频…"
+                                Player.STATE_READY -> "正在播放 · " + qualityLabelForSelection(video)
+                                Player.STATE_ENDED -> "播放结束"
+                                else -> statusView.text
+                            }
+                        }
+
+                        override fun onPlayerError(error: PlaybackException) {
+                            statusView.text = "播放失败：" + error.errorCodeName +
+                                "。可重新进入视频或切换可用画质。"
+                        }
+                    })
+                    player.setMediaSource(mediaSource)
+                    player.prepare()
+                    player.playWhenReady = autoPlay
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (requestToken == playerRequestToken && detailPlayerView === playerView) {
+                        statusView.text = error.message ?: "获取播放地址失败，请检查网络或账号权限"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun closeVideoDetail() {
+        detailLoadToken++
+        playerRequestToken++
+        currentPlayer?.release()
+        currentPlayer = null
+        detailPlayerView?.player = null
+        detailPlayerView = null
+        detailPlaybackStatus = null
+        detailQualityLabel = null
+        detailPage?.let { rootFrame.removeView(it) }
+        detailPage = null
+        detailSearchItem = null
+        if (::mainContainer.isInitialized) {
+            mainContainer.visibility = View.VISIBLE
+            selectTab(0)
+        }
+    }
+
+    private fun formatCount(value: Long): String {
+        val count = value.coerceAtLeast(0L)
+        return when {
+            count >= 100_000_000L -> String.format(java.util.Locale.getDefault(), "%.1f亿", count / 100_000_000.0)
+            count >= 10_000L -> String.format(java.util.Locale.getDefault(), "%.1f万", count / 10_000.0)
+            else -> count.toString()
+        }
+    }
+
+    private fun formatPublishDate(timestamp: Long): String {
+        return runCatching {
+            java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                .format(java.util.Date(timestamp * 1000L))
+        }.getOrDefault("")
     }
 
     private fun onDownloadClicked() {
@@ -117,6 +648,7 @@ class MainActivity : ComponentActivity() {
         persistDownloadSpec(id, spec)
         addDownload(id, video.title, video.cover)
         enqueueDownload(id, spec)
+        closeVideoDetail()
         selectTab(1)
         toast("已加入下载任务")
     }
@@ -701,7 +1233,10 @@ class MainActivity : ComponentActivity() {
                     addDownload(id, spec.video.title, spec.video.cover)
                     enqueueDownload(id, spec)
                 }
-                if (prepared.isNotEmpty()) selectTab(1)
+                if (prepared.isNotEmpty()) {
+                    closeVideoDetail()
+                    selectTab(1)
+                }
                 val message = buildString {
                     append("已加入 ")
                     append(prepared.size)
@@ -728,7 +1263,13 @@ class MainActivity : ComponentActivity() {
             .setSingleChoiceItems(labels, selected) { dialog, which ->
                 selectedQualityId = video.qualities[which].id
                 homeQualityTv.text = video.qualities[which].label + "  ›"
+                detailQualityLabel?.text = video.qualities[which].label + "  ▾"
                 dialog.dismiss()
+                val activePlayerView = detailPlayerView
+                val activeStatus = detailPlaybackStatus
+                if (activePlayerView != null && activeStatus != null) {
+                    startPlayback(video, activePlayerView, activeStatus, true)
+                }
             }
             .setNegativeButton("取消", null)
             .show()
@@ -858,6 +1399,27 @@ class MainActivity : ComponentActivity() {
     // ---------------- 状态 ----------------
     private lateinit var prefs: SharedPreferences
     private lateinit var pages: List<View>
+    private lateinit var rootFrame: FrameLayout
+    private lateinit var mainContainer: LinearLayout
+    private var detailPage: View? = null
+    private var detailPlayerView: PlayerView? = null
+    private var detailPlaybackStatus: TextView? = null
+    private var detailQualityLabel: TextView? = null
+    private var currentPlayer: ExoPlayer? = null
+    private var playerRequestToken = 0
+    private var detailLoadToken = 0
+    private var detailSearchItem: BiliSearchVideo? = null
+    private val imageExecutor = Executors.newFixedThreadPool(3)
+    private val searchResults = ArrayList<BiliSearchVideo>()
+    private var searchKeyword = ""
+    private var searchPage = 1
+    private var searchOrder = "totalrank"
+    private var searchLoading = false
+    private var searchRequestToken = 0
+    private var canLoadMoreSearch = false
+    private lateinit var resultGrid: LinearLayout
+    private lateinit var loadMoreButton: TextView
+    private lateinit var searchSortLabels: List<TextView>
     private val tabIcon = ArrayList<TextView>()
     private val tabText = ArrayList<TextView>()
 
@@ -1135,14 +1697,14 @@ class MainActivity : ComponentActivity() {
         window.decorView.systemUiVisibility =
             View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
 
-        val rootFrame = FrameLayout(this)
-        val main = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        rootFrame = FrameLayout(this)
+        mainContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val content = FrameLayout(this)
         pages = listOf(buildHome(), buildDownloads(), buildSettings())
         pages.forEach { content.addView(it, FrameLayout.LayoutParams(match, match)) }
-        main.addView(content, LinearLayout.LayoutParams(match, 0, 1f))
-        main.addView(buildNavBar(), LinearLayout.LayoutParams(match, dp(62)))
-        rootFrame.addView(main, FrameLayout.LayoutParams(match, match))
+        mainContainer.addView(content, LinearLayout.LayoutParams(match, 0, 1f))
+        mainContainer.addView(buildNavBar(), LinearLayout.LayoutParams(match, dp(62)))
+        rootFrame.addView(mainContainer, FrameLayout.LayoutParams(match, match))
 
         loginPage = buildLogin()
         loginPage.visibility = View.GONE
@@ -1170,11 +1732,19 @@ class MainActivity : ComponentActivity() {
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        if (loginPage.visibility == View.VISIBLE) hideLogin() else super.onBackPressed()
+        when {
+            loginPage.visibility == View.VISIBLE -> hideLogin()
+            detailPage != null -> closeVideoDetail()
+            else -> super.onBackPressed()
+        }
     }
 
     override fun onDestroy() {
         stopQrLogin()
+        playerRequestToken++
+        currentPlayer?.release()
+        currentPlayer = null
+        imageExecutor.shutdownNow()
         backgroundExecutor.shutdownNow()
         super.onDestroy()
     }
@@ -1237,154 +1807,141 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun buildHome(): View {
-        val scroll = ScrollView(this).apply { setBackgroundColor(bg); isVerticalScrollBarEnabled = false }
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(bg)
+            isVerticalScrollBarEnabled = false
+        }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(col, match, wrap)
-        col.addView(header("B站下载器", "简单、清晰的 Bilibili 视频保存工具", 56), match, wrap)
+        col.addView(header("BiliDl", "搜索 B 站视频，点开即可查看详情与播放", 34), match, wrap)
 
-        val inputCard = card()
-        input = EditText(this).apply {
-            hint = "粘贴 B站链接、BV / av / ep / ss 号"
-            setHintTextColor(sub)
-            setTextColor(ink)
-            textSize = 15f
-            minLines = 3
-            maxLines = 5
-            gravity = Gravity.TOP
-            background = shape(field, 14)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-            setSelectAllOnFocus(false)
-        }
+        // Keep the old result widgets initialized for compatibility with existing UI callbacks.
+        resultCard = card()
+        coverIv = ImageView(this)
+        titleTv = TextView(this)
+        upTv = TextView(this)
+        metaTv = TextView(this)
+        homeQualityTv = TextView(this)
+        dlBtn = pillButton("下载视频", true)
 
-        val pasteBtn = pillButton("粘贴", false)
-        val clearBtn = pillButton("清空", false)
-        parseBtn = pillButton("解析", true)
-        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        btnRow.addView(pasteBtn, LinearLayout.LayoutParams(0, dp(48), 1f).apply { rightMargin = dp(8) })
-        btnRow.addView(clearBtn, LinearLayout.LayoutParams(0, dp(48), 0.9f).apply { rightMargin = dp(8) })
-        btnRow.addView(parseBtn, LinearLayout.LayoutParams(0, dp(48), 1.2f))
-        inputCard.addView(input, match, wrap)
-        inputCard.addView(btnRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(14) })
-        inputCard.addView(TextView(this).apply {
-            text = "支持视频 BV / av、番剧 ep / ss，以及 b23.tv 分享短链接"
-            textSize = 12f
-            setTextColor(sub)
-            setPadding(dp(2), dp(10), dp(2), 0)
-        }, match, wrap)
-        col.addView(inputCard, sideMargins().apply { topMargin = -dp(32) })
-
-        val tip = LinearLayout(this).apply {
+        val searchCard = card()
+        val searchRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = shape(Color.parseColor("#FFF3F6"), 16)
-            setPadding(dp(16), dp(10), dp(10), dp(10))
         }
-        tip.addView(TextView(this).apply {
-            text = "登录可能影响可选画质；最终以视频实际提供的清晰度为准"
-            textSize = 12f
-            setTextColor(Color.parseColor("#A83F62"))
-        }, LinearLayout.LayoutParams(0, wrap, 1f))
-        val goLogin = chip("账号登录", true)
-        goLogin.setOnClickListener { showLogin() }
-        tip.addView(goLogin)
-        loginTip = tip
-        col.addView(tip, sideMargins(16))
+        input = EditText(this).apply {
+            hint = "搜索视频标题、UP主或关键词"
+            setHintTextColor(sub)
+            setTextColor(ink)
+            textSize = 14f
+            isSingleLine = true
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH
+            inputType = android.text.InputType.TYPE_CLASS_TEXT
+            background = shape(field, 14)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+        }
+        val pasteButton = chip("粘贴", false)
+        parseBtn = pillButton("搜索", true)
+        searchRow.addView(input, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+            rightMargin = dp(6)
+        })
+        searchRow.addView(pasteButton, LinearLayout.LayoutParams(wrap, dp(44)).apply {
+            rightMargin = dp(6)
+        })
+        searchRow.addView(parseBtn, LinearLayout.LayoutParams(dp(70), dp(44)))
+        searchCard.addView(searchRow, LinearLayout.LayoutParams(match, wrap))
+        col.addView(searchCard, sideMargins().apply { topMargin = -dp(20) })
 
-        resultCard = card().apply { visibility = View.GONE }
-        coverIv = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            background = shape(Color.parseColor("#E8EAF0"), 14)
-            clipToOutline = true
+        loginTip = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(4), dp(3), dp(4), dp(3))
         }
-        titleTv = TextView(this).apply {
+        (loginTip as LinearLayout).addView(TextView(this).apply {
+            text = "登录后可按账号权限获取更多画质"
+            textSize = 11f
+            setTextColor(sub)
+        }, LinearLayout.LayoutParams(0, wrap, 1f))
+        (loginTip as LinearLayout).addView(chip("账号登录", true).apply {
+            setOnClickListener { showLogin() }
+        })
+        col.addView(loginTip, sideMargins(12))
+
+        val sectionTitle = TextView(this).apply {
+            text = "视频"
             textSize = 17f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(ink)
-            setLineSpacing(0f, 1.15f)
+            setPadding(dp(2), dp(16), dp(2), dp(8))
         }
-        upTv = TextView(this).apply { textSize = 13f; setTextColor(sub) }
-        metaTv = TextView(this).apply { textSize = 12f; setTextColor(sub) }
+        col.addView(sectionTitle, sideMargins(14))
 
-        val qualityRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = shape(field, 12)
-            setPadding(dp(14), 0, dp(14), 0)
+        val (sortBox, sortLabels) = buildSegmented(listOf("综合", "最多播放", "最新发布")) { index ->
+            searchOrder = when (index) {
+                1 -> "click"
+                2 -> "pubdate"
+                else -> "totalrank"
+            }
+            styleSegs(searchSortLabels, index)
+            if (searchKeyword.isNotBlank()) startVideoSearch(searchKeyword, true)
         }
-        qualityRow.addView(TextView(this).apply {
-            text = "优先画质"; textSize = 14f; setTextColor(ink)
-        }, LinearLayout.LayoutParams(0, wrap, 1f))
-        homeQualityTv = TextView(this).apply {
-            textSize = 14f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(pink)
-            text = qualityText()
-        }
-        qualityRow.addView(homeQualityTv)
-        qualityRow.setOnClickListener { showAvailableQualities() }
-
-        dlBtn = pillButton("加入下载任务", true)
-        dlBtn.setOnClickListener {
-            onDownloadClicked()
-        }
-
-        resultCard.addView(coverIv, LinearLayout.LayoutParams(match, dp(190)))
-        resultCard.addView(titleTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(14) })
-        resultCard.addView(upTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(4) })
-        resultCard.addView(metaTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(2) })
-        resultCard.addView(qualityRow, LinearLayout.LayoutParams(match, dp(46)).apply { topMargin = dp(14) })
-        resultCard.addView(dlBtn, LinearLayout.LayoutParams(match, dp(50)).apply { topMargin = dp(12) })
-        col.addView(resultCard, sideMargins())
+        searchSortLabels = sortLabels
+        styleSegs(searchSortLabels, 0)
+        col.addView(sortBox, sideMargins(12))
 
         statusTv = TextView(this).apply {
-            textSize = 14f
+            textSize = 12f
             gravity = Gravity.CENTER
             visibility = View.GONE
+            setPadding(dp(8), dp(8), dp(8), dp(8))
         }
-        col.addView(statusTv, LinearLayout.LayoutParams(match, wrap).apply {
-            topMargin = dp(16); leftMargin = dp(24); rightMargin = dp(24); bottomMargin = dp(32)
-        })
+        col.addView(statusTv, sideMargins(12))
 
-        pasteBtn.setOnClickListener {
-            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val t = cm.primaryClip?.takeIf { it.itemCount > 0 }
+        resultGrid = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        col.addView(resultGrid, sideMargins(12))
+        loadMoreButton = TextView(this).apply {
+            text = "加载更多"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(pink)
+            background = shape(Color.WHITE, 14)
+            setPadding(dp(16), dp(13), dp(16), dp(13))
+            visibility = View.GONE
+            setOnClickListener {
+                if (canLoadMoreSearch && !searchLoading) {
+                    startVideoSearch(searchKeyword, false)
+                }
+            }
+        }
+        col.addView(loadMoreButton, sideMargins(12).apply {
+            topMargin = dp(2)
+            bottomMargin = dp(24)
+        })
+        renderSearchResults()
+
+        pasteButton.setOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val value = clipboard.primaryClip?.takeIf { it.itemCount > 0 }
                 ?.getItemAt(0)?.coerceToText(this)?.toString()
-            if (t.isNullOrBlank()) {
+            if (value.isNullOrBlank()) {
                 say("剪贴板是空的", sub)
             } else {
-                input.setText(t)
+                input.setText(value)
                 input.setSelection(input.text.length)
-                resultCard.visibility = View.GONE
-                say("已粘贴剪贴板内容，点击解析继续", sub)
+                runHomeSearch()
             }
         }
-        clearBtn.setOnClickListener {
-            input.setText("")
-            resultCard.visibility = View.GONE
-            say("", sub)
-            input.requestFocus()
-        }
-        input.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                if (resultCard.visibility == View.VISIBLE) resultCard.visibility = View.GONE
-                if (!s.isNullOrBlank()) say("", sub)
+        parseBtn.setOnClickListener { runHomeSearch() }
+        input.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH) {
+                runHomeSearch()
+                true
+            } else {
+                false
             }
-            override fun afterTextChanged(s: android.text.Editable?) {}
-        })
-        parseBtn.setOnClickListener {
-            val target = normalizeBiliInput(input.text.toString())
-            if (target == null) {
-                say("请粘贴有效的 B站链接，或输入 BV / av / ep / ss 编号", err)
-                return@setOnClickListener
-            }
-            input.setText(target)
-            input.setSelection(input.text.length)
-            setBusy(parseBtn, true)
-            parseBtn.text = "解析中…"
-            resultCard.visibility = View.GONE
-            say("", sub)
-            onParseClicked(target)
         }
         return scroll
     }
