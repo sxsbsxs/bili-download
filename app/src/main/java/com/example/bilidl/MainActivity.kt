@@ -34,6 +34,7 @@ import android.app.ProgressDialog
 import android.os.Build
 import android.provider.Settings
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.documentfile.provider.DocumentFile
 import androidx.core.content.FileProvider
 import java.io.File
 import android.content.ClipboardManager
@@ -2863,7 +2864,53 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         if (key == "quality") refreshQuality()
     }
     private fun onChoosePathClicked() {
-        toast("视频保存位置：Download/BiliDl")
+        AlertDialog.Builder(this)
+            .setTitle("下载保存位置")
+            .setItems(arrayOf("选择文件夹…", "恢复默认目录（Download/BiliDl）")) { _, which ->
+                when (which) {
+                    0 -> downloadDirectoryPicker.launch(null)
+                    1 -> {
+                        prefs.edit()
+                            .remove("download_tree_uri")
+                            .remove("download_tree_label")
+                            .apply()
+                        refreshVisibleProfileSettings()
+                        toast("已恢复默认保存位置：Download/BiliDl")
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun handleDownloadDirectoryResult(uri: Uri?) {
+        if (uri == null) return
+        try {
+            val directory = DocumentFile.fromTreeUri(this, uri)
+                ?: throw IOException("无法读取所选文件夹")
+            if (!directory.isDirectory || !directory.canWrite()) {
+                throw IOException("所选位置不是可写文件夹")
+            }
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            val label = directory.name?.takeIf { it.isNotBlank() } ?: "自定义文件夹"
+            prefs.edit()
+                .putString("download_tree_uri", uri.toString())
+                .putString("download_tree_label", label)
+                .apply()
+            refreshVisibleProfileSettings()
+            toast("保存位置已更新：$label")
+        } catch (error: Exception) {
+            toast("无法使用这个文件夹：" + (error.message ?: "授权失败，请重新选择"))
+        }
+    }
+
+    private fun refreshVisibleProfileSettings() {
+        supportFragmentManager.fragments
+            .filterIsInstance<ProfileFragment>()
+            .forEach { it.refreshSettings() }
     }
 
     private fun onClearCacheClicked() {
@@ -3500,6 +3547,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 Toast.makeText(this, "未获得安装授权，更新包仍保留在缓存中。", Toast.LENGTH_LONG).show()
             }
         }
+
+    private val downloadDirectoryPicker =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            handleDownloadDirectoryResult(uri)
+        }
+
     private lateinit var pages: List<View>
     private lateinit var rootFrame: FrameLayout
     private lateinit var mainContainer: LinearLayout
@@ -3907,6 +3960,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         showDanmakuDisplaySettings()
     }
 
+    override fun chooseDownloadDirectory() {
+        onChoosePathClicked()
+    }
+
     override fun navigateToDiscover() {
         supportFragmentManager.beginTransaction()
             .setReorderingAllowed(true)
@@ -4026,7 +4083,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             downloadDanmaku = prefs.getBoolean("danmaku", false),
             downloadSubtitles = prefs.getBoolean("subtitles", false),
             audioOnly = prefs.getBoolean("audio_only", false),
-            downloadPath = "Download/BiliDl",
+            downloadPath = prefs.getString("download_tree_label", "Download/BiliDl")
+                ?.takeIf { it.isNotBlank() } ?: "Download/BiliDl",
             batchQualityMismatchIndex = prefs.getInt("batch_quality_mismatch", 0)
                 .coerceIn(0, BatchQualityMismatchMode.values().lastIndex)
         )
