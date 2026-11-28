@@ -4,6 +4,9 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
+val configuredVersionName = providers.gradleProperty("appVersionName").orElse("1.2.0").get()
+val configuredVersionCode = providers.gradleProperty("appVersionCode").orElse("10200").get().toInt()
+
 android {
     namespace = "com.example.bilidl"
     compileSdk = 36
@@ -13,8 +16,8 @@ android {
         applicationId = "com.example.bilidl"
         minSdk = 29
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.2.0"
+        versionCode = configuredVersionCode
+        versionName = configuredVersionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
