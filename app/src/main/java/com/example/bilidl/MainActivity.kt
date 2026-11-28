@@ -74,6 +74,7 @@ class MainActivity : ComponentActivity() {
             refreshQr()
         }
     }
+    private var activeQrLoginUrl: String? = null
     private var downloadSourceHostValue: TextView? = null
     private val downloadSourceModeIndicators = mutableMapOf<Int, TextView>()
     private var downloadSourceCustomContent: View? = null
@@ -573,13 +574,15 @@ class MainActivity : ComponentActivity() {
                     LoginUiState.Idle,
                     LoginUiState.CheckingSession -> Unit
                     LoginUiState.RequestingQr -> {
+                        activeQrLoginUrl = null
+                        qrLoginLinkTv.visibility = View.GONE
                         qrIv.setImageDrawable(null)
                         qrOverlay.text = "正在申请二维码…"
                         qrOverlay.visibility = View.VISIBLE
                         setQrStatus("正在连接 B站登录服务…")
                     }
                     is LoginUiState.QrReady -> {
-                        showQrCode(state.bitmap)
+                        showQrCode(state.bitmap, state.url)
                         setQrStatus("请使用哔哩哔哩 App 扫描二维码")
                     }
                     LoginUiState.Scanned ->
@@ -826,9 +829,11 @@ class MainActivity : ComponentActivity() {
         refreshDownloadList()
     }
 
-    fun showQrCode(bmp: Bitmap) = runOnUiThread {
+    fun showQrCode(bmp: Bitmap, qrUrl: String) = runOnUiThread {
         qrIv.setImageBitmap(bmp)
         qrOverlay.visibility = View.GONE
+        activeQrLoginUrl = qrUrl
+        qrLoginLinkTv.visibility = View.VISIBLE
         setQrStatus("请使用哔哩哔哩 App 扫码")
     }
 
@@ -838,6 +843,8 @@ class MainActivity : ComponentActivity() {
     }
 
     fun showQrExpired() = runOnUiThread {
+        activeQrLoginUrl = null
+        qrLoginLinkTv.visibility = View.GONE
         qrOverlay.text = "二维码已过期\n点击刷新"
         qrOverlay.visibility = View.VISIBLE
         setQrStatus("二维码已过期，请刷新", true)
@@ -972,6 +979,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var qrIv: ImageView
     private lateinit var qrOverlay: TextView
     private lateinit var qrStatusTv: TextView
+    private lateinit var qrLoginLinkTv: TextView
     private lateinit var cookieInput: EditText
     private lateinit var cookieBtn: Button
     private lateinit var cookieErrTv: TextView
@@ -2332,6 +2340,20 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER
         }
         qrPanel.addView(qrStatusTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(16) })
+        qrLoginLinkTv = TextView(this).apply {
+            text = "或者点击此处，跳转哔哩哔哩 App 登录"
+            textSize = 13f
+            setTextColor(pink)
+            gravity = Gravity.CENTER
+            paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG
+            visibility = View.GONE
+            contentDescription = "使用哔哩哔哩 App 完成二维码登录"
+            setPadding(0, dp(8), 0, dp(4))
+            setOnClickListener { openQrLoginInBilibiliApp() }
+        }
+        qrPanel.addView(qrLoginLinkTv, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(4)
+        })
         val refreshBtn = pillButton("刷新二维码", false)
         refreshBtn.setOnClickListener { refreshQr() }
         qrPanel.addView(refreshBtn, LinearLayout.LayoutParams(match, dp(46)).apply { topMargin = dp(14) })
@@ -2420,6 +2442,24 @@ class MainActivity : ComponentActivity() {
     private fun openBilibiliPasswordLogin() {
         stopQrLogin()
         webLoginLauncher.launch(Intent(this, BiliWebLoginActivity::class.java))
+    }
+
+    /**
+     * BVD opens the generated QR URL through Android's normal URL handler.
+     * If the installed Bilibili App claims this URL, it handles authorization.
+     * Keep polling active while that app is in the foreground.
+     */
+    private fun openQrLoginInBilibiliApp() {
+        val url = activeQrLoginUrl
+        if (url.isNullOrBlank() || !BiliQrAppLoginPolicy.isTrustedQrUrl(url)) {
+            toast("二维码登录链接无效，请刷新二维码")
+            return
+        }
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: android.content.ActivityNotFoundException) {
+            toast("未找到可以打开 B站登录链接的应用")
+        }
     }
 
     private fun refreshQr() {
