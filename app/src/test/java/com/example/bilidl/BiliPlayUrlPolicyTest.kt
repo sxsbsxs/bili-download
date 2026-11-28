@@ -6,7 +6,26 @@ import org.junit.Test
 
 class BiliPlayUrlPolicyTest {
     @Test
-    fun anonymousPlaybackRequestsIncludeTryLook() {
+    fun publicPlayUrlUsesBilimiaoCompatibleParameters() {
+        val params = BiliPlayUrlPolicy.publicPlayUrlParameters(
+            aid = 123456L,
+            cid = 654321L,
+            quality = 80
+        )
+
+        assertEquals("123456", params["avid"])
+        assertEquals("654321", params["cid"])
+        assertEquals("80", params["qn"])
+        assertEquals("4048", params["fnval"])
+        assertEquals("0", params["fnver"])
+        assertEquals("2", params["force_host"])
+        assertEquals("", params["type"])
+        assertEquals("json", params["otype"])
+        assertEquals("1", params["fourk"])
+    }
+
+    @Test
+    fun anonymousWbiPlaybackRequestsIncludeTryLook() {
         val params = mutableMapOf("bvid" to "BV1xx", "qn" to "80")
 
         BiliPlayUrlPolicy.applyTryLook(params, hasSessionCookie = false)
@@ -16,7 +35,7 @@ class BiliPlayUrlPolicyTest {
     }
 
     @Test
-    fun authenticatedPlaybackDoesNotIncludeTryLook() {
+    fun authenticatedWbiPlaybackDoesNotIncludeTryLook() {
         val params = mutableMapOf(
             "bvid" to "BV1xx",
             "qn" to "80",
