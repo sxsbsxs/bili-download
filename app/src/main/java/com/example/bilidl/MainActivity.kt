@@ -1,8 +1,10 @@
 package com.example.bilidl
 
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
+import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.Context
@@ -62,6 +64,16 @@ class MainActivity : ComponentActivity() {
     private val downloadsViewModel: DownloadsViewModel by viewModels()
     private val loginViewModel: LoginViewModel by viewModels()
     private val settingsViewModel: SettingsViewModel by viewModels()
+    private val webLoginLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val cookieHeader = result.data?.getStringExtra(BiliWebLoginActivity.EXTRA_COOKIE_HEADER)
+        if (result.resultCode == Activity.RESULT_OK && !cookieHeader.isNullOrBlank()) {
+            onCookieLogin(cookieHeader)
+        } else if (loginPage.visibility == View.VISIBLE && activeLoginSegment == 0) {
+            refreshQr()
+        }
+    }
     private var downloadSourceHostValue: TextView? = null
     private val downloadSourceModeIndicators = mutableMapOf<Int, TextView>()
     private var downloadSourceCustomContent: View? = null
@@ -606,8 +618,8 @@ class MainActivity : ComponentActivity() {
         loginViewModel.stopQrLogin()
     }
 
-    private fun onCookieLogin(sessdata: String) {
-        loginViewModel.loginWithSessdata(sessdata)
+    private fun onCookieLogin(cookieHeader: String) {
+        loginViewModel.loginWithCookie(cookieHeader)
     }
 
     private fun onLogoutClicked() {
@@ -2273,13 +2285,13 @@ class MainActivity : ComponentActivity() {
                 orientation = LinearLayout.VERTICAL
             }
             labels.addView(TextView(this@MainActivity).apply {
-                text = "打开哔哩哔哩 App 登录"
+                text = "账号密码登录"
                 textSize = 14f
                 typeface = Typeface.DEFAULT_BOLD
                 setTextColor(ink)
             })
             labels.addView(TextView(this@MainActivity).apply {
-                text = "跳转到 B站 App 原生登录页；登录后返回本页扫码授权"
+                text = "进入 B站官方登录页，完成后自动返回并验证授权"
                 textSize = 12f
                 setTextColor(sub)
                 setPadding(0, dp(3), 0, 0)
@@ -2290,7 +2302,7 @@ class MainActivity : ComponentActivity() {
                 textSize = 24f
                 setTextColor(sub)
             })
-            setOnClickListener { openBilibiliAppLogin() }
+            setOnClickListener { openBilibiliPasswordLogin() }
         }
         qrPanel.addView(nativeLoginEntry, LinearLayout.LayoutParams(match, wrap).apply {
             bottomMargin = dp(16)
@@ -2401,20 +2413,12 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Open Bilibili's native login route. After signing in there, return here
-     * and scan the QR code below so BiliDl receives its own session cookie.
+     * Open the same official Passport H5 page used by BVD. The WebView returns
+     * the full cookie header; LoginViewModel verifies it before saving.
      */
-    private fun openBilibiliAppLogin() {
-        val intent = Intent(
-            Intent.ACTION_VIEW,
-            Uri.parse(BiliNativeLoginPolicy.LOGIN_URI)
-        ).setPackage(BiliNativeLoginPolicy.PACKAGE_NAME)
-
-        try {
-            startActivity(intent)
-        } catch (_: android.content.ActivityNotFoundException) {
-            toast("没有找到官方哔哩哔哩 App，请先安装后再试")
-        }
+    private fun openBilibiliPasswordLogin() {
+        stopQrLogin()
+        webLoginLauncher.launch(Intent(this, BiliWebLoginActivity::class.java))
     }
 
     private fun refreshQr() {
