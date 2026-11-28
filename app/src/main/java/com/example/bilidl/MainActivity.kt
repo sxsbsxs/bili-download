@@ -617,7 +617,9 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         detailLikeButton = chip(if (video.userLiked) "已点赞" else "点赞", video.userLiked)
-        detailLikeButton.setOnClickListener { performVideoLike(video) }
+        detailLikeButton.setOnClickListener {
+            parsedVideo?.let { currentVideo -> performVideoLike(currentVideo) }
+        }
         interactionRow.addView(detailLikeButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
             rightMargin = dp(4)
         })
@@ -763,8 +765,8 @@ class MainActivity : ComponentActivity() {
                 val repository = repositoryWithSavedCookie()
                 val items = try {
                     repository.getVideoDanmaku(video)
-                } catch (error: Exception) {
-                    // Older XML endpoint is retained as a last-resort compatibility fallback.
+                } catch (protoError: Exception) {
+                    // Retain compatibility with the legacy XML feed if a segment request is rejected.
                     val xml = repository.getDanmakuXml(video.cid)
                     runOnUiThread {
                         if (requestToken == danmakuRequestToken &&
@@ -772,18 +774,20 @@ class MainActivity : ComponentActivity() {
                             parsedVideo?.cid == video.cid
                         ) detailDanmakuOverlay?.setXml(xml)
                     }
-                    throw error
+                    return@execute
                 }
+                val xmlFallback = if (items.isEmpty()) {
+                    runCatching { repository.getDanmakuXml(video.cid) }.getOrNull()
+                } else null
                 runOnUiThread {
                     if (requestToken != danmakuRequestToken ||
                         detailDanmakuOverlay == null ||
                         parsedVideo?.cid != video.cid
                     ) return@runOnUiThread
-                    if (items.isEmpty()) {
-                        runCatching { repository.getDanmakuXml(video.cid) }
-                            .onSuccess { detailDanmakuOverlay?.setXml(it) }
-                    } else {
-                        detailDanmakuOverlay?.setDanmaku(items)
+                    when {
+                        items.isNotEmpty() -> detailDanmakuOverlay?.setDanmaku(items)
+                        xmlFallback != null -> detailDanmakuOverlay?.setXml(xmlFallback)
+                        else -> detailPlaybackStatus?.text = "当前视频暂无可显示的弹幕"
                     }
                 }
             } catch (error: Exception) {
@@ -950,7 +954,15 @@ class MainActivity : ComponentActivity() {
                 backgroundExecutor.execute {
                     try {
                         repositoryWithSavedCookie().addVideoCoin(video.aid, index + 1)
-                        runOnUiThread { toast("投币成功") }
+                        runOnUiThread {
+                            if (parsedVideo?.aid == video.aid) {
+                                parsedVideo = video.copy(
+                                    coinCount = video.coinCount + index + 1,
+                                    userCoin = (video.userCoin + index + 1).coerceAtMost(2)
+                                )
+                            }
+                            toast("投币成功")
+                        }
                     } catch (error: Exception) {
                         runOnUiThread { toast(error.message ?: "投币失败") }
                     }
@@ -971,6 +983,14 @@ class MainActivity : ComponentActivity() {
                     if (folders.isEmpty()) {
                         toast("没有可用收藏夹，请先在 B 站创建收藏夹")
                         return@runOnUiThread
+                    }
+                    val isAlreadyFavorited = folders.any { it.favState }
+                    if (parsedVideo?.aid == video.aid) {
+                        parsedVideo = video.copy(userFavorited = isAlreadyFavorited)
+                        detailFavoriteButton.text = if (isAlreadyFavorited) "已收藏" else "收藏"
+                        detailFavoriteButton.setTextColor(if (isAlreadyFavorited) Color.WHITE else sub)
+                        detailFavoriteButton.background =
+                            rippleShape(if (isAlreadyFavorited) pink else field, 18)
                     }
                     val content = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL
