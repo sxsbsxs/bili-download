@@ -102,6 +102,7 @@ class MainActivity : ComponentActivity() {
         if (result.resultCode == Activity.RESULT_OK && selectedUrls.isNotEmpty()) {
             startBatchFromSelection(selectedUrls)
         } else if (result.resultCode == Activity.RESULT_OK && !selectedUrl.isNullOrBlank()) {
+            selectTab(0)
             input.setText(selectedUrl)
             input.setSelection(input.text.length)
             mainViewModel.parse(selectedUrl)
@@ -118,6 +119,7 @@ class MainActivity : ComponentActivity() {
                     onLogoutClicked()
                 selectedUrls.isNotEmpty() -> startBatchFromSelection(selectedUrls)
                 !selectedUrl.isNullOrBlank() -> {
+                    selectTab(0)
                     input.setText(selectedUrl)
                     input.setSelection(input.text.length)
                     mainViewModel.parse(selectedUrl)
