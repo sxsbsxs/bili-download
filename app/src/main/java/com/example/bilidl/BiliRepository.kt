@@ -60,7 +60,9 @@ class BiliRepository(
 
     fun verifyCookie(rawCookie: String): Pair<String, Boolean> {
         val cookie = SecureCookieStore.normalizeCookie(rawCookie)
-        val root = requestJson("https://api.bilibili.com/x/web-interface/nav", cookie)
+        if (cookie.isBlank()) throw IOException("登录信息不包含 SESSDATA")
+        val cookieHeader = SecureCookieStore.normalizeCookieHeader(rawCookie)
+        val root = requestJson("https://api.bilibili.com/x/web-interface/nav", cookieHeader)
         val data = root.optJSONObject("data") ?: throw IOException("B站没有返回账号信息")
         if (!data.optBoolean("isLogin", false)) {
             throw IOException("SESSDATA 无效或已过期，请重新授权")
@@ -344,7 +346,7 @@ class BiliRepository(
             setRequestProperty("Accept", "application/json, text/plain, */*")
             setRequestProperty("Accept-Encoding", "identity")
             if (!cookieOverride.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
+                setRequestProperty("Cookie", SecureCookieStore.normalizeCookieHeader(cookieOverride))
             }
         }
         try {
@@ -373,7 +375,7 @@ class BiliRepository(
             setRequestProperty("Accept", "application/octet-stream, */*")
             setRequestProperty("Accept-Encoding", "identity")
             if (!cookieOverride.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
+                setRequestProperty("Cookie", SecureCookieStore.normalizeCookieHeader(cookieOverride))
             }
         }
         try {
