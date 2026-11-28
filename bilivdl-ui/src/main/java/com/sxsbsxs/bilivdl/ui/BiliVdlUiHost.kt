@@ -18,6 +18,9 @@ interface BiliVdlUiHost {
     fun retryFailedDownloads()
     fun clearDownloadHistory()
     fun loadAccount(callback: (BiliVdlAccount) -> Unit)
+    fun loadSettings(callback: (BiliVdlSettings) -> Unit)
+    fun updateSetting(key: String, value: Any)
+    fun clearTemporaryCache()
     fun requestLogin()
     fun requestLogout()
 }
