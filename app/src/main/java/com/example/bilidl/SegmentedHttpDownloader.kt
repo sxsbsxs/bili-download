@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicLong
  */
 internal object SegmentedHttpDownloader {
     private const val CHUNK_SIZE = 4L * 1024L * 1024L
-    private const val BUFFER_SIZE = 64 * 1024
+    private const val BUFFER_SIZE = 256 * 1024
     private const val MAX_RANGE_ATTEMPTS = 3
     private const val MAX_SEQUENTIAL_ATTEMPTS = 3
     private const val USER_AGENT =
@@ -209,6 +209,7 @@ internal object SegmentedHttpDownloader {
         val total = probe.totalBytes
         val inFlightBytes = AtomicLong(0L)
         val lock = Any()
+        var completedSinceCheckpoint = 0
         val resumedPercent = ((completedBytes.get() * 100L) / total)
             .toInt()
             .coerceIn(0, 99)
@@ -239,11 +240,19 @@ internal object SegmentedHttpDownloader {
                             onProgress = onProgress
                         )
                         synchronized(lock) {
-                            if (!NativeTransfer.sync(descriptor.fd)) {
-                                throw IOException("分段写入同步失败")
-                            }
                             completed[index] = true
-                            mapFile.writeText(completed.joinToString("") { if (it) "1" else "0" })
+                            completedSinceCheckpoint++
+                            // Persist checkpoints in small batches to avoid syncing after
+                            // every range. Uncheckpointed ranges are safely retried on resume.
+                            if (completedSinceCheckpoint >= 4) {
+                                if (!NativeTransfer.sync(descriptor.fd)) {
+                                    throw IOException("分段写入同步失败")
+                                }
+                                mapFile.writeText(
+                                    completed.joinToString("") { if (it) "1" else "0" }
+                                )
+                                completedSinceCheckpoint = 0
+                            }
                         }
                     }
                 }

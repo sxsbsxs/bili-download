@@ -33,4 +33,5 @@ object DownloadResourceType {
     const val MEDIA = 0
     const val DANMAKU_XML = 1
     const val SUBTITLE_SRT = 2
+    const val COVER_IMAGE = 3
 }

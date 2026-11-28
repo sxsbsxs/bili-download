@@ -37,6 +37,8 @@ class BiliDownloadWorker(
             val audioOnly = inputData.getBoolean(KEY_AUDIO_ONLY, false)
             val downloadDanmaku = inputData.getBoolean(KEY_DOWNLOAD_DANMAKU, false)
             val downloadSubtitles = inputData.getBoolean(KEY_DOWNLOAD_SUBTITLES, false)
+            val downloadCover = inputData.getBoolean(KEY_DOWNLOAD_COVER, false)
+            val coverUrl = inputData.getString(KEY_COVER_URL)?.takeIf { it.isNotBlank() }
             val durationSeconds = inputData.getInt(KEY_DURATION, 0)
             val page = inputData.getInt(KEY_PAGE, 1)
             val transferId = inputData.getString(KEY_TASK_ID).orEmpty()
@@ -55,11 +57,12 @@ class BiliDownloadWorker(
                     title = title,
                     uploader = "",
                     durationSeconds = durationSeconds,
-                    coverUrl = null,
+                    coverUrl = coverUrl,
                     qualityId = quality,
                     audioOnly = audioOnly,
                     downloadDanmaku = downloadDanmaku,
-                    downloadSubtitles = downloadSubtitles
+                    downloadSubtitles = downloadSubtitles,
+                    downloadCover = downloadCover
                 )
             )
             if (cid <= 0L || (bvid.isNullOrBlank() && aid <= 0L)) {
@@ -83,7 +86,7 @@ class BiliDownloadWorker(
                 title = title,
                 uploader = "",
                 durationSeconds = durationSeconds,
-                coverUrl = null,
+                coverUrl = coverUrl,
                 cover = null,
                 qualities = emptyList()
             )
@@ -103,6 +106,7 @@ class BiliDownloadWorker(
                     ?: SecureCookieStore.load(applicationContext),
                 downloadDanmaku = downloadDanmaku,
                 downloadSubtitles = downloadSubtitles,
+                downloadCover = downloadCover,
                 isCancelled = { isStopped }
             ) { percent, detail ->
                 synchronized(progressLock) {
@@ -232,6 +236,8 @@ class BiliDownloadWorker(
         const val KEY_AUDIO_ONLY = "audio_only"
         const val KEY_DOWNLOAD_DANMAKU = "download_danmaku"
         const val KEY_DOWNLOAD_SUBTITLES = "download_subtitles"
+        const val KEY_DOWNLOAD_COVER = "download_cover"
+        const val KEY_COVER_URL = "cover_url"
         const val KEY_DURATION = "duration_seconds"
         const val KEY_PAGE = "page_number"
         const val KEY_CONTENT_FILES = "content_files"

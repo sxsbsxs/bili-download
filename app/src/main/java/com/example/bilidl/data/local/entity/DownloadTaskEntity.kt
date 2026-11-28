@@ -1,5 +1,6 @@
 package com.example.bilidl.data.local.entity
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -33,6 +34,8 @@ data class DownloadTaskEntity(
     val audioOnly: Boolean,
     val downloadDanmaku: Boolean,
     val downloadSubtitles: Boolean,
+    @ColumnInfo(defaultValue = "0")
+    val downloadCover: Boolean = false,
     val status: Int = DownloadTaskStatus.QUEUED,
     val progress: Int = 0,
     val stage: String = "等待下载",

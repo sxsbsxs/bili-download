@@ -1715,21 +1715,95 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             toast("请先解析一个 B站视频")
             return
         }
-        val spec = DownloadSpec(
-            video = video,
-            qualityId = selectedQualityId.takeIf { it > 0 } ?: video.qualities.firstOrNull()?.id ?: 80,
-            audioOnly = prefs.getBoolean("audio_only", false),
-            downloadDanmaku = prefs.getBoolean("danmaku", false),
-            downloadSubtitles = prefs.getBoolean("subtitles", false)
+
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        content.addView(TextView(this).apply {
+            text = "选择媒体类型"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            setPadding(0, 0, 0, dp(6))
+        }, LinearLayout.LayoutParams(match, wrap))
+
+        val mediaGroup = android.widget.RadioGroup(this).apply {
+            orientation = android.widget.RadioGroup.VERTICAL
+        }
+        val videoOption = android.widget.RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "视频 + 音频（MP4）"
+            textSize = 14f
+        }
+        val audioOption = android.widget.RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "仅音频（M4A）"
+            textSize = 14f
+        }
+        mediaGroup.addView(videoOption)
+        mediaGroup.addView(audioOption)
+        mediaGroup.check(
+            if (prefs.getBoolean("audio_only", false)) audioOption.id else videoOption.id
         )
-        val id = "bili_" + System.currentTimeMillis()
-        downloadSpecs[id] = spec
-        persistDownloadSpec(id, spec)
-        addDownload(id, video.title, video.cover)
-        enqueueDownload(id, spec)
-        closeVideoDetail()
-        selectTab(1)
-        toast("已加入下载任务")
+        content.addView(mediaGroup, LinearLayout.LayoutParams(match, wrap))
+
+        content.addView(TextView(this).apply {
+            text = "附加文件（可多选）"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            setPadding(0, dp(12), 0, dp(4))
+        }, LinearLayout.LayoutParams(match, wrap))
+        val coverOption = android.widget.CheckBox(this).apply {
+            text = "视频封面（JPG）"
+            isEnabled = !video.coverUrl.isNullOrBlank()
+            textSize = 14f
+        }
+        val danmakuOption = android.widget.CheckBox(this).apply {
+            text = "弹幕文件（XML）"
+            isChecked = prefs.getBoolean("danmaku", false)
+            textSize = 14f
+        }
+        val subtitleOption = android.widget.CheckBox(this).apply {
+            text = "字幕文件（SRT）"
+            isChecked = prefs.getBoolean("subtitles", false)
+            textSize = 14f
+        }
+        content.addView(coverOption)
+        content.addView(danmakuOption)
+        content.addView(subtitleOption)
+        content.addView(TextView(this).apply {
+            text = "画质沿用当前视频的可用画质选择；附加文件会与媒体文件分开保存。"
+            textSize = 11f
+            setTextColor(sub)
+            setPadding(dp(2), dp(8), dp(2), 0)
+        }, LinearLayout.LayoutParams(match, wrap))
+
+        AlertDialog.Builder(this)
+            .setTitle("下载内容")
+            .setView(content)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("开始下载") { _, _ ->
+                val spec = DownloadSpec(
+                    video = video,
+                    qualityId = selectedQualityId.takeIf { it > 0 }
+                        ?: video.qualities.firstOrNull()?.id ?: 80,
+                    audioOnly = audioOption.isChecked,
+                    downloadDanmaku = danmakuOption.isChecked,
+                    downloadSubtitles = subtitleOption.isChecked,
+                    downloadCover = coverOption.isChecked
+                )
+                val id = "bili_" + System.currentTimeMillis()
+                downloadSpecs[id] = spec
+                persistDownloadSpec(id, spec)
+                addDownload(id, video.title, video.cover)
+                enqueueDownload(id, spec)
+                closeVideoDetail()
+                selectTab(1)
+                toast("已加入下载任务")
+            }
+            .show()
     }
 
     private fun enqueueDownload(id: String, spec: DownloadSpec) {
@@ -1752,10 +1826,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     BiliDownloadWorker.KEY_PAGE to spec.video.page,
                     BiliDownloadWorker.KEY_DURATION to spec.video.durationSeconds,
                     BiliDownloadWorker.KEY_TITLE to spec.video.title,
+                    BiliDownloadWorker.KEY_COVER_URL to spec.video.coverUrl.orEmpty(),
                     BiliDownloadWorker.KEY_QUALITY to spec.qualityId,
                     BiliDownloadWorker.KEY_AUDIO_ONLY to spec.audioOnly,
                     BiliDownloadWorker.KEY_DOWNLOAD_DANMAKU to spec.downloadDanmaku,
                     BiliDownloadWorker.KEY_DOWNLOAD_SUBTITLES to spec.downloadSubtitles,
+                    BiliDownloadWorker.KEY_DOWNLOAD_COVER to spec.downloadCover,
                     BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[prefs.getInt("concurrent", 1).coerceIn(0, 3)]
                 )
             )
@@ -1795,6 +1871,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             .put("audioOnly", spec.audioOnly)
             .put("downloadDanmaku", spec.downloadDanmaku)
             .put("downloadSubtitles", spec.downloadSubtitles)
+            .put("downloadCover", spec.downloadCover)
         taskPrefs.edit().putString(id, value.toString()).apply()
 
         // Keep SharedPreferences readable for upgrades, while Room becomes the
@@ -1812,7 +1889,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             qualityId = spec.qualityId,
             audioOnly = spec.audioOnly,
             downloadDanmaku = spec.downloadDanmaku,
-            downloadSubtitles = spec.downloadSubtitles
+            downloadSubtitles = spec.downloadSubtitles,
+            downloadCover = spec.downloadCover
         )
         backgroundExecutor.execute {
             runCatching {
@@ -1886,7 +1964,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 json.optInt("quality", 80),
                 json.optBoolean("audioOnly", false),
                 json.optBoolean("downloadDanmaku", false),
-                json.optBoolean("downloadSubtitles", false)
+                json.optBoolean("downloadSubtitles", false),
+                json.optBoolean("downloadCover", false)
             )
             downloadSpecs[id] = spec
             if (!items.containsKey(id)) addDownload(id, video.title, null)
@@ -1939,7 +2018,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         qualityId = task.qualityId,
                         audioOnly = task.audioOnly,
                         downloadDanmaku = task.downloadDanmaku,
-                        downloadSubtitles = task.downloadSubtitles
+                        downloadSubtitles = task.downloadSubtitles,
+                        downloadCover = task.downloadCover
                     )
                     downloadSpecs[task.taskId] = spec
                     if (!items.containsKey(task.taskId)) addDownload(task.taskId, task.title, null)
@@ -2289,7 +2369,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         quality,
                         audioOnly,
                         prefs.getBoolean("danmaku", false),
-                        prefs.getBoolean("subtitles", false)
+                        prefs.getBoolean("subtitles", false),
+                        false
                     )
                 } catch (_: Exception) {
                     skipped += page.pageNumber
@@ -2561,7 +2642,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         val qualityId: Int,
         val audioOnly: Boolean,
         val downloadDanmaku: Boolean = false,
-        val downloadSubtitles: Boolean = false
+        val downloadSubtitles: Boolean = false,
+        val downloadCover: Boolean = false
     )
     private val downloadSpecs = HashMap<String, DownloadSpec>()
     private val savedFileUris = HashMap<String, Uri>()

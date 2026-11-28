@@ -2,6 +2,7 @@ package com.example.bilidl
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -14,12 +15,16 @@ import com.example.bilidl.common.content.BiliDanmaku
 import com.example.bilidl.common.content.BiliDanmakuProtoParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 
 data class SavedResource(
     val uri: Uri,
@@ -61,6 +66,7 @@ object BiliDownloadEngine {
         cookie: String?,
         downloadDanmaku: Boolean = false,
         downloadSubtitles: Boolean = false,
+        downloadCover: Boolean = false,
         isCancelled: () -> Boolean = { false },
         progress: (Int, String) -> Unit
     ): SavedDownload = withContext(Dispatchers.IO) {
@@ -102,6 +108,7 @@ object BiliDownloadEngine {
                         video = video,
                         downloadDanmaku = downloadDanmaku,
                         downloadSubtitles = downloadSubtitles,
+                        downloadCover = downloadCover,
                         isCancelled = isCancelled,
                         onPublished = { publishedUris.add(it) },
                         progress = progress
@@ -114,14 +121,44 @@ object BiliDownloadEngine {
                         warnings = sidecars.warnings
                     )
                 } else {
-                    progress(2, "正在下载视频流")
-                    downloadStream(source.videoUrls, videoTemp, cookie, concurrency, isCancelled) { value ->
-                        progress(2 + (value * if (source.audioUrls.isEmpty()) 92 else 45) / 100, "视频流")
-                    }
                     if (source.audioUrls.isNotEmpty()) {
-                        progress(49, "正在下载音频流")
-                        downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
-                            progress(49 + value * 44 / 100, "音频流")
+                        val videoPercent = AtomicInteger(0)
+                        val audioPercent = AtomicInteger(0)
+                        val videoConcurrency = maxOf(1, (concurrency + 1) / 2)
+                        val audioConcurrency = maxOf(1, concurrency / 2)
+                        progress(2, "正在并行下载视频和音频")
+                        coroutineScope {
+                            val videoJob = async(Dispatchers.IO) {
+                                downloadStream(
+                                    source.videoUrls, videoTemp, cookie, videoConcurrency, isCancelled
+                                ) { value ->
+                                    videoPercent.set(value)
+                                    val combined = (videoPercent.get() + audioPercent.get()) / 2
+                                    progress(
+                                        2 + combined * 90 / 100,
+                                        "视频 ${videoPercent.get()}% · 音频 ${audioPercent.get()}%"
+                                    )
+                                }
+                            }
+                            val audioJob = async(Dispatchers.IO) {
+                                downloadStream(
+                                    source.audioUrls, audioTemp, cookie, audioConcurrency, isCancelled
+                                ) { value ->
+                                    audioPercent.set(value)
+                                    val combined = (videoPercent.get() + audioPercent.get()) / 2
+                                    progress(
+                                        2 + combined * 90 / 100,
+                                        "视频 ${videoPercent.get()}% · 音频 ${audioPercent.get()}%"
+                                    )
+                                }
+                            }
+                            videoJob.await()
+                            audioJob.await()
+                        }
+                    } else {
+                        progress(2, "正在下载视频流")
+                        downloadStream(source.videoUrls, videoTemp, cookie, concurrency, isCancelled) { value ->
+                            progress(2 + value * 90 / 100, "视频流")
                         }
                     }
                     progress(95, "正在封装 MP4")
@@ -136,6 +173,7 @@ object BiliDownloadEngine {
                         video = video,
                         downloadDanmaku = downloadDanmaku,
                         downloadSubtitles = downloadSubtitles,
+                        downloadCover = downloadCover,
                         isCancelled = isCancelled,
                         onPublished = { publishedUris.add(it) },
                         progress = progress
@@ -181,6 +219,7 @@ object BiliDownloadEngine {
                         video = video,
                         downloadDanmaku = downloadDanmaku,
                         downloadSubtitles = downloadSubtitles,
+                        downloadCover = downloadCover,
                         isCancelled = isCancelled,
                         onPublished = { publishedUris.add(it) },
                         progress = progress
@@ -210,6 +249,7 @@ object BiliDownloadEngine {
                         video = video,
                         downloadDanmaku = downloadDanmaku,
                         downloadSubtitles = downloadSubtitles,
+                        downloadCover = downloadCover,
                         isCancelled = isCancelled,
                         onPublished = { publishedUris.add(it) },
                         progress = progress
@@ -254,14 +294,59 @@ object BiliDownloadEngine {
         video: BiliVideo,
         downloadDanmaku: Boolean,
         downloadSubtitles: Boolean,
+        downloadCover: Boolean,
         isCancelled: () -> Boolean,
         onPublished: (Uri) -> Unit,
         progress: (Int, String) -> Unit
     ): SidecarSummary {
-        if (!downloadDanmaku && !downloadSubtitles) return SidecarSummary(emptyList(), emptyList())
+        if (!downloadDanmaku && !downloadSubtitles && !downloadCover) {
+            return SidecarSummary(emptyList(), emptyList())
+        }
 
         val files = ArrayList<SavedResource>()
         val warnings = ArrayList<String>()
+
+        if (downloadCover) {
+            try {
+                progress(96, "正在保存封面")
+                if (isCancelled()) throw CancellationException("下载已取消")
+                val bitmap = repository.loadCoverImage(video.coverUrl)
+                if (bitmap == null) {
+                    warnings += "封面获取失败：B站没有返回可用图片"
+                } else {
+                    val temp = File(workDir, "${prefix}_cover.jpg")
+                    try {
+                        FileOutputStream(temp).use { output ->
+                            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)) {
+                                throw IOException("封面图片编码失败")
+                            }
+                        }
+                        val published = publishFile(
+                            context,
+                            temp,
+                            video.title + "_封面",
+                            "jpg",
+                            "image/jpeg"
+                        )
+                        onPublished(published.uri)
+                        files += SavedResource(
+                            uri = published.uri,
+                            displayName = published.displayName,
+                            sizeBytes = published.sizeBytes,
+                            mimeType = published.mimeType,
+                            resourceType = com.example.bilidl.data.local.entity.DownloadResourceType.COVER_IMAGE
+                        )
+                    } finally {
+                        bitmap.recycle()
+                        temp.delete()
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                warnings += "封面导出失败：" + (error.message ?: "未知错误")
+            }
+        }
 
         if (downloadDanmaku) {
             try {
