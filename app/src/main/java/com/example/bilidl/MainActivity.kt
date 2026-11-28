@@ -128,6 +128,8 @@ class MainActivity : ComponentActivity() {
         if (reset) {
             searchRequestToken++
             searchLoading = false
+            setBusy(parseBtn, false)
+            parseBtn.text = "搜索"
             searchKeyword = ""
             searchPage = 1
             searchResults.clear()
@@ -356,6 +358,8 @@ class MainActivity : ComponentActivity() {
             } catch (error: Exception) {
                 runOnUiThread {
                     if (requestToken != detailLoadToken || isFinishing) return@runOnUiThread
+                    setBusy(parseBtn, false)
+                    parseBtn.text = "搜索"
                     say(error.message ?: "视频详情加载失败", err)
                 }
             }
@@ -1408,7 +1412,7 @@ class MainActivity : ComponentActivity() {
 
     // ===================== 供后端调用的界面方法 =====================
     fun showVideo(title: String, uploader: String, cover: Bitmap?, meta: String = "") = runOnUiThread {
-        setBusy(parseBtn, false); parseBtn.text = "解析"
+        setBusy(parseBtn, false); parseBtn.text = "搜索"
         titleTv.text = title
         upTv.text = "UP主 · $uploader"
         metaTv.text = meta
@@ -1424,7 +1428,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun showError(message: String) = runOnUiThread {
-        setBusy(parseBtn, false); parseBtn.text = "解析"
+        setBusy(parseBtn, false); parseBtn.text = "搜索"
         parsedVideo = null
         resultCard.visibility = View.GONE
         say(message, err)
