@@ -66,7 +66,7 @@ internal object SegmentedHttpDownloader {
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit,
         writerFactory: PositionalFileWriterFactory = NativePositionalFileWriterFactory,
-        referer: String = DEFAULT_REFERER
+        referer: String = BiliCdnRequestPolicy.MOBILE_REFERER
     ) = withContext(Dispatchers.IO) {
         var lastError: Exception? = null
         var accessDeniedError: Exception? = null
