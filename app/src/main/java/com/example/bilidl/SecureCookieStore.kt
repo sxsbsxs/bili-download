@@ -21,8 +21,8 @@ object SecureCookieStore {
     private const val VALUE = "cookie_value"
 
     fun save(context: Context, rawCookie: String) {
-        val value = normalizeCookie(rawCookie)
-        require(value.isNotBlank()) { "SESSDATA 不能为空" }
+        val value = normalizeCookieHeader(rawCookie)
+        require(cookieValue(value, "SESSDATA").isNotBlank()) { "SESSDATA 不能为空" }
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
@@ -41,12 +41,39 @@ object SecureCookieStore {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             val iv = Base64.decode(ivText, Base64.NO_WRAP)
             cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, iv))
-            String(cipher.doFinal(Base64.decode(valueText, Base64.NO_WRAP)), Charsets.UTF_8)
+            val stored = String(cipher.doFinal(Base64.decode(valueText, Base64.NO_WRAP)), Charsets.UTF_8)
+            cookieValue(stored, "SESSDATA").takeIf { it.isNotBlank() }
         } catch (_: Exception) {
             clear(context)
             null
         }
     }
+
+    /** Returns the encrypted full cookie header for CSRF-protected Bilibili mutations. */
+    fun loadCookieHeader(context: Context): String? {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val ivText = prefs.getString(IV, null) ?: return null
+        val valueText = prefs.getString(VALUE, null) ?: return null
+        return try {
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(
+                Cipher.DECRYPT_MODE,
+                getOrCreateKey(),
+                GCMParameterSpec(128, Base64.decode(ivText, Base64.NO_WRAP))
+            )
+            val stored = String(
+                cipher.doFinal(Base64.decode(valueText, Base64.NO_WRAP)),
+                Charsets.UTF_8
+            )
+            normalizeCookieHeader(stored).takeIf { it.isNotBlank() }
+        } catch (_: Exception) {
+            clear(context)
+            null
+        }
+    }
+
+    fun csrf(context: Context): String? =
+        loadCookieHeader(context)?.let { cookieValue(it, "bili_jct") }?.takeIf { it.isNotBlank() }
 
     fun clear(context: Context) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
@@ -57,8 +84,35 @@ object SecureCookieStore {
 
     fun normalizeCookie(rawCookie: String): String {
         val trimmed = rawCookie.trim()
-        val match = Regex("""(?:^|;\s*)SESSDATA=([^;]+)""").find(trimmed)
+        val match = Regex("""(?:^|;\\s*)SESSDATA=([^;]+)""").find(trimmed)
         return match?.groupValues?.get(1) ?: trimmed
+    }
+
+    fun normalizeCookieHeader(rawCookie: String): String {
+        val knownNames = setOf(
+            "SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5",
+            "buvid3", "buvid4", "sid", "b_nut", "buvid_fp", "buvid_fp_plain"
+        )
+        val values = linkedMapOf<String, String>()
+        rawCookie.replace("\\r", ";").replace("\\n", ";")
+            .split(';')
+            .map(String::trim)
+            .filter { it.isNotBlank() && it.contains('=') }
+            .forEach { token ->
+                val name = token.substringBefore('=').trim()
+                val value = token.substringAfter('=', "").trim()
+                if (name in knownNames && value.isNotBlank()) values[name] = value
+            }
+        if (values.isEmpty() && rawCookie.isNotBlank() && !rawCookie.contains('=')) {
+            values["SESSDATA"] = rawCookie.trim()
+        }
+        return values.entries.joinToString("; ") { it.key + "=" + it.value }
+    }
+
+    fun cookieValue(cookieHeader: String, name: String): String {
+        val escaped = Regex.escape(name)
+        return Regex("""(?:^|;\\s*)$escaped=([^;]+)""")
+            .find(cookieHeader)?.groupValues?.getOrNull(1).orEmpty()
     }
 
     private fun getOrCreateKey(): SecretKey {
