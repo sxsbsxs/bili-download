@@ -934,7 +934,8 @@ class MainActivity : ComponentActivity() {
                     }?.label ?: qualityLabelForId(fallbackQuality)
 
                     if (assessment.shouldSkip) {
-                        failures += "P" + page.pageNumber + "：" + wantedLabel + " 不可用，已跳过"
+                        failures += (if (page.isEpisode) "第 " + page.pageNumber + " 集" else "P" + page.pageNumber) +
+                            "：" + wantedLabel + " 不可用，已跳过"
                     } else {
                         outcomes += BatchResolveOutcome(
                             spec = DownloadSpec(
@@ -951,7 +952,8 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                 } catch (error: Exception) {
-                    failures += "P" + page.pageNumber + "：" + (error.message ?: "解析失败")
+                    failures += (if (page.isEpisode) "第 " + page.pageNumber + " 集" else "P" + page.pageNumber) +
+                        "：" + (error.message ?: "解析失败")
                 }
             }
 
@@ -962,18 +964,19 @@ class MainActivity : ComponentActivity() {
                     val details = mismatches.take(8).mapNotNull { it.mismatchDescription }
                         .joinToString("\n\n")
                     val more = if (mismatches.size > 8) {
-                        "\n\n另有 " + (mismatches.size - 8) + " 个分P画质不匹配"
+                        "\n\n另有 " + (mismatches.size - 8) +
+                            if (pages.any { it.isEpisode }) " 集画质不匹配" else " 个分P画质不匹配"
                     } else ""
                     AlertDialog.Builder(this)
                         .setTitle(if (pages.any { it.isEpisode }) "部分剧集没有目标画质" else "部分分P没有目标画质")
                         .setMessage(
-                            "以下分P无法提供 " + qualityLabelForId(requestedQuality) +
-                                "。\n\n" + details + more
+                            (if (pages.any { it.isEpisode }) "以下剧集无法提供 " else "以下分P无法提供 ") +
+                                qualityLabelForId(requestedQuality) + "。\n\n" + details + more
                         )
                         .setPositiveButton("使用可用画质下载全部") { _, _ ->
                             enqueuePreparedBatch(prepared, failures, pages.size)
                         }
-                        .setNeutralButton("跳过不匹配分P") { _, _ ->
+                        .setNeutralButton(if (pages.any { it.isEpisode }) "跳过不匹配剧集" else "跳过不匹配分P") { _, _ ->
                             val exactMatches = outcomes.filter { it.mismatchDescription == null }
                                 .mapNotNull { it.spec }
                             val skipped = mismatches.mapNotNull { it.mismatchDescription }

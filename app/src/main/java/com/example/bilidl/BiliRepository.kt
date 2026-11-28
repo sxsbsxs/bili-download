@@ -337,7 +337,7 @@ class BiliRepository(
                         "fresh_idx" to pageIndex.toString(),
                         "fresh_idx_1h" to pageIndex.toString(),
                         "brush" to pageIndex.toString(),
-                        "fetch_row" to ((pageIndex - 1) * 20).toString(),
+                        "fetch_row" to (1 + (pageIndex - 1) * 20).toString(),
                         "web_location" to "1430650",
                         "feed_version" to "V8",
                         "homepage_ver" to "1"
