@@ -24,7 +24,11 @@ data class BiliPage(
     val pageNumber: Int,
     val cid: Long,
     val part: String,
-    val durationSeconds: Int
+    val durationSeconds: Int,
+    val url: String? = null,
+    val bvid: String? = null,
+    val aid: Long = 0L,
+    val isEpisode: Boolean = false
 )
 
 data class BiliVideo(
@@ -150,13 +154,18 @@ class BiliRepository(
             else "season_id=" + seasonId!!.removePrefix("ss")
         val root = requestJson("https://api.bilibili.com/pgc/view/web/season?" + key)
         val result = checkedData(root, "result")
-        val episodes = result.optJSONArray("episodes") ?: JSONArray()
-        val selected = if (episodeId != null) {
-            (0 until episodes.length()).mapNotNull { episodes.optJSONObject(it) }
-                .firstOrNull { it.optLong("id") == episodeId.removePrefix("ep").toLongOrNull() }
+        val episodeRows = result.optJSONArray("episodes") ?: JSONArray()
+        val allEpisodes = (0 until episodeRows.length()).mapNotNull { index ->
+            episodeRows.optJSONObject(index)?.let { index to it }
+        }
+        val targetEpisodeId = episodeId?.removePrefix("ep")?.toLongOrNull()
+        val selectedEntry = if (targetEpisodeId != null) {
+            allEpisodes.firstOrNull { (_, episode) -> episode.optLong("id") == targetEpisodeId }
         } else {
-            episodes.optJSONObject(0)
+            allEpisodes.firstOrNull()
         } ?: throw IOException("没有找到这个番剧剧集")
+        val selectedIndex = selectedEntry.first
+        val selected = selectedEntry.second
         val bvid = selected.optString("bvid").takeIf { it.isNotBlank() }
         val aid = selected.optLong("aid")
         val cid = selected.optLong("cid")
@@ -167,10 +176,46 @@ class BiliRepository(
         val coverUrl = BiliCoverUrlPolicy.normalize(selected.optString("cover"))
             ?: BiliCoverUrlPolicy.normalize(result.optString("cover"))
         val qualities = getAvailableQualities(bvid, aid, cid)
+
+        // Preserve the full season listing; every episode gets its own canonical URL and CID.
+        val seasonEpisodes = allEpisodes.mapNotNull { (index, episode) ->
+            val episodeCid = episode.optLong("cid")
+            if (episodeCid <= 0L) return@mapNotNull null
+            val id = episode.optLong("id")
+            val episodeBvid = episode.optString("bvid").takeIf { it.isNotBlank() }
+            val episodeAid = episode.optLong("aid")
+            val shortTitle = episode.optString("long_title")
+                .ifBlank { episode.optString("title") }
+                .ifBlank { "第 " + (index + 1) + " 集" }
+            val canonicalUrl = when {
+                id > 0L -> "https://www.bilibili.com/bangumi/play/ep$id"
+                !episodeBvid.isNullOrBlank() -> "https://www.bilibili.com/video/$episodeBvid"
+                episodeAid > 0L -> "https://www.bilibili.com/video/av$episodeAid"
+                else -> null
+            } ?: return@mapNotNull null
+            BiliPage(
+                pageNumber = index + 1,
+                cid = episodeCid,
+                part = shortTitle,
+                durationSeconds = episode.optInt("duration"),
+                url = canonicalUrl,
+                bvid = episodeBvid,
+                aid = episodeAid,
+                isEpisode = true
+            )
+        }
         return BiliVideo(
-            bvid, aid, cid, 1, title,
-            result.optJSONObject("up_info")?.optString("uname") ?: "番剧",
-            selected.optInt("duration"), coverUrl, null, qualities
+            bvid = bvid,
+            aid = aid,
+            cid = cid,
+            page = selectedIndex + 1,
+            title = title,
+            uploader = result.optJSONObject("up_info")?.optString("uname") ?: "番剧",
+            durationSeconds = selected.optInt("duration"),
+            coverUrl = coverUrl,
+            cover = null,
+            qualities = qualities,
+            pages = seasonEpisodes
         )
     }
 

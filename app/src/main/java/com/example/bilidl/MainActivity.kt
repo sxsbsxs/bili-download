@@ -158,8 +158,10 @@ class MainActivity : ComponentActivity() {
                         parseBtn.text = "解析视频"
                         parsedVideo = video
                         selectedQualityId = preferredQualityId(video.qualities)
+                        val isEpisodeCollection = video.pages.any { it.isEpisode }
                         val pageHint = if (video.pages.size > 1) {
-                            " · 共 " + video.pages.size + " P，点击选择或全部下载"
+                            " · 共 " + video.pages.size +
+                                (if (isEpisodeCollection) " 集，点击选择或下载整季" else " P，点击选择或全部下载")
                         } else {
                             ""
                         }
@@ -172,8 +174,8 @@ class MainActivity : ComponentActivity() {
                             video.title,
                             video.uploader,
                             video.cover,
-                            "第 " + video.page + " P · " + formatDuration(video.durationSeconds) +
-                                qualityHint + pageHint
+                            (if (isEpisodeCollection) "第 " + video.page + " 集 · " else "第 " + video.page + " P · ") +
+                                formatDuration(video.durationSeconds) + qualityHint + pageHint
                         )
                         homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
                     }
@@ -868,7 +870,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun pageUrl(video: BiliVideo, page: BiliPage): String {
-        val identity = video.bvid?.takeIf { it.isNotBlank() } ?: "av" + video.aid
+        page.url?.takeIf { it.isNotBlank() }?.let { return it }
+        val identity = page.bvid?.takeIf { it.isNotBlank() }
+            ?: video.bvid?.takeIf { it.isNotBlank() }
+            ?: "av" + (page.aid.takeIf { it > 0L } ?: video.aid)
         return "https://www.bilibili.com/video/" + identity + "?p=" + page.pageNumber
     }
 
@@ -877,16 +882,21 @@ class MainActivity : ComponentActivity() {
         val pages = video.pages.sortedBy { it.pageNumber }
         if (pages.size <= 1) return
 
+        val isEpisodeCollection = pages.any { it.isEpisode }
         val labels = pages.map { page ->
-            "P" + page.pageNumber + " · " + page.part + " · " + formatDuration(page.durationSeconds)
+            (if (page.isEpisode) "第 " + page.pageNumber + " 集" else "P" + page.pageNumber) +
+                " · " + page.part + " · " + formatDuration(page.durationSeconds)
         }.toTypedArray()
 
         AlertDialog.Builder(this)
-            .setTitle("选择视频分P")
+            .setTitle(if (isEpisodeCollection) "选择番剧剧集" else "选择视频分P")
             .setItems(labels) { _, which ->
                 onParseClicked(pageUrl(video, pages[which]))
             }
-            .setNeutralButton("下载全部 " + pages.size + " P") { _, _ ->
+            .setNeutralButton(
+                if (isEpisodeCollection) "下载整季 " + pages.size + " 集"
+                else "下载全部 " + pages.size + " P"
+            ) { _, _ ->
                 downloadAllPages(video, pages)
             }
             .setNegativeButton("取消", null)
@@ -895,7 +905,7 @@ class MainActivity : ComponentActivity() {
 
     private fun downloadAllPages(video: BiliVideo, pages: List<BiliPage>) {
         if (pages.isEmpty()) return
-        toast("正在逐P获取画质并准备下载任务…")
+        toast(if (pages.any { it.isEpisode }) "正在逐集获取画质并准备下载任务…" else "正在逐P获取画质并准备下载任务…")
         val audioOnly = settingsViewModel.getBoolean("audio_only", false)
         val downloadDanmaku = settingsViewModel.getBoolean("danmaku", false)
         val downloadSubtitles = settingsViewModel.getBoolean("subtitles", false)
@@ -935,8 +945,8 @@ class MainActivity : ComponentActivity() {
                                 downloadSubtitles
                             ),
                             mismatchDescription = if (assessment.shouldAsk) {
-                                "P" + page.pageNumber + " · " + page.part +
-                                    "：缺少 " + wantedLabel + "，将使用 " + actualLabel
+                                (if (page.isEpisode) "第 " + page.pageNumber + " 集" else "P" + page.pageNumber) +
+                                    " · " + page.part + "：缺少 " + wantedLabel + "，将使用 " + actualLabel
                             } else null
                         )
                     }
@@ -955,7 +965,7 @@ class MainActivity : ComponentActivity() {
                         "\n\n另有 " + (mismatches.size - 8) + " 个分P画质不匹配"
                     } else ""
                     AlertDialog.Builder(this)
-                        .setTitle("部分分P没有目标画质")
+                        .setTitle(if (pages.any { it.isEpisode }) "部分剧集没有目标画质" else "部分分P没有目标画质")
                         .setMessage(
                             "以下分P无法提供 " + qualityLabelForId(requestedQuality) +
                                 "。\n\n" + details + more
@@ -1014,7 +1024,11 @@ class MainActivity : ComponentActivity() {
         val pageCount = parsedVideo?.pages?.size ?: 0
         val hasMultiplePages = pageCount > 1
         dlAllPagesBtn.visibility = if (hasMultiplePages) View.VISIBLE else View.GONE
-        dlAllPagesBtn.text = "下载全部 " + pageCount + " P"
+        dlAllPagesBtn.text = if (parsedVideo?.pages?.any { it.isEpisode } == true) {
+            "下载整季 " + pageCount + " 集"
+        } else {
+            "下载全部 " + pageCount + " P"
+        }
         metaTv.isClickable = hasMultiplePages
         metaTv.setTextColor(if (hasMultiplePages) pink else sub)
         metaTv.setOnClickListener { if (hasMultiplePages) showAvailablePages() }
@@ -1603,7 +1617,10 @@ class MainActivity : ComponentActivity() {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 homeFeedLoading = false
                 homeFeedMore.isEnabled = true
-                if (homeFeedType != requestedType) return@runOnUiThread
+                if (homeFeedType != requestedType) {
+                    loadHomeFeed(reset = true)
+                    return@runOnUiThread
+                }
                 result.onSuccess { data ->
                     homeFeedPage = requestedPage
                     homeFeedHasMore = data.hasMore
