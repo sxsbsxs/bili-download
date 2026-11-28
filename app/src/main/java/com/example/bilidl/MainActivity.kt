@@ -633,6 +633,18 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             loadVideoComments(video, true)
         }
 
+        val playerScroll = content as? androidx.core.widget.NestedScrollView
+        playerScroll?.setOnScrollChangeListener(
+            androidx.core.widget.NestedScrollView.OnScrollChangeListener { scroll, _, y, _, _ ->
+                val child = scroll.getChildAt(0) ?: return@OnScrollChangeListener
+                if (!commentsLoading && commentsHasMore &&
+                    y + scroll.height >= child.measuredHeight - dp(420)
+                ) {
+                    loadVideoComments(video, false)
+                }
+            }
+        )
+
         val commentsList = content.findViewById<RecyclerView>(
             com.sxsbsxs.bilivdl.ui.R.id.comments_list
         )
