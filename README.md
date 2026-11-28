@@ -5,6 +5,10 @@ BiliDl is a Bilibili-focused Android downloader. The project uses its own Bilibi
 ## Implemented
 
 - Parse Bilibili b23.tv, BV, av, ep, and ss links.
+- Load a public hot-video home feed automatically and present videos in a fixed two-column grid with covers, duration, uploader, views, and danmaku counts.
+- Search Bilibili videos by keyword, uploader, or title with WBI signing and compatible endpoint fallbacks; the feed and search list paginate automatically while scrolling.
+- Open a full video detail page with creator, engagement statistics, publication date, description, available qualities, multipart selection, and download actions.
+- Integrate Media3 for in-app playback of DASH video/audio streams using their initialization and index byte ranges; direct MP4 streams use the progressive player path.
 - Resolve video metadata, all multipart page CIDs, cover art, and the quality options returned by Bilibili for each page.
 - Use Bilibili's WBI-signed playurl endpoint to request DASH streams and show only qualities actually returned by the API.
 - Download video and audio streams with BiliDl's own HTTP Range scheduler: parallel chunks, per-chunk checkpoints, validator-aware resume, bounded retry, and sequential fallback.
