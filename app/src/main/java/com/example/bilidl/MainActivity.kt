@@ -1,6 +1,7 @@
 package com.example.bilidl
 
 import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
 import android.app.AlertDialog
@@ -19,6 +20,12 @@ import android.graphics.drawable.RippleDrawable
 import android.os.Bundle
 import android.content.Intent
 import android.net.Uri
+import android.webkit.CookieManager
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
@@ -574,8 +581,13 @@ class MainActivity : ComponentActivity() {
                         setQrStatus("已扫描，请在哔哩哔哩 App 中确认登录")
                     LoginUiState.Expired -> showQrExpired()
                     LoginUiState.VerifyingCookie -> {
-                        setBusy(cookieBtn, true)
-                        cookieBtn.text = "登录中…"
+                        if (::webLoginPanel.isInitialized && webLoginPanel.visibility == View.VISIBLE) {
+                            webLoginStatusTv.text = "已获取登录凭据，正在验证账号…"
+                            webLoginProgress.visibility = View.VISIBLE
+                        } else {
+                            setBusy(cookieBtn, true)
+                            cookieBtn.text = "登录中…"
+                        }
                     }
                     is LoginUiState.Success -> {
                         setBusy(cookieBtn, false)
@@ -586,6 +598,12 @@ class MainActivity : ComponentActivity() {
                         if (state.source == LoginFailureSource.QR_CODE) {
                             qrOverlay.text = "登录失败，点击刷新"
                             qrOverlay.visibility = View.VISIBLE
+                        }
+                        if (state.source == LoginFailureSource.WEBVIEW &&
+                            ::webLoginStatusTv.isInitialized
+                        ) {
+                            webLoginStatusTv.text = state.message
+                            webLoginProgress.visibility = View.GONE
                         }
                         loginFailed(state.message)
                     }
@@ -608,6 +626,10 @@ class MainActivity : ComponentActivity() {
 
     private fun onCookieLogin(sessdata: String) {
         loginViewModel.loginWithSessdata(sessdata)
+    }
+
+    private fun onWebLoginCookie(sessdata: String) {
+        loginViewModel.loginWithWebCookie(sessdata)
     }
 
     private fun onLogoutClicked() {
@@ -841,6 +863,10 @@ class MainActivity : ComponentActivity() {
     fun loginFailed(message: String) = runOnUiThread {
         setBusy(cookieBtn, false); cookieBtn.text = "登录"
         cookieErrTv.text = message
+        if (::webLoginStatusTv.isInitialized && webLoginPanel.visibility == View.VISIBLE) {
+            webLoginStatusTv.text = message
+            webLoginProgress.visibility = View.GONE
+        }
         setQrStatus(message, true)
     }
 
@@ -952,9 +978,17 @@ class MainActivity : ComponentActivity() {
 
     // 登录页
     private lateinit var loginPage: View
+    private lateinit var loginTabsContainer: View
     private lateinit var loginSegs: List<TextView>
     private lateinit var qrPanel: LinearLayout
     private lateinit var cookiePanel: LinearLayout
+    private lateinit var webLoginPanel: LinearLayout
+    private lateinit var webLoginContainer: FrameLayout
+    private lateinit var webLoginProgress: ProgressBar
+    private lateinit var webLoginStatusTv: TextView
+    private var webLoginView: WebView? = null
+    private var webLoginVerificationStarted = false
+    private var webLoginBackCallback: OnBackPressedCallback? = null
     private lateinit var qrIv: ImageView
     private lateinit var qrOverlay: TextView
     private lateinit var qrStatusTv: TextView
@@ -2258,10 +2292,42 @@ class MainActivity : ComponentActivity() {
 
         val (segBox, segs) = buildSegmented(listOf("扫码登录", "Cookie 登录")) { i -> selectLoginSeg(i) }
         loginSegs = segs
-        col.addView(segBox, sideMargins(8))
+        loginTabsContainer = segBox
+        col.addView(loginTabsContainer, sideMargins(8))
 
         // 扫码面板
         qrPanel = card()
+        val webLoginEntry = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rippleShape(field, 12)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            val labels = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            labels.addView(TextView(this@MainActivity).apply {
+                text = "使用账号密码登录"
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(ink)
+            })
+            labels.addView(TextView(this@MainActivity).apply {
+                text = "打开 B站官方网页完成授权"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(3), 0, 0)
+            })
+            addView(labels, LinearLayout.LayoutParams(0, wrap, 1f))
+            addView(TextView(this@MainActivity).apply {
+                text = "›"
+                textSize = 24f
+                setTextColor(sub)
+            })
+            setOnClickListener { openBiliWebLogin() }
+        }
+        qrPanel.addView(webLoginEntry, LinearLayout.LayoutParams(match, wrap).apply {
+            bottomMargin = dp(16)
+        })
         val qrBox = FrameLayout(this).apply {
             background = shape(Color.WHITE, 16, Color.parseColor("#E6E8EE"))
             setPadding(dp(10), dp(10), dp(10), dp(10))
@@ -2338,6 +2404,49 @@ class MainActivity : ComponentActivity() {
         cookiePanel.addView(cookieBtn, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(12) })
         col.addView(cookiePanel, sideMargins())
 
+        // BVD-style in-app official passport WebView login.
+        webLoginPanel = card().apply {
+            visibility = View.GONE
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+        }
+        val webLoginToolbar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        webLoginToolbar.addView(TextView(this).apply {
+            text = "‹"
+            textSize = 30f
+            setTextColor(pink)
+            gravity = Gravity.CENTER
+            setPadding(dp(8), 0, dp(16), 0)
+            setOnClickListener { closeBiliWebLogin() }
+        }, LinearLayout.LayoutParams(wrap, dp(48)))
+        webLoginToolbar.addView(TextView(this).apply {
+            text = "B站网页登录"
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }, LinearLayout.LayoutParams(0, wrap, 1f))
+        webLoginPanel.addView(webLoginToolbar, match, wrap)
+        webLoginProgress = bar().apply { visibility = View.GONE }
+        webLoginPanel.addView(webLoginProgress, LinearLayout.LayoutParams(match, dp(4)))
+        webLoginStatusTv = TextView(this).apply {
+            text = "正在打开 B站官方登录页面…"
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(dp(6), dp(8), dp(6), dp(8))
+        }
+        webLoginPanel.addView(webLoginStatusTv, match, wrap)
+        webLoginContainer = FrameLayout(this)
+        webLoginPanel.addView(webLoginContainer, LinearLayout.LayoutParams(match, dp(520)))
+        webLoginPanel.addView(TextView(this).apply {
+            text = "账号密码及验证码由 B站官方页面处理，BiliDl 只在登录回跳后获取并校验授权 Cookie。"
+            textSize = 11f
+            setTextColor(sub)
+            setPadding(dp(6), dp(8), dp(6), dp(4))
+        }, match, wrap)
+        col.addView(webLoginPanel, sideMargins())
+
         col.addView(View(this), match, dp(32))
         styleSegs(loginSegs, 0)
         return page
@@ -2347,6 +2456,9 @@ class MainActivity : ComponentActivity() {
         val changed = activeLoginSegment != i
         activeLoginSegment = i
         if (i != 0) stopQrLogin()
+        disposeBiliWebLoginView()
+        webLoginPanel.visibility = View.GONE
+        loginTabsContainer.visibility = View.VISIBLE
         styleSegs(loginSegs, i)
         qrPanel.visibility = if (i == 0) View.VISIBLE else View.GONE
         cookiePanel.visibility = if (i == 1) View.VISIBLE else View.GONE
@@ -2361,8 +2473,154 @@ class MainActivity : ComponentActivity() {
 
     private fun hideLogin() {
         stopQrLogin()
+        webLoginBackCallback?.remove()
+        webLoginBackCallback = null
+        disposeBiliWebLoginView()
+        if (::webLoginPanel.isInitialized) webLoginPanel.visibility = View.GONE
+        if (::loginTabsContainer.isInitialized) loginTabsContainer.visibility = View.VISIBLE
         activeLoginSegment = -1
         loginPage.visibility = View.GONE
+    }
+
+    /** Open the same official H5 passport flow that BVD links from its QR screen. */
+    private fun openBiliWebLogin() {
+        stopQrLogin()
+        activeLoginSegment = -1
+        loginTabsContainer.visibility = View.GONE
+        qrPanel.visibility = View.GONE
+        cookiePanel.visibility = View.GONE
+        webLoginPanel.visibility = View.VISIBLE
+        webLoginVerificationStarted = false
+        webLoginStatusTv.text = "正在清理旧网页会话并打开 B站官方登录页面…"
+        webLoginProgress.visibility = View.VISIBLE
+        webLoginBackCallback?.remove()
+        webLoginBackCallback = object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                closeBiliWebLogin()
+            }
+        }.also { onBackPressedDispatcher.addCallback(this, it) }
+
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.removeAllCookies {
+            cookieManager.flush()
+            runOnUiThread { createAndLoadBiliWebLoginView() }
+        }
+    }
+
+    private fun createAndLoadBiliWebLoginView() {
+        if (isFinishing || !::webLoginContainer.isInitialized ||
+            webLoginPanel.visibility != View.VISIBLE
+        ) return
+
+        disposeBiliWebLoginView()
+        val webView = WebView(this)
+        webLoginView = webView
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            javaScriptCanOpenWindowsAutomatically = true
+        }
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onProgressChanged(view: WebView, newProgress: Int) {
+                webLoginProgress.progress = newProgress
+                webLoginProgress.visibility = if (newProgress >= 100) View.GONE else View.VISIBLE
+            }
+        }
+        webView.webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView,
+                request: WebResourceRequest
+            ): Boolean = captureBiliWebLoginCookie(request.url.toString())
+
+            @Suppress("DEPRECATION")
+            override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean =
+                captureBiliWebLoginCookie(url)
+
+            override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                webLoginProgress.visibility = View.VISIBLE
+                if (url != null && captureBiliWebLoginCookie(url)) view.stopLoading()
+            }
+
+            override fun onPageFinished(view: WebView, url: String?) {
+                super.onPageFinished(view, url)
+                webLoginProgress.visibility = View.GONE
+                if (!webLoginVerificationStarted) {
+                    webLoginStatusTv.text = "请在 B站页面完成登录，成功后会自动返回"
+                }
+                // Some Bilibili builds set the final cookie after the redirect page starts.
+                if (url != null) captureBiliWebLoginCookie(url)
+            }
+
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError
+            ) {
+                super.onReceivedError(view, request, error)
+                if (request.isForMainFrame && !webLoginVerificationStarted) {
+                    webLoginStatusTv.text = "网页加载失败：${error.description}"
+                    webLoginProgress.visibility = View.GONE
+                }
+            }
+        }
+        webLoginContainer.removeAllViews()
+        webLoginContainer.addView(webView, FrameLayout.LayoutParams(match, match))
+        webView.loadUrl(BiliWebLoginPolicy.LOGIN_URL)
+    }
+
+    /** Only read cookies after the official page navigates back to a Bilibili main-site host. */
+    private fun captureBiliWebLoginCookie(url: String): Boolean {
+        if (webLoginVerificationStarted) return true
+        val uri = runCatching { Uri.parse(url) }.getOrNull() ?: return false
+        if (!BiliWebLoginPolicy.shouldCaptureCookie(uri.host)) return false
+
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.flush()
+        val cookieHeaders = listOf(
+            cookieManager.getCookie(url),
+            cookieManager.getCookie("https://bilibili.com/"),
+            cookieManager.getCookie("https://www.bilibili.com/"),
+            cookieManager.getCookie("https://m.bilibili.com/")
+        ).filterNotNull().distinct()
+        val sessdata = BiliWebLoginPolicy.extractSessdata(cookieHeaders)
+        if (sessdata.isNullOrBlank()) {
+            webLoginStatusTv.text = "已返回 B站页面，正在等待登录凭据…"
+            return false
+        }
+
+        webLoginVerificationStarted = true
+        webLoginProgress.visibility = View.VISIBLE
+        webLoginStatusTv.text = "已获取授权，正在向 B站验证账号…"
+        webLoginView?.stopLoading()
+        onWebLoginCookie(sessdata)
+        return true
+    }
+
+    private fun closeBiliWebLogin() {
+        webLoginBackCallback?.remove()
+        webLoginBackCallback = null
+        disposeBiliWebLoginView()
+        webLoginPanel.visibility = View.GONE
+        loginTabsContainer.visibility = View.VISIBLE
+        activeLoginSegment = 0
+        styleSegs(loginSegs, 0)
+        qrPanel.visibility = View.VISIBLE
+        cookiePanel.visibility = View.GONE
+        refreshQr()
+    }
+
+    private fun disposeBiliWebLoginView() {
+        webLoginView?.let { view ->
+            webLoginContainer.removeView(view)
+            view.stopLoading()
+            view.loadUrl("about:blank")
+            view.webChromeClient = null
+            view.webViewClient = WebViewClient()
+            view.destroy()
+        }
+        webLoginView = null
+        webLoginVerificationStarted = false
     }
 
     private fun refreshQr() {
