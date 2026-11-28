@@ -767,6 +767,365 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         return section
     }
 
+    private fun repositoryWithSavedCookie() = BiliRepository {
+        SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+    }
+
+    private fun requireInteractionLogin(): Boolean {
+        if (!loggedIn) {
+            toast("请先登录 B 站账号")
+            showLogin()
+            return false
+        }
+        if (SecureCookieStore.csrf(this).isNullOrBlank()) {
+            toast("当前登录凭据缺少 bili_jct，请重新扫码登录后再互动")
+            showLogin()
+            return false
+        }
+        return true
+    }
+
+    private fun loadVideoDanmaku(video: BiliVideo) {
+        val requestToken = ++danmakuRequestToken
+        detailDanmakuOverlay?.clear()
+        backgroundExecutor.execute {
+            try {
+                val repository = repositoryWithSavedCookie()
+                val items = try {
+                    repository.getVideoDanmaku(video)
+                } catch (protoError: Exception) {
+                    // Retain compatibility with the legacy XML feed if a segment request is rejected.
+                    val xml = repository.getDanmakuXml(video.cid)
+                    runOnUiThread {
+                        if (requestToken == danmakuRequestToken &&
+                            detailDanmakuOverlay != null &&
+                            parsedVideo?.cid == video.cid
+                        ) detailDanmakuOverlay?.setXml(xml)
+                    }
+                    return@execute
+                }
+                val xmlFallback = if (items.isEmpty()) {
+                    runCatching { repository.getDanmakuXml(video.cid) }.getOrNull()
+                } else null
+                runOnUiThread {
+                    if (requestToken != danmakuRequestToken ||
+                        detailDanmakuOverlay == null ||
+                        parsedVideo?.cid != video.cid
+                    ) return@runOnUiThread
+                    when {
+                        items.isNotEmpty() -> detailDanmakuOverlay?.setDanmaku(
+                            items.map { item ->
+                                BiliVdlDanmaku(
+                                    text = item.content,
+                                    timeMs = item.progressMs,
+                                    color = item.color.toInt(),
+                                    fontSize = item.fontSize,
+                                    mode = item.mode
+                                )
+                            }
+                        )
+                        xmlFallback != null -> detailDanmakuOverlay?.setXml(xmlFallback)
+                        else -> detailPlaybackStatus?.text = "当前视频暂无可显示的弹幕"
+                    }
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (requestToken == danmakuRequestToken && parsedVideo?.cid == video.cid) {
+                        detailPlaybackStatus?.text = error.message?.let { "弹幕暂不可用：$it" }
+                            ?: "弹幕暂不可用"
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showDanmakuComposer(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        val editor = EditText(this).apply {
+            hint = "发送一条弹幕（最多 50 个字）"
+            setTextColor(ink)
+            setHintTextColor(sub)
+            textSize = 15f
+            minLines = 2
+            maxLines = 3
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            filters = arrayOf(android.text.InputFilter.LengthFilter(50))
+            background = shape(field, 12)
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+        }
+        val modeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("滚动弹幕", "顶部弹幕", "底部弹幕")
+            )
+        }
+        val colorChoices = listOf(
+            "白色" to 0xFFFFFF,
+            "黄色" to 0xFFFF00,
+            "粉色" to 0xFF79B8,
+            "蓝色" to 0x66CCFF,
+            "绿色" to 0x66CC66
+        )
+        val colorSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                colorChoices.map { it.first }
+            )
+        }
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(4))
+            addView(editor, LinearLayout.LayoutParams(match, wrap))
+            addView(TextView(this@MainActivity).apply {
+                text = "显示方式"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(12), 0, dp(2))
+            })
+            addView(modeSpinner, LinearLayout.LayoutParams(match, dp(44)))
+            addView(TextView(this@MainActivity).apply {
+                text = "弹幕颜色"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(8), 0, dp(2))
+            })
+            addView(colorSpinner, LinearLayout.LayoutParams(match, dp(44)))
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("发送弹幕")
+            .setView(content)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("发送", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val message = editor.text?.toString()?.trim().orEmpty()
+                if (message.isBlank()) {
+                    editor.error = "请输入弹幕内容"
+                    return@setOnClickListener
+                }
+                val modes = listOf(1, 5, 4)
+                val selectedMode = modes.getOrElse(modeSpinner.selectedItemPosition) { 1 }
+                val selectedColor = colorChoices.getOrElse(colorSpinner.selectedItemPosition) {
+                    colorChoices.first()
+                }.second
+                val progressMs = currentPlayer?.currentPosition ?: 0L
+                setBusy(dialog.getButton(AlertDialog.BUTTON_POSITIVE), true)
+                backgroundExecutor.execute {
+                    try {
+                        repositoryWithSavedCookie().sendDanmaku(
+                            video = video,
+                            text = message,
+                            progressMs = progressMs,
+                            color = selectedColor,
+                            mode = selectedMode
+                        )
+                        runOnUiThread {
+                            if (parsedVideo?.cid == video.cid) {
+                                detailDanmakuOverlay?.addLocalDanmaku(
+                                    message, selectedColor, selectedMode, progressMs
+                                )
+                            }
+                            toast("弹幕发送成功")
+                            dialog.dismiss()
+                        }
+                    } catch (error: Exception) {
+                        runOnUiThread {
+                            setBusy(dialog.getButton(AlertDialog.BUTTON_POSITIVE), false)
+                            toast(error.message ?: "弹幕发送失败")
+                        }
+                    }
+                }
+            }
+        }
+        dialog.show()
+        editor.requestFocus()
+    }
+
+    private fun performVideoLike(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        val targetLiked = !video.userLiked
+        backgroundExecutor.execute {
+            try {
+                repositoryWithSavedCookie().setVideoLike(video.aid, targetLiked)
+                runOnUiThread {
+                    val updated = video.copy(userLiked = targetLiked)
+                    parsedVideo = updated
+                    detailLikeButton.text = if (targetLiked) "已点赞" else "点赞"
+                    detailLikeButton.setTextColor(if (targetLiked) Color.WHITE else sub)
+                    detailLikeButton.background = rippleShape(if (targetLiked) pink else field, 18)
+                    toast(if (targetLiked) "点赞成功" else "已取消点赞")
+                }
+            } catch (error: Exception) {
+                runOnUiThread { toast(error.message ?: "点赞失败") }
+            }
+        }
+    }
+
+    private fun performTripleLike(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        backgroundExecutor.execute {
+            try {
+                repositoryWithSavedCookie().tripleLike(video.aid)
+                runOnUiThread {
+                    parsedVideo = video.copy(userLiked = true)
+                    detailLikeButton.text = "已点赞"
+                    detailLikeButton.setTextColor(Color.WHITE)
+                    detailLikeButton.background = rippleShape(pink, 18)
+                    toast("一键三连成功")
+                }
+            } catch (error: Exception) {
+                runOnUiThread { toast(error.message ?: "一键三连失败") }
+            }
+        }
+    }
+
+    private fun showCoinDialog(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        val maxCoins = if (video.copyright == 2) 1 else 2
+        val options = if (maxCoins == 1) {
+            arrayOf("投 1 个币")
+        } else {
+            arrayOf("投 1 个币", "投 2 个币")
+        }
+        AlertDialog.Builder(this)
+            .setTitle("给 UP 主投币")
+            .setItems(options) { _, index ->
+                val coins = index + 1
+                backgroundExecutor.execute {
+                    try {
+                        repositoryWithSavedCookie().addVideoCoin(video.aid, coins)
+                        runOnUiThread {
+                            if (parsedVideo?.aid == video.aid) {
+                                val latest = parsedVideo ?: video
+                                parsedVideo = latest.copy(
+                                    coinCount = latest.coinCount + coins,
+                                    userCoin = (latest.userCoin + coins).coerceAtMost(2)
+                                )
+                            }
+                            toast("投币成功")
+                        }
+                    } catch (error: Exception) {
+                        runOnUiThread { toast(error.message ?: "投币失败") }
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showFavoriteFolderPicker(video: BiliVideo) {
+        if (!requireInteractionLogin()) return
+        toast("正在读取收藏夹状态…")
+        backgroundExecutor.execute {
+            try {
+                val folders = repositoryWithSavedCookie().getFavoriteFolders(video.aid)
+                runOnUiThread {
+                    if (detailPage == null || parsedVideo?.aid != video.aid) return@runOnUiThread
+                    if (folders.isEmpty()) {
+                        toast("没有可用收藏夹，请先在 B 站创建收藏夹")
+                        return@runOnUiThread
+                    }
+                    val isAlreadyFavorited = folders.any { it.favState }
+                    if (parsedVideo?.aid == video.aid) {
+                        parsedVideo = video.copy(userFavorited = isAlreadyFavorited)
+                        detailFavoriteButton.text = if (isAlreadyFavorited) "已收藏" else "收藏"
+                        detailFavoriteButton.setTextColor(if (isAlreadyFavorited) Color.WHITE else sub)
+                        detailFavoriteButton.background =
+                            rippleShape(if (isAlreadyFavorited) pink else field, 18)
+                    }
+                    val content = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setPadding(dp(18), dp(4), dp(18), dp(4))
+                    }
+                    content.addView(TextView(this).apply {
+                        text = "可同时勾选多个收藏夹；取消勾选已收藏的项目即可移出。"
+                        textSize = 12f
+                        setTextColor(sub)
+                        setPadding(0, 0, 0, dp(8))
+                    })
+                    val list = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                    }
+                    val checks = folders.map { folder ->
+                        CheckBox(this).apply {
+                            text = folder.title + "  ·  " + folder.mediaCount + " 个视频"
+                            textSize = 13f
+                            setTextColor(ink)
+                            isChecked = folder.favState
+                            setPadding(dp(4), dp(5), dp(4), dp(5))
+                            list.addView(this, LinearLayout.LayoutParams(match, wrap))
+                        }
+                    }
+                    val scroll = ScrollView(this).apply {
+                        isVerticalScrollBarEnabled = true
+                        addView(list, FrameLayout.LayoutParams(match, wrap))
+                    }
+                    content.addView(scroll, LinearLayout.LayoutParams(match, dp(300)))
+                    val dialog = AlertDialog.Builder(this)
+                        .setTitle("收藏夹")
+                        .setView(content)
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("保存", null)
+                        .create()
+                    dialog.setOnShowListener {
+                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                            val selected = folders.filterIndexed { index, _ ->
+                                checks[index].isChecked
+                            }
+                            val selectedIds = selected.map { it.id }.toSet()
+                            val addIds = folders.filter {
+                                !it.favState && it.id in selectedIds
+                            }.map { it.id }
+                            val removeIds = folders.filter {
+                                it.favState && it.id !in selectedIds
+                            }.map { it.id }
+                            if (addIds.isEmpty() && removeIds.isEmpty()) {
+                                dialog.dismiss()
+                                return@setOnClickListener
+                            }
+                            val saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                            setBusy(saveButton, true)
+                            backgroundExecutor.execute {
+                                try {
+                                    repositoryWithSavedCookie().updateVideoFavoriteFolders(
+                                        video.aid, addIds, removeIds
+                                    )
+                                    runOnUiThread {
+                                        if (parsedVideo?.aid == video.aid) {
+                                            val isFavorited = selectedIds.isNotEmpty()
+                                            parsedVideo = video.copy(userFavorited = isFavorited)
+                                            detailFavoriteButton.text =
+                                                if (isFavorited) "已收藏" else "收藏"
+                                            detailFavoriteButton.setTextColor(
+                                                if (isFavorited) Color.WHITE else sub
+                                            )
+                                            detailFavoriteButton.background =
+                                                rippleShape(if (isFavorited) pink else field, 18)
+                                        }
+                                        toast("收藏夹更新成功")
+                                        dialog.dismiss()
+                                    }
+                                } catch (error: Exception) {
+                                    runOnUiThread {
+                                        setBusy(saveButton, false)
+                                        toast(error.message ?: "收藏夹更新失败")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    dialog.show()
+                }
+            } catch (error: Exception) {
+                runOnUiThread { toast(error.message ?: "读取收藏夹失败") }
+            }
+        }
+    }
+
     private fun sendDetailComment(video: BiliVideo) {
         if (!requireInteractionLogin()) return
         val message = detailCommentInput.text?.toString()?.trim().orEmpty()
