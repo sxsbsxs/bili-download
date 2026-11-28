@@ -1823,7 +1823,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         mediaGroup.addView(combinedOption)
         mediaGroup.addView(audioOption)
         val preferAudioOnly = prefs.getBoolean("audio_only", false) && audioOption.isEnabled
-        mediaGroup.check(if (preferAudioOnly) audioOption.id else combinedOption.id)
+        val defaultMediaOption = when {
+            preferAudioOnly -> audioOption.id
+            !combinedOption.isEnabled && audioOption.isEnabled -> audioOption.id
+            else -> combinedOption.id
+        }
+        mediaGroup.check(defaultMediaOption)
         content.addView(mediaGroup, LinearLayout.LayoutParams(match, wrap))
 
         fun updateStreamEnabledState() {
