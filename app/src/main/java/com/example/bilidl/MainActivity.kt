@@ -124,8 +124,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadHomeFeed(reset: Boolean) {
-        if (searchLoading) return
+        if (!reset && searchLoading) return
         if (reset) {
+            searchRequestToken++
+            searchLoading = false
             searchKeyword = ""
             searchPage = 1
             searchResults.clear()
@@ -166,8 +168,10 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun startVideoSearch(query: String, reset: Boolean) {
-        if (searchLoading) return
+        if (!reset && searchLoading) return
         if (reset) {
+            searchRequestToken++
+            searchLoading = false
             searchKeyword = query
             searchPage = 1
             searchResults.clear()
@@ -465,7 +469,14 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(8), 0, 0)
         }, LinearLayout.LayoutParams(match, wrap))
         info.addView(TextView(this).apply {
-            text = "点赞 " + formatCount(likes) + "  ·  收藏 " + formatCount(favorites) +
+            text = "点赞 " + formatCount(likes) + "  ·  投币 " + formatCount(video.coinCount) +
+                "  ·  收藏 " + formatCount(favorites)
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(0, dp(5), 0, 0)
+        }, LinearLayout.LayoutParams(match, wrap))
+        info.addView(TextView(this).apply {
+            text = "分享 " + formatCount(video.shareCount) +
                 "  ·  时长 " + formatDuration(video.durationSeconds)
             textSize = 12f
             setTextColor(sub)
@@ -650,12 +661,24 @@ class MainActivity : ComponentActivity() {
                                         .build()
                                 )
                             } else {
-                                progressiveFactory.createMediaSource(
+                                val videoSource = progressiveFactory.createMediaSource(
                                     MediaItem.Builder()
                                         .setUri(source.videoUrls.first())
                                         .setMimeType(MimeTypes.VIDEO_MP4)
                                         .build()
                                 )
+                                val audioUrl = source.audioUrls.firstOrNull()
+                                if (audioUrl.isNullOrBlank()) {
+                                    videoSource
+                                } else {
+                                    val audioSource = progressiveFactory.createMediaSource(
+                                        MediaItem.Builder()
+                                            .setUri(audioUrl)
+                                            .setMimeType(MimeTypes.AUDIO_MP4)
+                                            .build()
+                                    )
+                                    MergingMediaSource(videoSource, audioSource)
+                                }
                             }
                         }
                         source.directUrls.isNotEmpty() -> {
