@@ -69,7 +69,7 @@ internal object SegmentedHttpDownloader {
         val probe = probeWithRetry(url, cookie)
         if (
             probe == null ||
-            !TransferCheckpointPolicy.supportsVerifiedRanges(probe.etag, probe.lastModified)
+            !DownloadTransportPolicy.supportsVerifiedRanges(probe.etag, probe.lastModified)
         ) {
             // Without a stable validator, parallel ranges could mix bytes from
             // different CDN representations. Use a clean sequential response.
@@ -140,7 +140,11 @@ internal object SegmentedHttpDownloader {
         target.parentFile?.mkdirs()
         val mapFile = File(target.absolutePath + ".ranges")
         val metaFile = File(target.absolutePath + ".meta")
-        val chunkCount = ((probe.totalBytes + CHUNK_SIZE - 1L) / CHUNK_SIZE).toInt()
+        val chunkCountLong = ((probe.totalBytes - 1L) / CHUNK_SIZE) + 1L
+        if (chunkCountLong > Int.MAX_VALUE) {
+            throw IOException("文件分段数量超过当前设备支持范围")
+        }
+        val chunkCount = chunkCountLong.toInt()
         val expectedMeta = listOf(
             probe.totalBytes.toString(),
             probe.etag,
@@ -160,16 +164,35 @@ internal object SegmentedHttpDownloader {
             mapMatches = mapMatches
         )
 
-        val completed = if (reusable) {
+        var reusableCheckpoint = reusable
+        val completed = if (reusableCheckpoint) {
             mapFile.readText().map { it == '1' }.toBooleanArray()
         } else {
-            java.io.RandomAccessFile(target, "rw").use { it.setLength(probe.totalBytes) }
-            metaFile.writeText(expectedMeta)
-            BooleanArray(chunkCount).also { mapFile.writeText("0".repeat(chunkCount)) }
+            BooleanArray(chunkCount)
         }
 
         if (completed.size != chunkCount) {
             completed.fill(false)
+            reusableCheckpoint = false
+        }
+
+        val additionalBytes = DownloadTransportPolicy.additionalBytesRequired(
+            totalBytes = probe.totalBytes,
+            chunkSize = CHUNK_SIZE,
+            completed = completed
+        )
+        val availableBytes = target.parentFile?.usableSpace ?: 0L
+        if (!DownloadTransportPolicy.hasEnoughSpace(availableBytes, additionalBytes)) {
+            throw IOException(
+                "存储空间不足：还需要约 " +
+                    BiliDownloadEngine.formatSize(additionalBytes) +
+                    "，请清理下载目录后重试"
+            )
+        }
+
+        if (!reusableCheckpoint) {
+            java.io.RandomAccessFile(target, "rw").use { it.setLength(probe.totalBytes) }
+            metaFile.writeText(expectedMeta)
             mapFile.writeText("0".repeat(chunkCount))
         }
 
@@ -293,7 +316,10 @@ internal object SegmentedHttpDownloader {
     ): Long = withContext(Dispatchers.IO) {
         val connection = openConnection(url, cookie).apply {
             setRequestProperty("Range", "bytes=$start-$end")
-            val validator = probe.etag.ifBlank { probe.lastModified }
+            val validator = DownloadTransportPolicy.ifRangeValidator(
+                probe.etag,
+                probe.lastModified
+            )
             if (validator.isNotBlank()) setRequestProperty("If-Range", validator)
         }
         try {
@@ -309,6 +335,15 @@ internal object SegmentedHttpDownloader {
             val actualTotal = match.groupValues[3].toLong()
             if (actualStart != start || actualEnd != end || actualTotal != probe.totalBytes) {
                 throw IOException("CDN 返回了不匹配的分段范围")
+            }
+            if (!DownloadTransportPolicy.responseMatchesValidator(
+                    expectedEtag = probe.etag,
+                    expectedLastModified = probe.lastModified,
+                    responseEtag = connection.getHeaderField("ETag").orEmpty(),
+                    responseLastModified = connection.getHeaderField("Last-Modified").orEmpty()
+                )
+            ) {
+                throw IOException("CDN 文件版本在下载期间发生变化，已停止合并不同版本的数据")
             }
 
             var offset = start
@@ -377,8 +412,11 @@ internal object SegmentedHttpDownloader {
         val connection = openConnection(url, cookie)
         try {
             val status = connection.responseCode
-            if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_PARTIAL) {
-                throw BiliHttpException(status, "下载服务器请求")
+            // This request is intentionally a complete GET without Range. A 206
+            // response is only a partial representation and must never be published
+            // as a complete video, even when its Content-Length matches the body.
+            if (status != HttpURLConnection.HTTP_OK) {
+                throw BiliHttpException(status, "完整文件下载请求")
             }
             val total = connection.contentLengthLong
             var copied = 0L
@@ -404,8 +442,8 @@ internal object SegmentedHttpDownloader {
                 }
             }
             if (copied == 0L) throw IOException("下载到的文件为空")
-            if (total > 0L && copied < total) {
-                throw RetryableDownloadException("下载未完成，连接提前中断")
+            if (total > 0L && copied != total) {
+                throw RetryableDownloadException("下载长度不匹配：$copied / $total 字节")
             }
             File(target.absolutePath + ".ranges").delete()
             File(target.absolutePath + ".meta").delete()
@@ -426,8 +464,8 @@ internal object SegmentedHttpDownloader {
             setRequestProperty("Accept", "*/*")
             setRequestProperty("Accept-Encoding", "identity")
             setRequestProperty("Connection", "keep-alive")
-            if (!cookie.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=$cookie")
+            DownloadTransportPolicy.cookieHeader(cookie)?.let {
+                setRequestProperty("Cookie", it)
             }
         }
     }
