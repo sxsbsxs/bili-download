@@ -14,22 +14,5 @@
     <string name="about_repository_url">github.com/sxsbsxs/bili-download</string>
     <string name="about_update_title">检查更新</string>
     <string name="about_update_summary">从 GitHub Releases 检查最新正式安装包</string>
-    <string name="onboarding_header">快速上手</string>
-    <string name="onboarding_step_format">%1$02d / %2$02d</string>
-    <string name="onboarding_next">下一步</string>
-    <string name="onboarding_finish">完成</string>
-    <string-array name="onboarding_titles">
-        <item>欢迎使用 BiliDl</item>
-        <item>发现喜欢的视频</item>
-        <item>查看画质与分P</item>
-        <item>管理下载任务</item>
-        <item>登录按需选择</item>
-    </string-array>
-    <string-array name="onboarding_descriptions">
-        <item>一个专注于 B 站视频发现、解析与下载的工具。接下来用五步了解主要功能。</item>
-        <item>在首页浏览热门推荐，也可以搜索视频标题、UP 主，或直接使用 BV / AV 号。</item>
-        <item>打开视频后，查看接口实际返回的画质和分P。显示哪些选项，就以视频源当前提供的资源为准。</item>
-        <item>下载任务集中显示在下载页。你可以查看进度、暂停、继续、重试失败任务或清理记录。</item>
-        <item>公开内容可以先直接体验。部分清晰度和资源可能受 B 站账号权限影响，需要时再扫码登录。</item>
-    </string-array>
+
 </resources>
