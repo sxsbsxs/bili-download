@@ -1008,8 +1008,24 @@ class BiliRepository(
     }
 
     private fun getPlayInfo(bvid: String?, aid: Long, cid: Long, quality: Int): JSONObject {
+        // First mirror Bilimiao2's public HTTP playurl request. It uses the aid/cid
+        // pair and does not require WBI signing when Bilibili returns a public stream.
+        val publicParameters = BiliPlayUrlPolicy.publicPlayUrlParameters(aid, cid, quality)
+        val publicQuery = publicParameters.entries.joinToString("&") {
+            encode(it.key) + "=" + encode(it.value)
+        }
+        val publicResponse = runCatching {
+            requestJson("https://api.bilibili.com/x/player/playurl?" + publicQuery)
+        }.getOrNull()
+        if (publicResponse != null && hasPlayablePlayInfo(publicResponse)) {
+            return publicResponse
+        }
+
+        // Fall back to WBI. For anonymous requests try_look=1 may expose additional
+        // ordinary-user formats; authenticated requests omit it. Neither path
+        // bypasses premium-only restrictions.
         val parameters = linkedMapOf<String, String>()
-        if (!bvid.isNullOrBlank()) parameters["bvid"] = bvid else parameters["avid"] = aid.toString()
+        if (!bvid.isNullOrBlank()) parameters["bvid"] = bvid else parameters["aid"] = aid.toString()
         parameters["cid"] = cid.toString()
         parameters["qn"] = quality.toString()
         parameters["fnval"] = "4048"
@@ -1019,17 +1035,21 @@ class BiliRepository(
         parameters["otype"] = "json"
         parameters["type"] = ""
         parameters["web_location"] = "1315873"
-
-        // Match the anonymous playurl path used by yt-dlp/Bilibili community clients:
-        // try_look=1 can expose ordinary 720P/1080P streams where Bilibili allows it.
-        // Authenticated requests omit the flag; premium-only formats remain restricted.
         BiliPlayUrlPolicy.applyTryLook(
             parameters,
             hasSessionCookie = !cookieHeader(cookieProvider()).isNullOrBlank()
         )
-
         val signedQuery = signWbi(parameters)
         return requestJson("https://api.bilibili.com/x/player/wbi/playurl?" + signedQuery)
+    }
+
+    private fun hasPlayablePlayInfo(root: JSONObject): Boolean {
+        if (root.optInt("code", -1) != 0) return false
+        val data = root.optJSONObject("data") ?: return false
+        val dash = data.optJSONObject("dash")
+        val hasDashVideo = (dash?.optJSONArray("video")?.length() ?: 0) > 0
+        val hasDurl = (data.optJSONArray("durl")?.length() ?: 0) > 0
+        return hasDashVideo || hasDurl
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
