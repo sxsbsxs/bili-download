@@ -47,7 +47,14 @@ data class BiliVideo(
     val favoriteCount: Long = 0L,
     val shareCount: Long = 0L,
     val commentCount: Long = 0L,
-    val publishTime: Long = 0L
+    val publishTime: Long = 0L,
+    val categoryName: String = "",
+    val categoryId: Int = 0,
+    val copyright: Int = 0,
+    val ownerMid: Long = 0L,
+    val userLiked: Boolean = false,
+    val userCoin: Int = 0,
+    val userFavorited: Boolean = false
 )
 
 data class BiliPlaySource(
@@ -85,6 +92,30 @@ data class BiliSearchVideo(
     val publishTime: Long,
     val description: String,
     val tags: List<String>
+)
+
+data class BiliComment(
+    val id: Long,
+    val userName: String,
+    val avatarUrl: String?,
+    val message: String,
+    val likeCount: Long,
+    val replyCount: Long,
+    val createTime: Long,
+    val likedByMe: Boolean
+)
+
+data class BiliFavoriteFolder(
+    val id: Long,
+    val title: String,
+    val mediaCount: Long
+)
+
+data class BiliCommentPage(
+    val comments: List<BiliComment>,
+    val totalCount: Long,
+    val nextPage: Int,
+    val hasMore: Boolean
 )
 
 class BiliRepository(
@@ -333,7 +364,14 @@ class BiliRepository(
             favoriteCount = stat?.optLong("favorite") ?: 0L,
             shareCount = stat?.optLong("share") ?: 0L,
             commentCount = stat?.optLong("reply") ?: 0L,
-            publishTime = data.optLong("pubdate")
+            publishTime = data.optLong("pubdate"),
+            categoryName = data.optString("tname"),
+            categoryId = data.optInt("tid"),
+            copyright = data.optInt("copyright"),
+            ownerMid = data.optJSONObject("owner")?.optLong("mid") ?: 0L,
+            userLiked = data.optJSONObject("req_user")?.optInt("like") == 1,
+            userCoin = data.optJSONObject("req_user")?.optInt("coin") ?: 0,
+            userFavorited = data.optJSONObject("req_user")?.optInt("favorite") == 1
         )
     }
 
@@ -491,6 +529,257 @@ class BiliRepository(
         return requestBytes(url)
     }
 
+    /**
+     * B站 XML 弹幕源。时间戳按播放器进度同步渲染。
+     */
+    fun getDanmakuXml(cid: Long): String {
+        require(cid > 0L) { "视频 CID 无效" }
+        return requestText("https://comment.bilibili.com/" + cid + ".xml")
+    }
+
+    fun sendDanmaku(
+        video: BiliVideo,
+        text: String,
+        progressMs: Long,
+        color: Int = 0xFFFFFF,
+        fontSize: Int = 25,
+        mode: Int = 1
+    ) {
+        val message = text.trim().replace(Regex("\\s+"), " ")
+        if (message.isBlank()) throw IOException("请输入弹幕内容")
+        if (message.codePointCount(0, message.length) > 50) throw IOException("弹幕最多 50 个字符")
+        if (mode !in setOf(1, 4, 5)) throw IOException("暂不支持这种弹幕类型")
+        val csrf = requireCsrf()
+        val root = requestFormJson(
+            "https://api.bilibili.com/x/v2/dm/post",
+            linkedMapOf(
+                "type" to "1",
+                "oid" to video.cid.toString(),
+                "aid" to video.aid.toString(),
+                "msg" to message,
+                "progress" to progressMs.coerceAtLeast(0L).toString(),
+                "color" to color.toString(),
+                "fontsize" to fontSize.coerceIn(18, 36).toString(),
+                "mode" to mode.toString(),
+                "rnd" to System.currentTimeMillis().toString(),
+                "csrf" to csrf,
+                "csrf_token" to csrf
+            )
+        )
+        ensureMutationSuccess(root, "弹幕发送失败")
+    }
+
+    fun setVideoLike(aid: Long, liked: Boolean) {
+        val csrf = requireCsrf()
+        val root = requestFormJson(
+            "https://api.bilibili.com/x/v2/view/like",
+            mapOf(
+                "aid" to aid.toString(),
+                "like" to if (liked) "1" else "2",
+                "dislike" to "0",
+                "csrf" to csrf,
+                "csrf_token" to csrf
+            )
+        )
+        ensureMutationSuccess(root, if (liked) "点赞失败" else "取消点赞失败")
+    }
+
+    fun tripleLike(aid: Long) {
+        val csrf = requireCsrf()
+        val root = requestFormJson(
+            "https://api.bilibili.com/x/v2/view/like/triple",
+            mapOf("aid" to aid.toString(), "csrf" to csrf, "csrf_token" to csrf)
+        )
+        ensureMutationSuccess(root, "一键三连失败")
+    }
+
+    fun addVideoCoin(aid: Long, count: Int = 1, alsoLike: Boolean = false) {
+        val csrf = requireCsrf()
+        val root = requestFormJson(
+            "https://api.bilibili.com/x/v2/view/coin/add",
+            mapOf(
+                "aid" to aid.toString(),
+                "multiply" to count.coerceIn(1, 2).toString(),
+                "select_like" to if (alsoLike) "1" else "0",
+                "csrf" to csrf,
+                "csrf_token" to csrf
+            )
+        )
+        ensureMutationSuccess(root, "投币失败")
+    }
+
+    fun getFavoriteFolders(aid: Long, ownerMid: Long = 0L): List<BiliFavoriteFolder> {
+        val mid = if (ownerMid > 0L) ownerMid else getCurrentMid()
+        val root = requestJson(
+            "https://api.bilibili.com/medialist/gateway/base/created?up_mid=" + mid +
+                "&rid=" + aid + "&type=2&pn=1&ps=100"
+        )
+        val data = checkedData(root)
+        val list = data.optJSONArray("list") ?: JSONArray()
+        return (0 until list.length()).mapNotNull { index ->
+            val item = list.optJSONObject(index) ?: return@mapNotNull null
+            val id = item.optLong("id").takeIf { it > 0L } ?: return@mapNotNull null
+            BiliFavoriteFolder(
+                id = id,
+                title = item.optString("title").ifBlank { "收藏夹 " + id },
+                mediaCount = item.optLong("media_count")
+            )
+        }
+    }
+
+    fun addVideoToFavorite(aid: Long, folderId: Long) {
+        require(folderId > 0L) { "收藏夹无效" }
+        val csrf = requireCsrf()
+        val root = requestFormJson(
+            "https://api.bilibili.com/medialist/gateway/coll/resource/deal",
+            mapOf(
+                "rid" to aid.toString(),
+                "type" to "2",
+                "add_media_ids" to folderId.toString(),
+                "del_media_ids" to "",
+                "csrf" to csrf,
+                "csrf_token" to csrf
+            )
+        )
+        ensureMutationSuccess(root, "收藏失败")
+    }
+
+    fun getVideoComments(aid: Long, page: Int = 1, pageSize: Int = 20, sort: Int = 2): BiliCommentPage {
+        val currentPage = page.coerceAtLeast(1)
+        val size = pageSize.coerceIn(1, 50)
+        val root = requestJson(
+            "https://api.bilibili.com/x/v2/reply/main?oid=" + aid +
+                "&plat=2&type=1&sort=" + (if (sort == 0) 0 else 2) +
+                "&pn=" + currentPage + "&ps=" + size
+        )
+        val data = checkedData(root)
+        val replies = data.optJSONArray("replies") ?: JSONArray()
+        val comments = (0 until replies.length()).mapNotNull { index ->
+            val item = replies.optJSONObject(index) ?: return@mapNotNull null
+            val content = item.optJSONObject("content")
+            val member = item.optJSONObject("member")
+            val message = content?.optString("message").orEmpty().trim()
+            val id = item.optLong("rpid")
+            if (id <= 0L || message.isBlank()) return@mapNotNull null
+            BiliComment(
+                id = id,
+                userName = member?.optString("uname").orEmpty().ifBlank { "B站用户" },
+                avatarUrl = member?.optString("avatar")?.takeIf { it.startsWith("http") },
+                message = message,
+                likeCount = item.optLong("like"),
+                replyCount = item.optLong("rcount"),
+                createTime = item.optLong("ctime"),
+                likedByMe = item.optInt("action") == 1
+            )
+        }
+        val total = data.optJSONObject("page")?.optLong("count") ?: comments.size.toLong()
+        return BiliCommentPage(
+            comments = comments,
+            totalCount = total,
+            nextPage = currentPage + 1,
+            hasMore = currentPage * size < total && comments.isNotEmpty()
+        )
+    }
+
+    fun sendVideoComment(aid: Long, message: String) {
+        val text = message.trim()
+        if (text.isBlank()) throw IOException("请输入评论内容")
+        if (text.length > 1000) throw IOException("评论内容过长")
+        val csrf = requireCsrf()
+        val root = requestFormJson(
+            "https://api.bilibili.com/x/v2/reply/add",
+            mapOf(
+                "type" to "1",
+                "oid" to aid.toString(),
+                "message" to text,
+                "plat" to "2",
+                "csrf" to csrf,
+                "csrf_token" to csrf
+            )
+        )
+        ensureMutationSuccess(root, "评论发送失败")
+    }
+
+    fun likeVideoComment(aid: Long, rpid: Long, liked: Boolean) {
+        val csrf = requireCsrf()
+        val root = requestFormJson(
+            "https://api.bilibili.com/x/v2/reply/action",
+            mapOf(
+                "type" to "1",
+                "oid" to aid.toString(),
+                "rpid" to rpid.toString(),
+                "action" to if (liked) "1" else "0",
+                "csrf" to csrf,
+                "csrf_token" to csrf
+            )
+        )
+        ensureMutationSuccess(root, "评论互动失败")
+    }
+
+    fun getRelatedVideos(aid: Long): List<BiliSearchVideo> {
+        val root = requestJson("https://api.bilibili.com/x/web-interface/archive/related?aid=" + aid)
+        val data = checkedData(root)
+        val array = data.optJSONArray("list") ?: data.optJSONArray("archives") ?: JSONArray()
+        return parseVideoItems(array)
+    }
+
+    private fun getCurrentMid(): Long {
+        val root = requestJson("https://api.bilibili.com/x/web-interface/nav")
+        return checkedData(root).optLong("mid").takeIf { it > 0L }
+            ?: throw IOException("无法获取当前 B 站账号 ID")
+    }
+
+    private fun requireCsrf(): String {
+        val cookie = cookieHeader(cookieProvider()).orEmpty()
+        val csrf = SecureCookieStore.cookieValue(cookie, "bili_jct")
+        if (csrf.isBlank()) {
+            throw IOException(
+                "登录凭据缺少 bili_jct。请重新扫码登录，或粘贴包含 bili_jct 的完整 Cookie"
+            )
+        }
+        return csrf
+    }
+
+    private fun ensureMutationSuccess(root: JSONObject, fallback: String) {
+        val code = root.optInt("code", -1)
+        if (code != 0) {
+            val message = root.optString("message").ifBlank { fallback }
+            throw IOException(fallback + "：" + message + "（" + code + "）")
+        }
+    }
+
+    private fun requestFormJson(url: String, form: Map<String, String>): JSONObject {
+        val cookie = cookieHeader(cookieProvider())
+            ?: throw IOException("请先登录 B 站账号")
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 15_000
+            readTimeout = 25_000
+            doOutput = true
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", userAgent)
+            setRequestProperty("Referer", "https://www.bilibili.com/")
+            setRequestProperty("Origin", "https://www.bilibili.com")
+            setRequestProperty("Accept", "application/json, text/plain, */*")
+            setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+            setRequestProperty("Cookie", cookie)
+        }
+        try {
+            val body = form.entries.joinToString("&") { encode(it.key) + "=" + encode(it.value) }
+            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val status = connection.responseCode
+            val stream = if (status in 200..299) connection.inputStream
+                else connection.errorStream ?: throw BiliHttpException(status, "B站互动请求")
+            val response = stream.use {
+                BufferedReader(InputStreamReader(it, Charsets.UTF_8)).readText()
+            }
+            if (status !in 200..299) throw BiliHttpException(status, "B站互动请求", response.take(160))
+            return JSONObject(response)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun normalizeSubtitleUrl(value: String): String = when {
         value.startsWith("//") -> "https:$value"
         value.startsWith("http://", ignoreCase = true) ||
@@ -510,9 +799,7 @@ class BiliRepository(
             setRequestProperty("Origin", "https://www.bilibili.com")
             setRequestProperty("Accept", "application/json, text/plain, */*")
             setRequestProperty("Accept-Encoding", "identity")
-            if (!cookieOverride.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
-            }
+            cookieHeader(cookieOverride)?.let { setRequestProperty("Cookie", it) }
         }
         try {
             val status = connection.responseCode
@@ -522,7 +809,11 @@ class BiliRepository(
                 }.getOrNull().orEmpty().take(160)
                 throw BiliHttpException(status, "B站字幕请求", detail)
             }
-            return connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val stream = connection.inputStream
+            val decoded = if (connection.contentEncoding.equals("gzip", ignoreCase = true)) {
+                java.util.zip.GZIPInputStream(stream)
+            } else stream
+            return decoded.bufferedReader(Charsets.UTF_8).use { it.readText() }
         } finally {
             connection.disconnect()
         }
@@ -539,9 +830,7 @@ class BiliRepository(
             setRequestProperty("Origin", "https://www.bilibili.com")
             setRequestProperty("Accept", "application/octet-stream, */*")
             setRequestProperty("Accept-Encoding", "identity")
-            if (!cookieOverride.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
-            }
+            cookieHeader(cookieOverride)?.let { setRequestProperty("Cookie", it) }
         }
         try {
             val status = connection.responseCode
@@ -748,9 +1037,7 @@ class BiliRepository(
             setRequestProperty("Origin", "https://www.bilibili.com")
             setRequestProperty("Accept", "application/json, text/plain, */*")
             setRequestProperty("Accept-Encoding", "identity")
-            if (!cookieOverride.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
-            }
+            cookieHeader(cookieOverride)?.let { setRequestProperty("Cookie", it) }
         }
         try {
             val status = connection.responseCode
@@ -765,6 +1052,16 @@ class BiliRepository(
             return JSONObject(body)
         } finally {
             connection.disconnect()
+        }
+    }
+
+    private fun cookieHeader(rawCookie: String?): String? {
+        if (rawCookie.isNullOrBlank()) return null
+        val value = rawCookie.trim()
+        return if (value.contains(Regex("""(?:^|;\s*)SESSDATA="""))) {
+            value
+        } else {
+            "SESSDATA=" + value
         }
     }
 
