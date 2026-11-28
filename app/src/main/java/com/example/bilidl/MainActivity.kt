@@ -2820,11 +2820,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         cancelled: java.util.concurrent.atomic.AtomicBoolean
     ): BatchStreamSelection? {
         if (options.direct) return null
-        val needsVideo = !preferred.audioOnly
-        val needsAudio = preferred.includeAudio
-        if ((needsVideo && options.videoChoices.isEmpty()) ||
-            (needsAudio && options.audioChoices.isEmpty())
-        ) return null
+        val hasVideo = options.videoChoices.isNotEmpty()
+        val hasAudio = options.audioChoices.isNotEmpty()
+        if (!hasVideo && !hasAudio) return null
 
         val latch = java.util.concurrent.CountDownLatch(1)
         val result = java.util.concurrent.atomic.AtomicReference<BatchStreamSelection?>()
@@ -2849,10 +2847,26 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     setPadding(0, dp(10), 0, dp(4))
                 }, LinearLayout.LayoutParams(match, wrap))
             }
+
+            val videoToggle = CheckBox(this).apply {
+                text = "下载视频轨"
+                setTextColor(ink)
+                isEnabled = hasVideo
+                isChecked = hasVideo && !preferred.audioOnly
+            }
+            val audioToggle = CheckBox(this).apply {
+                text = "下载音频轨"
+                setTextColor(ink)
+                isEnabled = hasAudio
+                isChecked = hasAudio && preferred.includeAudio
+            }
+            body.addView(videoToggle)
+            body.addView(audioToggle)
+
             val videoSpinner = android.widget.Spinner(this)
             val audioSpinner = android.widget.Spinner(this)
-            if (needsVideo) {
-                heading("当前分P的视频轨道")
+            if (hasVideo) {
+                heading("视频规格 · 画质 / 编码 / 码率")
                 videoSpinner.adapter = android.widget.ArrayAdapter(
                     this,
                     android.R.layout.simple_spinner_item,
@@ -2866,8 +2880,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 )
                 body.addView(videoSpinner, LinearLayout.LayoutParams(match, dp(48)))
             }
-            if (needsAudio) {
-                heading("当前分P的音频轨道")
+            if (hasAudio) {
+                heading("音频规格 · 编码 / 码率")
                 audioSpinner.adapter = android.widget.ArrayAdapter(
                     this,
                     android.R.layout.simple_spinner_item,
@@ -2881,8 +2895,17 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 )
                 body.addView(audioSpinner, LinearLayout.LayoutParams(match, dp(48)))
             }
+
+            fun updateSelectionControls() {
+                videoSpinner.isEnabled = hasVideo && videoToggle.isChecked
+                audioSpinner.isEnabled = hasAudio && audioToggle.isChecked
+            }
+            videoToggle.setOnCheckedChangeListener { _, _ -> updateSelectionControls() }
+            audioToggle.setOnCheckedChangeListener { _, _ -> updateSelectionControls() }
+            updateSelectionControls()
+
             body.addView(TextView(this).apply {
-                text = "该分P没有首个分P所选的完全匹配规格。这里只显示 B 站当前实际返回的轨道。"
+                text = "可只选视频、只选音频，或同时选择两条轨道。未选择的轨道不会加入该分P任务。"
                 textSize = 11f
                 setTextColor(sub)
                 setPadding(0, dp(10), 0, dp(2))
@@ -2896,23 +2919,38 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     cancelled.set(true)
                     latch.countDown()
                 }
-                .setPositiveButton("使用所选规格", null)
+                .setPositiveButton("使用所选轨道", null)
                 .create()
             dialogRef.set(dialog)
             dialog.setOnCancelListener { latch.countDown() }
             dialog.setOnShowListener {
                 dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                    val selectedVideo = if (needsVideo) {
-                        options.videoChoices.getOrNull(videoSpinner.selectedItemPosition)
-                    } else null
-                    val selectedAudio = if (needsAudio) {
-                        options.audioChoices.getOrNull(audioSpinner.selectedItemPosition)
-                    } else null
-                    if ((needsVideo && selectedVideo == null) || (needsAudio && selectedAudio == null)) {
-                        toast("当前分P没有可选的完整音视频规格")
+                    val includeVideo = videoToggle.isChecked
+                    val includeAudio = audioToggle.isChecked
+                    if (!includeVideo && !includeAudio) {
+                        toast("请至少选择视频轨或音频轨")
                         return@setOnClickListener
                     }
-                    result.set(BatchStreamSelection(selectedVideo, selectedAudio))
+                    val selectedVideo = if (includeVideo) {
+                        options.videoChoices.getOrNull(videoSpinner.selectedItemPosition)
+                    } else null
+                    val selectedAudio = if (includeAudio) {
+                        options.audioChoices.getOrNull(audioSpinner.selectedItemPosition)
+                    } else null
+                    if ((includeVideo && selectedVideo == null) ||
+                        (includeAudio && selectedAudio == null)
+                    ) {
+                        toast("所选轨道已不可用，请重新选择")
+                        return@setOnClickListener
+                    }
+                    result.set(
+                        BatchStreamSelection(
+                            video = selectedVideo,
+                            audio = selectedAudio,
+                            audioOnly = !includeVideo && includeAudio,
+                            includeAudio = includeAudio
+                        )
+                    )
                     dialog.dismiss()
                     latch.countDown()
                 }
@@ -3011,32 +3049,38 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         noUsableVideo || noUsableAudio
 
                     val finalSelection = when {
-                        !mismatch -> BatchStreamSelection(videoChoice, audioChoice)
+                        !mismatch -> BatchStreamSelection(
+                            video = videoChoice,
+                            audio = audioChoice,
+                            audioOnly = preferred.audioOnly,
+                            includeAudio = preferred.includeAudio,
+                            direct = options.direct
+                        )
                         mode == BatchQualityMismatchMode.ASK ->
                             awaitBatchStreamSelection(partVideo, options, preferred, cancelled)
                         else -> null
                     }
                     if (cancelled.get()) break
 
-                    if (finalSelection == null ||
-                        (!options.direct && !preferred.audioOnly && finalSelection.video == null) ||
-                        (!options.direct && preferred.includeAudio && finalSelection.audio == null)
-                    ) {
+                    val hasSelectedMedia = finalSelection != null &&
+                        (finalSelection.direct || finalSelection.video != null || finalSelection.audio != null)
+                    if (!hasSelectedMedia) {
                         skipped += page.pageNumber
                     } else {
-                        val targetQuality = finalSelection.video?.id
+                        val selected = requireNotNull(finalSelection)
+                        val targetQuality = selected.video?.id
                             ?: partVideo.qualities.firstOrNull()?.id
                             ?: preferred.qualityId
                         prepared += DownloadSpec(
                             video = partVideo,
                             qualityId = targetQuality,
-                            audioOnly = preferred.audioOnly,
+                            audioOnly = selected.audioOnly,
                             downloadDanmaku = preferred.downloadDanmaku,
                             downloadSubtitles = preferred.downloadSubtitles,
                             downloadCover = preferred.downloadCover,
-                            videoStreamChoice = finalSelection.video,
-                            audioStreamChoice = finalSelection.audio,
-                            includeAudio = preferred.includeAudio
+                            videoStreamChoice = selected.video,
+                            audioStreamChoice = selected.audio,
+                            includeAudio = selected.includeAudio
                         )
                     }
                 } catch (_: Exception) {
@@ -3324,7 +3368,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private var selectedQualityId = 0
     private data class BatchStreamSelection(
         val video: BiliStreamChoice?,
-        val audio: BiliStreamChoice?
+        val audio: BiliStreamChoice?,
+        val audioOnly: Boolean,
+        val includeAudio: Boolean,
+        val direct: Boolean = false
     )
 
     private data class DownloadSpec(
