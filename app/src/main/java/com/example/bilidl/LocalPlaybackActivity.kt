@@ -1,11 +1,11 @@
 package com.example.bilidl
 
 import android.app.PictureInPictureParams
+import android.graphics.Color
+import android.graphics.Typeface
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
-import android.graphics.Color
-import android.graphics.Typeface
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
@@ -14,33 +14,38 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Rational
 import android.view.Gravity
+import android.view.SurfaceHolder
+import android.view.SurfaceView
 import android.view.View
-import android.widget.PopupMenu
 import android.widget.Button
 import android.widget.LinearLayout
-import android.widget.MediaController
+import android.widget.PopupMenu
 import android.widget.SeekBar
 import android.widget.TextView
-import android.widget.VideoView
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import java.util.Locale
 
-/** Lightweight built-in video/audio playback for resources downloaded by BiliDl. */
+/** Built-in audio/video playback with shared MediaPlayer speed, seek and PiP controls. */
 class LocalPlaybackActivity : ComponentActivity() {
 
     private var mediaPlayer: MediaPlayer? = null
-    private var videoView: VideoView? = null
+    private var videoSurface: SurfaceView? = null
+    private var isVideoMode = false
+    private var isPrepared = false
+    private var playbackSpeed = 1f
+    private var pipAspectRatio = Rational(16, 9)
+
     private var progressBar: SeekBar? = null
     private var playButton: Button? = null
     private var durationText: TextView? = null
-    private var isPrepared = false
-    private var pipAspectRatio = Rational(16, 9)
-    private var playbackSpeed = 1f
     private var speedLabel: TextView? = null
+
     private var audioManager: AudioManager? = null
     private var audioFocusRequest: AudioFocusRequest? = null
     private var resumeAfterTransientFocusLoss = false
 
+    private val handler = Handler(Looper.getMainLooper())
     private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
         val player = mediaPlayer
         when (change) {
@@ -48,12 +53,14 @@ class LocalPlaybackActivity : ComponentActivity() {
                 player?.setVolume(1f, 1f)
                 if (resumeAfterTransientFocusLoss && isPrepared) {
                     runCatching { player?.start() }
+                    applyPlaybackSpeed()
                     playButton?.text = "暂停"
                     handler.removeCallbacks(progressUpdater)
                     handler.post(progressUpdater)
                 }
                 resumeAfterTransientFocusLoss = false
             }
+
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 resumeAfterTransientFocusLoss = player?.isPlaying == true
@@ -65,6 +72,7 @@ class LocalPlaybackActivity : ComponentActivity() {
                     player?.setVolume(0.2f, 0.2f)
                 }
             }
+
             AudioManager.AUDIOFOCUS_LOSS -> {
                 resumeAfterTransientFocusLoss = false
                 if (player?.isPlaying == true) runCatching { player.pause() }
@@ -75,13 +83,13 @@ class LocalPlaybackActivity : ComponentActivity() {
         }
     }
 
-    private val handler = Handler(Looper.getMainLooper())
     private val progressUpdater = object : Runnable {
         override fun run() {
             val player = mediaPlayer
             if (player != null && isPrepared && player.isPlaying) {
                 progressBar?.progress = player.currentPosition
-                durationText?.text = formatTime(player.currentPosition) + " / " + formatTime(player.duration)
+                durationText?.text =
+                    formatTime(player.currentPosition) + " / " + formatTime(player.duration)
                 handler.postDelayed(this, 500)
             }
         }
@@ -96,40 +104,74 @@ class LocalPlaybackActivity : ComponentActivity() {
         }
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "BiliDl 播放器" }
         val mime = intent.getStringExtra(EXTRA_MIME).orEmpty()
-        setContentView(if (mime.startsWith("audio/")) buildAudioPlayer(title, uri) else buildVideoPlayer(title, uri))
+        isVideoMode = !mime.startsWith("audio/")
+        setContentView(
+            if (isVideoMode) buildVideoPlayer(title, uri)
+            else buildAudioPlayer(title, uri)
+        )
     }
 
-    private fun buildVideoPlayer(title: String, uri: Uri): android.view.View {
+    private fun buildVideoPlayer(title: String, uri: Uri): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
         }
         root.addView(buildToolbar(title, dark = true))
-        val player = VideoView(this)
-        videoView = player
-        root.addView(player, LinearLayout.LayoutParams(-1, 0, 1f))
-        val controller = MediaController(this)
-        controller.setAnchorView(player)
-        player.setMediaController(controller)
-        player.setVideoURI(uri)
-        player.setOnPreparedListener { prepared ->
-            prepared.isLooping = false
-            if (prepared.videoWidth > 0 && prepared.videoHeight > 0) {
-                val ratio = prepared.videoWidth.toDouble() / prepared.videoHeight.toDouble()
-                val safeRatio = ratio.coerceIn(1.0 / 2.39, 2.39)
-                pipAspectRatio = Rational((safeRatio * 1000).toInt(), 1000)
+
+        val surface = SurfaceView(this)
+        videoSurface = surface
+        root.addView(surface, LinearLayout.LayoutParams(-1, 0, 1f))
+        surface.holder.addCallback(object : SurfaceHolder.Callback {
+            override fun surfaceCreated(holder: SurfaceHolder) {
+                val activePlayer = mediaPlayer
+                if (activePlayer != null && isPrepared) {
+                    runCatching { activePlayer.setDisplay(holder) }
+                } else if (activePlayer == null) {
+                    createVideoPlayer(uri, holder)
+                }
             }
-            applyPlaybackSpeed()
-            player.start()
+
+            override fun surfaceChanged(
+                holder: SurfaceHolder,
+                format: Int,
+                width: Int,
+                height: Int
+            ) = Unit
+
+            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                if (!isInPictureInPictureMode) {
+                    runCatching { mediaPlayer?.setDisplay(null) }
+                }
+            }
+        })
+
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(4), dp(12), dp(8))
+            setBackgroundColor(Color.rgb(18, 20, 24))
         }
-        player.setOnErrorListener { _, _, _ ->
-            android.widget.Toast.makeText(this, "此文件暂时无法播放", android.widget.Toast.LENGTH_SHORT).show()
-            true
+        progressBar = SeekBar(this)
+        durationText = TextView(this).apply {
+            text = "00:00 / 00:00"
+            textSize = 11f
+            gravity = Gravity.END
+            setTextColor(Color.LTGRAY)
         }
+        playButton = Button(this).apply {
+            text = "正在加载…"
+            isEnabled = false
+            setOnClickListener { togglePlayback() }
+        }
+        controls.addView(progressBar, LinearLayout.LayoutParams(-1, -2))
+        controls.addView(durationText, LinearLayout.LayoutParams(-1, -2))
+        controls.addView(playButton, LinearLayout.LayoutParams(-1, dp(44)).apply {
+            topMargin = dp(4)
+        })
+        root.addView(controls, LinearLayout.LayoutParams(-1, -2))
         return root
     }
 
-    private fun buildAudioPlayer(title: String, uri: Uri): android.view.View {
+    private fun buildAudioPlayer(title: String, uri: Uri): View {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.rgb(247, 248, 250))
@@ -171,7 +213,7 @@ class LocalPlaybackActivity : ComponentActivity() {
         playButton = Button(this).apply {
             text = "正在加载…"
             isEnabled = false
-            setOnClickListener { toggleAudioPlayback() }
+            setOnClickListener { togglePlayback() }
         }
         body.addView(playButton, LinearLayout.LayoutParams(dp(160), dp(48)).apply {
             topMargin = dp(20)
@@ -181,7 +223,7 @@ class LocalPlaybackActivity : ComponentActivity() {
         return root
     }
 
-    private fun buildToolbar(title: String, dark: Boolean): android.view.View =
+    private fun buildToolbar(title: String, dark: Boolean): View =
         LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -215,16 +257,66 @@ class LocalPlaybackActivity : ComponentActivity() {
             addView(speedLabel, LinearLayout.LayoutParams(dp(54), dp(44)))
         }
 
+    private fun createVideoPlayer(uri: Uri, holder: SurfaceHolder) {
+        val player = MediaPlayer()
+        mediaPlayer = player
+        try {
+            player.setDataSource(this, uri)
+            player.setDisplay(holder)
+            player.setOnPreparedListener { prepared ->
+                isPrepared = true
+                val width = prepared.videoWidth
+                val height = prepared.videoHeight
+                if (width > 0 && height > 0) {
+                    val ratio = width.toDouble() / height.toDouble()
+                    val safeRatio = ratio.coerceIn(1.0 / 2.39, 2.39)
+                    pipAspectRatio = Rational((safeRatio * 1000).toInt(), 1000)
+                }
+                installSeekBarListener(prepared)
+                progressBar?.max = prepared.duration.coerceAtLeast(1)
+                durationText?.text = "00:00 / " + formatTime(prepared.duration)
+                playButton?.text = "暂停"
+                playButton?.isEnabled = true
+                if (requestAudioFocus()) {
+                    applyPlaybackSpeed()
+                    prepared.start()
+                    handler.removeCallbacks(progressUpdater)
+                    handler.post(progressUpdater)
+                } else {
+                    playButton?.text = "播放"
+                    Toast.makeText(this, "当前无法获取音频焦点", Toast.LENGTH_SHORT).show()
+                }
+            }
+            player.setOnCompletionListener {
+                playButton?.text = "播放"
+                progressBar?.progress = 0
+                handler.removeCallbacks(progressUpdater)
+                abandonAudioFocus()
+            }
+            player.setOnErrorListener { _, _, _ ->
+                playButton?.text = "无法播放"
+                playButton?.isEnabled = false
+                Toast.makeText(this, "此文件暂时无法播放", Toast.LENGTH_SHORT).show()
+                true
+            }
+            player.prepareAsync()
+        } catch (error: Exception) {
+            playButton?.text = "无法打开视频"
+            playButton?.isEnabled = false
+            Toast.makeText(this, error.message ?: "无法打开视频", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun createAudioPlayer(uri: Uri) {
         val player = MediaPlayer()
         mediaPlayer = player
         try {
             player.setDataSource(this, uri)
-            player.setOnPreparedListener {
+            player.setOnPreparedListener { prepared ->
                 isPrepared = true
-                applyPlaybackSpeed()
-                progressBar?.max = it.duration.coerceAtLeast(1)
-                durationText?.text = "00:00 / " + formatTime(it.duration)
+                installSeekBarListener(prepared)
+                progressBar?.max = prepared.duration.coerceAtLeast(1)
+                durationText?.text = "00:00 / " + formatTime(prepared.duration)
                 playButton?.text = "播放"
                 playButton?.isEnabled = true
             }
@@ -239,24 +331,30 @@ class LocalPlaybackActivity : ComponentActivity() {
                 playButton?.isEnabled = false
                 true
             }
-            progressBar?.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                    if (fromUser && isPrepared) {
-                        durationText?.text = formatTime(progress) + " / " + formatTime(player.duration)
-                    }
-                }
-                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
-                override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                    if (isPrepared) player.seekTo(seekBar?.progress ?: 0)
-                }
-            })
             player.prepareAsync()
         } catch (_: Exception) {
             playButton?.text = "无法打开音频"
+            playButton?.isEnabled = false
         }
     }
 
-    private fun toggleAudioPlayback() {
+    private fun installSeekBarListener(player: MediaPlayer) {
+        progressBar?.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser && isPrepared) {
+                    durationText?.text = formatTime(progress) + " / " + formatTime(player.duration)
+                }
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {
+                if (isPrepared) runCatching { player.seekTo(seekBar?.progress ?: 0) }
+            }
+        })
+    }
+
+    private fun togglePlayback() {
         val player = mediaPlayer ?: return
         if (!isPrepared) return
         if (player.isPlaying) {
@@ -266,11 +364,11 @@ class LocalPlaybackActivity : ComponentActivity() {
             abandonAudioFocus()
         } else {
             if (!requestAudioFocus()) {
-                android.widget.Toast.makeText(this, "当前无法获取音频焦点", android.widget.Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "当前无法获取音频焦点", Toast.LENGTH_SHORT).show()
                 return
             }
             runCatching { player.start() }.onFailure {
-                android.widget.Toast.makeText(this, "音频暂时无法播放", android.widget.Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "媒体暂时无法播放", Toast.LENGTH_SHORT).show()
                 abandonAudioFocus()
                 return
             }
@@ -300,12 +398,12 @@ class LocalPlaybackActivity : ComponentActivity() {
     }
 
     private fun applyPlaybackSpeed() {
-        videoView?.let { video ->
-            runCatching { video.setPlaybackParams(video.playbackParams.setSpeed(playbackSpeed)) }
-        }
-        val audio = mediaPlayer
-        if (isPrepared && audio != null) {
-            runCatching { audio.setPlaybackParams(audio.playbackParams.setSpeed(playbackSpeed)) }
+        val player = mediaPlayer ?: return
+        if (!isPrepared) return
+        runCatching {
+            player.playbackParams = player.playbackParams.setSpeed(playbackSpeed)
+        }.onFailure {
+            Toast.makeText(this, "当前媒体不支持调整速度", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -316,7 +414,10 @@ class LocalPlaybackActivity : ComponentActivity() {
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .setContentType(
+                        if (isVideoMode) AudioAttributes.CONTENT_TYPE_MOVIE
+                        else AudioAttributes.CONTENT_TYPE_MUSIC
+                    )
                     .build()
             )
             .setOnAudioFocusChangeListener(audioFocusListener, handler)
@@ -341,7 +442,7 @@ class LocalPlaybackActivity : ComponentActivity() {
         }
 
     private fun formatTime(milliseconds: Int): String {
-        val seconds = (milliseconds.coerceAtLeast(0) / 1000)
+        val seconds = milliseconds.coerceAtLeast(0) / 1000
         return String.format(Locale.US, "%02d:%02d", seconds / 60, seconds % 60)
     }
 
@@ -349,8 +450,8 @@ class LocalPlaybackActivity : ComponentActivity() {
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
-        val player = videoView
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && player?.isPlaying == true) {
+        val player = mediaPlayer
+        if (isVideoMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && player?.isPlaying == true) {
             runCatching {
                 enterPictureInPictureMode(
                     PictureInPictureParams.Builder().setAspectRatio(pipAspectRatio).build()
@@ -361,13 +462,18 @@ class LocalPlaybackActivity : ComponentActivity() {
 
     override fun onStop() {
         val inPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode
-        if (!inPip) videoView?.pause()
+        if (!inPip) {
+            mediaPlayer?.let { player ->
+                if (player.isPlaying) runCatching { player.pause() }
+            }
+            handler.removeCallbacks(progressUpdater)
+            abandonAudioFocus()
+        }
         super.onStop()
     }
 
     override fun onDestroy() {
         handler.removeCallbacks(progressUpdater)
-        videoView?.stopPlayback()
         abandonAudioFocus()
         mediaPlayer?.release()
         mediaPlayer = null
