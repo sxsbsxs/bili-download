@@ -53,13 +53,6 @@
                         android:textSize="22sp"
                         android:textStyle="bold" />
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="1dp"
-                        android:text="@string/home_subtitle"
-                        android:textColor="@color/text_secondary"
-                        android:textSize="11sp" />
                 </LinearLayout>
 
                 <ImageButton
@@ -125,14 +118,6 @@
                     android:textSize="19sp"
                     android:textStyle="bold" />
 
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="BILIBILI"
-                    android:textColor="@color/brand"
-                    android:textSize="10sp"
-                    android:textStyle="bold"
-                    android:letterSpacing="0.08" />
             </LinearLayout>
 
             <ProgressBar
