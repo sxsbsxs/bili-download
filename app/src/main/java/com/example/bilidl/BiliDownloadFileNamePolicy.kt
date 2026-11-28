@@ -22,6 +22,8 @@ internal object BiliDownloadFileNamePolicy {
     private val illegalChars = Regex("""[\\/:*?"<>|\u0000-\u001F]""")
     private val whitespace = Regex("""\s+""")
     private val duplicateUnderscores = Regex("""_+""")
+    private val underscoreBeforeDash = Regex("""_-""")
+    private val underscoreAfterDash = Regex("""-_""")
 
     fun render(
         template: String?,
@@ -42,6 +44,8 @@ internal object BiliDownloadFileNamePolicy {
         val normalized = value
             .replace(illegalChars, "_")
             .replace(duplicateUnderscores, "_")
+            .replace(underscoreBeforeDash, "-")
+            .replace(underscoreAfterDash, "-")
             .replace(whitespace, " ")
             .trim { it <= ' ' || it == '.' || it == '-' || it == '_' }
         return truncateUtf8(normalized, maxBytes).trim { it <= ' ' || it == '.' || it == '-' || it == '_' }
