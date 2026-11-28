@@ -1977,25 +1977,17 @@ class MainActivity : ComponentActivity() {
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(ink)
         }, LinearLayout.LayoutParams(0, wrap, 1f))
-        feedHeader.addView(TextView(this).apply {
-            text = "站内搜索"
-            textSize = 12f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(pink)
-            setPadding(dp(8), dp(7), dp(8), dp(7))
+        feedHeader.addView(chip("站内搜索", false).apply {
             setOnClickListener {
                 searchLauncher.launch(Intent(this@MainActivity, SearchActivity::class.java))
             }
-        })
-        feedHeader.addView(TextView(this).apply {
-            text = "刷新"
-            textSize = 12f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(pink)
-            setPadding(dp(12), dp(7), dp(4), dp(7))
+        }, LinearLayout.LayoutParams(wrap, dp(36)))
+        feedHeader.addView(chip("刷新", false).apply {
             setOnClickListener { loadHomeFeed(reset = true) }
+        }, LinearLayout.LayoutParams(wrap, dp(36)).apply {
+            leftMargin = dp(6)
         })
-        feedCard.addView(feedHeader, LinearLayout.LayoutParams(match, dp(34)))
+        feedCard.addView(feedHeader, LinearLayout.LayoutParams(match, dp(40)))
 
         val feedTabRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
