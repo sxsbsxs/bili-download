@@ -59,6 +59,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _state.value = readSettings()
     }
 
+    fun getString(key: String, defaultValue: String = ""): String =
+        preferences.getString(key, defaultValue) ?: defaultValue
+
+    fun setString(key: String, value: String) {
+        preferences.edit().putString(key, value.trim()).apply()
+    }
+
     private fun readSettings(): AppSettingsState = AppSettingsState(
         quality = preferences.getInt(KEY_QUALITY, 0),
         concurrentDownloads = preferences.getInt(KEY_CONCURRENT, 1),
