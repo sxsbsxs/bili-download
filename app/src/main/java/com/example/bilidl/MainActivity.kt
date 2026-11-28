@@ -1187,6 +1187,7 @@ class MainActivity : ComponentActivity() {
     // ---------------- 状态 ----------------
     private lateinit var pages: List<View>
     private val tabIcon = ArrayList<ImageView>()
+    private val tabIconContainers = ArrayList<FrameLayout>()
     private val tabText = ArrayList<TextView>()
 
     private var loggedIn = false
@@ -1583,9 +1584,14 @@ class MainActivity : ComponentActivity() {
                 gravity = Gravity.CENTER
                 setPadding(0, dp(3), 0, 0)
             }
-            tab.addView(icon, LinearLayout.LayoutParams(dp(22), dp(22)))
+            val iconContainer = FrameLayout(this).apply {
+                foreground = rippleShape(Color.WHITE, 14)
+                addView(icon, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
+            }
+            tab.addView(iconContainer, LinearLayout.LayoutParams(dp(48), dp(30)))
             tab.addView(label)
             tabIcon.add(icon)
+            tabIconContainers.add(iconContainer)
             tabText.add(label)
             navBar.addView(tab, LinearLayout.LayoutParams(0, match, 1f))
         }
@@ -1600,6 +1606,7 @@ class MainActivity : ComponentActivity() {
             val selected = index == i
             val tint = if (selected) pink else sub
             tabIcon[index].imageTintList = ColorStateList.valueOf(tint)
+            tabIconContainers[index].background = if (selected) shape(field, 14) else null
             tabText[index].setTextColor(tint)
             tabText[index].typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
         }
