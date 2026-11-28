@@ -29,7 +29,6 @@ class HomeFragment : Fragment(R.layout.fragment_home) {
         adapter = VideoAdapter(host::openVideo)
         b.homeRecommendations.layoutManager = GridLayoutManager(requireContext(), 2)
         b.homeRecommendations.adapter = adapter
-        b.homeRecommendations.setHasFixedSize(true)
         b.homeRecommendations.isNestedScrollingEnabled = false
         b.homeSearchButton.setOnClickListener { host.navigateToDiscover() }
         b.homeSearchEntry.setOnClickListener { host.navigateToDiscover() }
