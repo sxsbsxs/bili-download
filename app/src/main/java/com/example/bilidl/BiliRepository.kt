@@ -442,7 +442,15 @@ class BiliRepository(
             val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
             val audioItem = audioCandidates.firstOrNull {
                 it.optString("codecs").contains("mp4a", ignoreCase = true)
-            } ?: audioCandidates.maxByOrNull { it.optInt("id") }
+            }
+            if (audioCandidates.isNotEmpty() && audioItem == null) {
+                val codecs = audioCandidates.map { it.optString("codecs").ifBlank { "未知编码" } }
+                    .distinct()
+                    .joinToString("、")
+                throw IOException(
+                    "B站当前只返回非 AAC 音频编码（$codecs）。当前 Android 无损封装器不能保证合并成功，已停止下载以避免生成无声或损坏文件"
+                )
+            }
 
             val videoUrls = videoItem?.let { streamUrls(it) }.orEmpty()
             val audioUrls = audioItem?.let { streamUrls(it) }.orEmpty()
