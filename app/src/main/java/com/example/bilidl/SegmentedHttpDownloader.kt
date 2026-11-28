@@ -50,9 +50,6 @@ internal object SegmentedHttpDownloader {
     private const val BUFFER_SIZE = 64 * 1024
     private const val MAX_RANGE_ATTEMPTS = 3
     private const val MAX_SEQUENTIAL_ATTEMPTS = 3
-    private const val USER_AGENT =
-        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36"
-    private const val DEFAULT_REFERER = "https://www.bilibili.com/"
 
     private data class Probe(
         val totalBytes: Long,
@@ -496,15 +493,11 @@ internal object SegmentedHttpDownloader {
             connectTimeout = 20_000
             readTimeout = 45_000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", USER_AGENT)
-            setRequestProperty("Referer", referer.ifBlank { DEFAULT_REFERER })
-            setRequestProperty("Origin", "https://www.bilibili.com")
-            setRequestProperty("Accept", "*/*")
-            setRequestProperty("Accept-Encoding", "identity")
-            setRequestProperty("Connection", "keep-alive")
-            if (!cookie.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=$cookie")
-            }
+            // Use the same browser headers and guest-cookie fallback as BVD.
+            // BVD's DOWNLOAD_HEADERS use the mobile site as both Origin and Referer.
+            @Suppress("UNUSED_VARIABLE")
+            val requestReferer = referer
+            BiliCdnRequestPolicy.configure(this, cookie)
         }
     }
 }
