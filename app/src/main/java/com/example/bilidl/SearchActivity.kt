@@ -147,10 +147,7 @@ class SearchActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(2), dp(12), dp(12))
         }
-        scroll.addView(resultList, android.view.ViewGroup.LayoutParams(
-            ScrollView.LayoutParams.MATCH_PARENT,
-            ScrollView.LayoutParams.WRAP_CONTENT
-        ))
+        scroll.addView(resultList, android.view.ViewGroup.LayoutParams(-1, -2))
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
 
         loadMoreButton = actionButton("加载更多", false).apply {
