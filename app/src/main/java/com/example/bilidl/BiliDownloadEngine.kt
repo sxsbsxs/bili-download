@@ -10,6 +10,7 @@ import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.documentfile.provider.DocumentFile
 import com.example.bilidl.common.content.BiliContentExporter
 import com.example.bilidl.common.content.BiliDanmaku
 import com.example.bilidl.common.content.BiliDanmakuProtoParser
@@ -725,6 +726,11 @@ object BiliDownloadEngine {
             .take(80)
             .ifBlank { "BiliDl video" }
         val displayName = safeTitle + "." + extension
+        val selectedTree = context.getSharedPreferences("ui", Context.MODE_PRIVATE)
+            .getString("download_tree_uri", null)
+        if (!selectedTree.isNullOrBlank()) {
+            return publishFileToTree(context, source, displayName, mimeType, selectedTree)
+        }
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
@@ -759,6 +765,82 @@ object BiliDownloadEngine {
             resolver.delete(uri, null, null)
             throw error
         }
+    }
+
+    /**
+     * Publishes an output through the Storage Access Framework. The tree URI is
+     * persisted by MainActivity and is shared by WorkManager workers through the
+     * app's "ui" preferences. All sidecar files use this same path.
+     */
+    private fun publishFileToTree(
+        context: Context,
+        source: File,
+        displayName: String,
+        mimeType: String,
+        treeUriValue: String
+    ): SavedDownload {
+        if (!source.isFile || source.length() <= 0L) {
+            throw IOException("待保存文件为空或不存在")
+        }
+        val treeUri = runCatching { Uri.parse(treeUriValue) }
+            .getOrElse { throw IOException("保存目录地址无效，请重新选择保存文件夹", it) }
+        val folder = try {
+            DocumentFile.fromTreeUri(context, treeUri)
+        } catch (error: SecurityException) {
+            throw IOException("保存目录授权已失效，请回到设置重新选择保存位置", error)
+        } ?: throw IOException("无法打开所选保存目录，请重新选择")
+
+        if (!folder.isDirectory || !folder.canWrite()) {
+            throw IOException("所选目录不可写或授权已失效，请回到设置重新选择保存位置")
+        }
+
+        val uniqueName = uniqueDocumentName(folder, displayName)
+        val target = try {
+            folder.createFile(mimeType, uniqueName)
+        } catch (error: SecurityException) {
+            throw IOException("系统拒绝向所选目录写入文件，请重新授权保存位置", error)
+        } ?: throw IOException("无法在所选文件夹中创建文件")
+
+        try {
+            val expectedBytes = source.length()
+            val copiedBytes = source.inputStream().buffered().use { input ->
+                context.contentResolver.openOutputStream(target.uri, "w")
+                    ?.buffered()
+                    ?.use { output -> input.copyTo(output) }
+                    ?: throw IOException("无法打开所选目录中的文件输出流")
+            }
+            if (copiedBytes != expectedBytes) {
+                throw IOException("保存文件时长度不匹配：$copiedBytes / $expectedBytes 字节")
+            }
+            return SavedDownload(
+                uri = target.uri,
+                displayName = target.name ?: uniqueName,
+                sizeBytes = copiedBytes,
+                mimeType = mimeType
+            )
+        } catch (error: Exception) {
+            runCatching { target.delete() }
+            if (error is SecurityException) {
+                throw IOException("保存目录权限已失效，请重新选择保存文件夹", error)
+            }
+            throw error
+        }
+    }
+
+    private fun uniqueDocumentName(folder: DocumentFile, desiredName: String): String {
+        if (folder.findFile(desiredName) == null) return desiredName
+
+        val extensionStart = desiredName.lastIndexOf('.').takeIf { it > 0 }
+            ?: desiredName.length
+        val base = desiredName.substring(0, extensionStart)
+        val extension = desiredName.substring(extensionStart)
+        var suffix = 1
+        var candidate: String
+        do {
+            candidate = "$base ($suffix)$extension"
+            suffix++
+        } while (folder.findFile(candidate) != null)
+        return candidate
     }
 
     private fun extensionForMime(mime: String, fallback: String): String {
