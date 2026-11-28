@@ -1585,7 +1585,6 @@ class MainActivity : ComponentActivity() {
                 setPadding(0, dp(3), 0, 0)
             }
             val iconContainer = FrameLayout(this).apply {
-                foreground = rippleShape(Color.WHITE, 14)
                 addView(icon, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
             }
             tab.addView(iconContainer, LinearLayout.LayoutParams(dp(48), dp(30)))
