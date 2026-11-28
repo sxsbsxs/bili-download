@@ -581,7 +581,7 @@ class MainActivity : ComponentActivity() {
                     rightMargin = dp(8)
                 })
             }
-            pageScroller.addView(pageRow, HorizontalScrollView.LayoutParams(wrap, wrap))
+            pageScroller.addView(pageRow, FrameLayout.LayoutParams(wrap, wrap))
             info.addView(pageScroller, LinearLayout.LayoutParams(match, wrap))
         }
 
@@ -1024,7 +1024,7 @@ class MainActivity : ComponentActivity() {
                     }
                     val scroll = ScrollView(this).apply {
                         isVerticalScrollBarEnabled = true
-                        addView(list, ScrollView.LayoutParams(match, wrap))
+                        addView(list, FrameLayout.LayoutParams(match, wrap))
                     }
                     content.addView(scroll, LinearLayout.LayoutParams(match, dp(300)))
                     val dialog = AlertDialog.Builder(this)
@@ -1343,7 +1343,7 @@ class MainActivity : ComponentActivity() {
         val scroll = ScrollView(this).apply {
             isFillViewport = false
             isVerticalScrollBarEnabled = true
-            addView(repliesContainer, ScrollView.LayoutParams(match, wrap))
+            addView(repliesContainer, FrameLayout.LayoutParams(match, wrap))
         }
         body.addView(scroll, LinearLayout.LayoutParams(match, dp(280)))
 
