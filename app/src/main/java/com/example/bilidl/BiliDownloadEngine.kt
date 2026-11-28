@@ -67,11 +67,18 @@ object BiliDownloadEngine {
         downloadDanmaku: Boolean = false,
         downloadSubtitles: Boolean = false,
         downloadCover: Boolean = false,
+        videoChoice: BiliStreamChoice? = null,
+        audioChoice: BiliStreamChoice? = null,
         isCancelled: () -> Boolean = { false },
         progress: (Int, String) -> Unit
     ): SavedDownload = withContext(Dispatchers.IO) {
         val repository = BiliRepository { cookie }
-        val source = repository.getPlaySource(video, qualityId)
+        val source = repository.getPlaySource(
+            video = video,
+            requestedQuality = qualityId,
+            videoChoice = videoChoice,
+            audioChoice = audioChoice
+        )
         val workDir = File(context.filesDir, "bilidl_transfers").apply { mkdirs() }
         val safeId = transferId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
         val prefix = "task_" + safeId

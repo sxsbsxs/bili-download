@@ -1715,46 +1715,109 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             toast("请先解析一个 B站视频")
             return
         }
+        val quality = selectedQualityId.takeIf { it > 0 }
+            ?: video.qualities.firstOrNull()?.id ?: 80
+        toast("正在获取 BVD 式音视频规格列表…")
+        backgroundExecutor.execute {
+            try {
+                val repository = BiliRepository {
+                    SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+                }
+                val options = repository.getDownloadStreamOptions(video, quality)
+                runOnUiThread {
+                    if (isFinishing || parsedVideo?.cid != video.cid) return@runOnUiThread
+                    showDownloadOptions(video, quality, options)
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    toast("获取音视频规格失败：" + (error.message ?: "未知错误"))
+                }
+            }
+        }
+    }
 
+    private fun showDownloadOptions(
+        video: BiliVideo,
+        quality: Int,
+        options: BiliDownloadStreamOptions
+    ) {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(4))
         }
         content.addView(TextView(this).apply {
-            text = "选择媒体类型"
+            text = "分别选择视频流与音频流"
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(ink)
-            setPadding(0, 0, 0, dp(6))
         }, LinearLayout.LayoutParams(match, wrap))
+
+        fun addSection(title: String): TextView {
+            return TextView(this).apply {
+                text = title
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(sub)
+                setPadding(0, dp(12), 0, dp(5))
+            }.also { content.addView(it, LinearLayout.LayoutParams(match, wrap)) }
+        }
+
+        addSection("视频流 · 画质 / 编码 / 码率")
+        val videoSpinner = android.widget.Spinner(this)
+        val videoLabels = options.videoChoices.map { it.label }.ifEmpty {
+            listOf("B站当前只提供单流媒体")
+        }
+        videoSpinner.adapter = android.widget.ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            videoLabels
+        ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        videoSpinner.isEnabled = options.videoChoices.isNotEmpty()
+        content.addView(videoSpinner, LinearLayout.LayoutParams(match, dp(48)))
+
+        addSection("音频流 · 编码 / 码率")
+        val audioSpinner = android.widget.Spinner(this)
+        val audioLabels = options.audioChoices.map { it.label }.ifEmpty {
+            listOf("当前没有兼容的 AAC 音频流")
+        }
+        audioSpinner.adapter = android.widget.ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            audioLabels
+        ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        audioSpinner.isEnabled = options.audioChoices.isNotEmpty()
+        content.addView(audioSpinner, LinearLayout.LayoutParams(match, dp(48)))
 
         val mediaGroup = android.widget.RadioGroup(this).apply {
             orientation = android.widget.RadioGroup.VERTICAL
         }
-        val videoOption = android.widget.RadioButton(this).apply {
+        val combinedOption = android.widget.RadioButton(this).apply {
             id = View.generateViewId()
             text = "视频 + 音频（MP4）"
             textSize = 14f
+            isEnabled = options.videoChoices.isNotEmpty()
         }
         val audioOption = android.widget.RadioButton(this).apply {
             id = View.generateViewId()
             text = "仅音频（M4A）"
             textSize = 14f
+            isEnabled = options.audioChoices.isNotEmpty()
         }
-        mediaGroup.addView(videoOption)
+        mediaGroup.addView(combinedOption)
         mediaGroup.addView(audioOption)
-        mediaGroup.check(
-            if (prefs.getBoolean("audio_only", false)) audioOption.id else videoOption.id
-        )
+        val preferAudioOnly = prefs.getBoolean("audio_only", false) && audioOption.isEnabled
+        mediaGroup.check(if (preferAudioOnly) audioOption.id else combinedOption.id)
         content.addView(mediaGroup, LinearLayout.LayoutParams(match, wrap))
 
-        content.addView(TextView(this).apply {
-            text = "附加文件（可多选）"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(ink)
-            setPadding(0, dp(12), 0, dp(4))
-        }, LinearLayout.LayoutParams(match, wrap))
+        fun updateStreamEnabledState() {
+            val audioOnly = mediaGroup.checkedRadioButtonId == audioOption.id
+            videoSpinner.isEnabled = !audioOnly && options.videoChoices.isNotEmpty()
+            audioSpinner.isEnabled = options.audioChoices.isNotEmpty()
+        }
+        mediaGroup.setOnCheckedChangeListener { _, _ -> updateStreamEnabledState() }
+        updateStreamEnabledState()
+
+        addSection("附加文件 · 可多选")
         val coverOption = android.widget.CheckBox(this).apply {
             text = "视频封面（JPG）"
             isEnabled = !video.coverUrl.isNullOrBlank()
@@ -1774,25 +1837,31 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         content.addView(danmakuOption)
         content.addView(subtitleOption)
         content.addView(TextView(this).apply {
-            text = "画质沿用当前视频的可用画质选择；附加文件会与媒体文件分开保存。"
+            text = "规格以当前视频接口实际返回为准；选定流会保存在任务中，重试不会自动换成其他码率。"
             textSize = 11f
             setTextColor(sub)
             setPadding(dp(2), dp(8), dp(2), 0)
         }, LinearLayout.LayoutParams(match, wrap))
 
         AlertDialog.Builder(this)
-            .setTitle("下载内容")
+            .setTitle("下载内容与流规格")
             .setView(content)
             .setNegativeButton("取消", null)
-            .setPositiveButton("开始下载") { _, _ ->
+            .setPositiveButton("加入下载") { _, _ ->
+                val audioOnly = mediaGroup.checkedRadioButtonId == audioOption.id
+                val videoChoice = if (!audioOnly) {
+                    options.videoChoices.getOrNull(videoSpinner.selectedItemPosition)
+                } else null
+                val audioChoice = options.audioChoices.getOrNull(audioSpinner.selectedItemPosition)
                 val spec = DownloadSpec(
                     video = video,
-                    qualityId = selectedQualityId.takeIf { it > 0 }
-                        ?: video.qualities.firstOrNull()?.id ?: 80,
-                    audioOnly = audioOption.isChecked,
+                    qualityId = quality,
+                    audioOnly = audioOnly,
                     downloadDanmaku = danmakuOption.isChecked,
                     downloadSubtitles = subtitleOption.isChecked,
-                    downloadCover = coverOption.isChecked
+                    downloadCover = coverOption.isChecked,
+                    videoStreamChoice = videoChoice,
+                    audioStreamChoice = audioChoice
                 )
                 val id = "bili_" + System.currentTimeMillis()
                 downloadSpecs[id] = spec
@@ -1832,6 +1901,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     BiliDownloadWorker.KEY_DOWNLOAD_DANMAKU to spec.downloadDanmaku,
                     BiliDownloadWorker.KEY_DOWNLOAD_SUBTITLES to spec.downloadSubtitles,
                     BiliDownloadWorker.KEY_DOWNLOAD_COVER to spec.downloadCover,
+                    BiliDownloadWorker.KEY_VIDEO_CHOICE to (spec.videoStreamChoice?.toStorage() ?: ""),
+                    BiliDownloadWorker.KEY_AUDIO_CHOICE to (spec.audioStreamChoice?.toStorage() ?: ""),
                     BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[prefs.getInt("concurrent", 1).coerceIn(0, 3)]
                 )
             )
@@ -1869,9 +1940,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             .put("coverUrl", spec.video.coverUrl ?: "")
             .put("quality", spec.qualityId)
             .put("audioOnly", spec.audioOnly)
+            .put("videoStreamChoice", spec.videoStreamChoice?.toStorage() ?: "")
+            .put("audioStreamChoice", spec.audioStreamChoice?.toStorage() ?: "")
             .put("downloadDanmaku", spec.downloadDanmaku)
             .put("downloadSubtitles", spec.downloadSubtitles)
             .put("downloadCover", spec.downloadCover)
+            .put("videoStreamChoice", spec.videoStreamChoice?.toStorage() ?: "")
+            .put("audioStreamChoice", spec.audioStreamChoice?.toStorage() ?: "")
         taskPrefs.edit().putString(id, value.toString()).apply()
 
         // Keep SharedPreferences readable for upgrades, while Room becomes the
@@ -1890,7 +1965,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             audioOnly = spec.audioOnly,
             downloadDanmaku = spec.downloadDanmaku,
             downloadSubtitles = spec.downloadSubtitles,
-            downloadCover = spec.downloadCover
+            downloadCover = spec.downloadCover,
+            videoStreamChoice = spec.videoStreamChoice?.toStorage(),
+            audioStreamChoice = spec.audioStreamChoice?.toStorage()
         )
         backgroundExecutor.execute {
             runCatching {
@@ -1965,7 +2042,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 json.optBoolean("audioOnly", false),
                 json.optBoolean("downloadDanmaku", false),
                 json.optBoolean("downloadSubtitles", false),
-                json.optBoolean("downloadCover", false)
+                json.optBoolean("downloadCover", false),
+                BiliStreamChoice.fromStorage(json.optString("videoStreamChoice")),
+                BiliStreamChoice.fromStorage(json.optString("audioStreamChoice"))
             )
             downloadSpecs[id] = spec
             if (!items.containsKey(id)) addDownload(id, video.title, null)
@@ -2019,7 +2098,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         audioOnly = task.audioOnly,
                         downloadDanmaku = task.downloadDanmaku,
                         downloadSubtitles = task.downloadSubtitles,
-                        downloadCover = task.downloadCover
+                        downloadCover = task.downloadCover,
+                        videoStreamChoice = BiliStreamChoice.fromStorage(task.videoStreamChoice),
+                        audioStreamChoice = BiliStreamChoice.fromStorage(task.audioStreamChoice)
                     )
                     downloadSpecs[task.taskId] = spec
                     if (!items.containsKey(task.taskId)) addDownload(task.taskId, task.title, null)
@@ -2643,7 +2724,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         val audioOnly: Boolean,
         val downloadDanmaku: Boolean = false,
         val downloadSubtitles: Boolean = false,
-        val downloadCover: Boolean = false
+        val downloadCover: Boolean = false,
+        val videoStreamChoice: BiliStreamChoice? = null,
+        val audioStreamChoice: BiliStreamChoice? = null
     )
     private val downloadSpecs = HashMap<String, DownloadSpec>()
     private val savedFileUris = HashMap<String, Uri>()

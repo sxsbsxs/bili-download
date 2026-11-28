@@ -61,6 +61,63 @@ data class BiliVideo(
     val tags: List<String> = emptyList()
 )
 
+data class BiliStreamChoice(
+    val id: Int,
+    val codecs: String,
+    val bandwidth: Long,
+    val width: Int = 0,
+    val height: Int = 0,
+    val frameRate: String = ""
+) {
+    val label: String
+        get() {
+            val codec = when {
+                codecs.startsWith("avc1", true) -> "AVC"
+                codecs.startsWith("hev1", true) || codecs.startsWith("hvc1", true) -> "HEVC"
+                codecs.startsWith("av01", true) -> "AV1"
+                codecs.contains("mp4a", true) -> "AAC"
+                else -> codecs.ifBlank { "未知编码" }
+            }
+            val rate = if (codecs.contains("mp4a", true)) {
+                "${(bandwidth / 1000L).coerceAtLeast(1)} kbps"
+            } else {
+                "${"%.2f".format(java.util.Locale.US, bandwidth / 1_000_000.0)} Mbps"
+            }
+            val resolution = if (height > 0) " · ${height}P" else ""
+            val fps = frameRate.takeIf { it.isNotBlank() }?.let { " · ${it}fps" }.orEmpty()
+            return if (codecs.contains("mp4a", true)) "$codec · $rate" else "$resolution · $codec · $rate$fps".trimStart(' ', '·')
+        }
+
+    fun toStorage(): String = JSONObject()
+        .put("id", id)
+        .put("codecs", codecs)
+        .put("bandwidth", bandwidth)
+        .put("width", width)
+        .put("height", height)
+        .put("frameRate", frameRate)
+        .toString()
+
+    companion object {
+        fun fromStorage(raw: String?): BiliStreamChoice? = runCatching {
+            if (raw.isNullOrBlank()) return null
+            val json = JSONObject(raw)
+            BiliStreamChoice(
+                id = json.optInt("id"),
+                codecs = json.optString("codecs"),
+                bandwidth = json.optLong("bandwidth"),
+                width = json.optInt("width"),
+                height = json.optInt("height"),
+                frameRate = json.optString("frameRate")
+            )
+        }.getOrNull()
+    }
+}
+
+data class BiliDownloadStreamOptions(
+    val videoChoices: List<BiliStreamChoice>,
+    val audioChoices: List<BiliStreamChoice>
+)
+
 data class BiliPlaySource(
     val videoUrls: List<String>,
     val audioUrls: List<String>,
@@ -423,7 +480,53 @@ class BiliRepository(
         )
     }
 
-    fun getPlaySource(video: BiliVideo, requestedQuality: Int): BiliPlaySource {
+    /**
+     * Load the exact stream representations exposed for this video and quality.
+     * DASH video and audio are presented separately so the user can choose both,
+     * as in BVD, instead of the downloader silently picking one rendition.
+     */
+    fun getDownloadStreamOptions(
+        video: BiliVideo,
+        requestedQuality: Int
+    ): BiliDownloadStreamOptions {
+        val data = checkedData(getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality))
+        val dash = data.optJSONObject("dash") ?: return BiliDownloadStreamOptions(emptyList(), emptyList())
+        val videos = dash.optJSONArray("video") ?: JSONArray()
+        val audios = dash.optJSONArray("audio") ?: JSONArray()
+        val videoChoices = (0 until videos.length()).mapNotNull { index ->
+            val item = videos.optJSONObject(index) ?: return@mapNotNull null
+            val id = item.optInt("id")
+            if (id <= 0 || (requestedQuality > 0 && id > requestedQuality)) return@mapNotNull null
+            BiliStreamChoice(
+                id = id,
+                codecs = item.optString("codecs"),
+                bandwidth = item.optLong("bandwidth"),
+                width = item.optInt("width"),
+                height = item.optInt("height"),
+                frameRate = item.optString("frameRate")
+            )
+        }.distinctBy { Triple(it.id, it.codecs, it.bandwidth) }
+            .sortedWith(compareByDescending<BiliStreamChoice> { it.id }.thenByDescending { it.bandwidth })
+        val audioChoices = (0 until audios.length()).mapNotNull { index ->
+            val item = audios.optJSONObject(index) ?: return@mapNotNull null
+            val codecs = item.optString("codecs")
+            if (!codecs.contains("mp4a", ignoreCase = true)) return@mapNotNull null
+            BiliStreamChoice(
+                id = item.optInt("id"),
+                codecs = codecs,
+                bandwidth = item.optLong("bandwidth")
+            )
+        }.distinctBy { Triple(it.id, it.codecs, it.bandwidth) }
+            .sortedByDescending { it.bandwidth }
+        return BiliDownloadStreamOptions(videoChoices, audioChoices)
+    }
+
+    fun getPlaySource(
+        video: BiliVideo,
+        requestedQuality: Int,
+        videoChoice: BiliStreamChoice? = null,
+        audioChoice: BiliStreamChoice? = null
+    ): BiliPlaySource {
         val root = getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality)
         val data = checkedData(root)
         val dash = data.optJSONObject("dash")
@@ -438,12 +541,29 @@ class BiliRepository(
             ) ?: throw IOException(
                 "B站没有返回所选画质或更低画质，已停止下载以避免超出你的画质选择"
             )
-            val videoItem = videoCandidates[selectedIndex]
+            val videoItem = if (videoChoice == null) {
+                videoCandidates[selectedIndex]
+            } else {
+                videoCandidates.firstOrNull {
+                    it.optInt("id") == videoChoice.id &&
+                        it.optString("codecs") == videoChoice.codecs &&
+                        it.optLong("bandwidth") == videoChoice.bandwidth
+                } ?: throw IOException("所选视频流已变化，请重新打开下载选项并选择规格")
+            }
             val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
-            val audioItem = audioCandidates
-                .filter { it.optString("codecs").contains("mp4a", ignoreCase = true) }
-                .maxByOrNull { it.optLong("bandwidth") }
-            if (audioCandidates.isNotEmpty() && audioItem == null) {
+            val compatibleAudio = audioCandidates.filter {
+                it.optString("codecs").contains("mp4a", ignoreCase = true)
+            }
+            val audioItem = if (audioChoice == null) {
+                compatibleAudio.maxByOrNull { it.optLong("bandwidth") }
+            } else {
+                compatibleAudio.firstOrNull {
+                    it.optInt("id") == audioChoice.id &&
+                        it.optString("codecs") == audioChoice.codecs &&
+                        it.optLong("bandwidth") == audioChoice.bandwidth
+                } ?: throw IOException("所选音频流已变化，请重新打开下载选项并选择规格")
+            }
+            if (audioCandidates.isNotEmpty() && compatibleAudio.isEmpty()) {
                 val codecs = audioCandidates.map { it.optString("codecs").ifBlank { "未知编码" } }
                     .distinct()
                     .joinToString("、")
@@ -485,6 +605,9 @@ class BiliRepository(
         val direct = (0 until durl.length()).mapNotNull { durl.optJSONObject(it) }
             .mapNotNull { it.optString("url").takeIf(String::isNotBlank) }
         if (direct.isNotEmpty()) {
+            if (videoChoice != null || audioChoice != null) {
+                throw IOException("该视频使用单流格式，无法应用 DASH 音视频规格选择；请重新选择自动规格")
+            }
             return BiliPlaySource(
                 emptyList(), emptyList(), direct,
                 data.optString("format", "mp4"), "video/mp4", ""
