@@ -1013,8 +1013,20 @@ class BiliRepository(
         parameters["cid"] = cid.toString()
         parameters["qn"] = quality.toString()
         parameters["fnval"] = "4048"
+        parameters["fnver"] = "0"
+        parameters["force_host"] = "2"
         parameters["fourk"] = "1"
+        parameters["otype"] = "json"
+        parameters["type"] = ""
         parameters["web_location"] = "1315873"
+
+        // Match the anonymous playurl path used by yt-dlp/Bilibili community clients:
+        // try_look=1 can expose ordinary 720P/1080P streams where Bilibili allows it.
+        // Authenticated requests omit the flag; premium-only formats remain restricted.
+        BiliPlayUrlPolicy.applyTryLook(
+            parameters,
+            hasSessionCookie = !cookieHeader(cookieProvider()).isNullOrBlank()
+        )
 
         val signedQuery = signWbi(parameters)
         return requestJson("https://api.bilibili.com/x/player/wbi/playurl?" + signedQuery)
