@@ -82,6 +82,9 @@ class MainActivity : ComponentActivity() {
 
     // ===================== 搜索、详情与播放 =====================
     private fun onParseClicked(text: String) {
+        searchRequestToken++
+        searchLoading = false
+        detailLoadToken++
         setBusy(parseBtn, true)
         parseBtn.text = "正在打开…"
         backgroundExecutor.execute {
@@ -266,13 +269,14 @@ class MainActivity : ComponentActivity() {
         }, LinearLayout.LayoutParams(match, wrap))
         root.addView(body, LinearLayout.LayoutParams(match, wrap))
         root.setOnClickListener { onSearchItemClicked(item) }
-        if (!item.coverUrl.isNullOrBlank()) {
+        val coverUrl = item.coverUrl
+        if (!coverUrl.isNullOrBlank()) {
             imageExecutor.execute {
                 val bitmap = runCatching {
-                    BiliRepository().loadCoverImage(item.coverUrl)
+                    BiliRepository().loadCoverImage(coverUrl)
                 }.getOrNull()
                 if (bitmap != null) runOnUiThread {
-                    if (!isFinishing && cover.tag == item.coverUrl) cover.setImageBitmap(bitmap)
+                    if (!isFinishing && cover.tag == coverUrl) cover.setImageBitmap(bitmap)
                 }
             }
         }
@@ -280,6 +284,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onSearchItemClicked(item: BiliSearchVideo) {
+        searchRequestToken++
+        searchLoading = false
         val requestToken = ++detailLoadToken
         say("正在加载视频详情…", sub)
         backgroundExecutor.execute {
@@ -306,6 +312,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun showVideoDetail(video: BiliVideo, searchItem: BiliSearchVideo?) {
+        say("", sub)
         parsedVideo = video
         selectedQualityId = preferredQualityId(video.qualities)
         detailSearchItem = searchItem
