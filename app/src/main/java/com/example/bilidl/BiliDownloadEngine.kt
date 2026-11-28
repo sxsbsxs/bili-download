@@ -79,7 +79,8 @@ object BiliDownloadEngine {
             requestedQuality = qualityId,
             videoChoice = videoChoice,
             audioChoice = audioChoice,
-            includeAudio = includeAudio
+            includeAudio = includeAudio,
+            audioOnly = audioOnly
         )
         val workDir = File(context.filesDir, "bilidl_transfers").apply { mkdirs() }
         val safeId = transferId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
@@ -92,7 +93,7 @@ object BiliDownloadEngine {
         val audioTemp = File(workDir, prefix + "_audio.m4s")
         val directTemp = File(workDir, prefix + "_direct")
         try {
-            if (source.videoUrls.isNotEmpty()) {
+            if (source.videoUrls.isNotEmpty() || (audioOnly && source.audioUrls.isNotEmpty())) {
                 if (audioOnly) {
                     if (source.audioUrls.isEmpty()) throw IOException("这个视频没有独立音频流")
                     progress(3, "正在下载音频流")

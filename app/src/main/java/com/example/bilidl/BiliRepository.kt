@@ -625,7 +625,8 @@ class BiliRepository(
         requestedQuality: Int,
         videoChoice: BiliStreamChoice? = null,
         audioChoice: BiliStreamChoice? = null,
-        includeAudio: Boolean = true
+        includeAudio: Boolean = true,
+        audioOnly: Boolean = false
     ): BiliPlaySource {
         // When a concrete track has been selected, re-query without qn so Bilibili
         // returns the full candidate set again. CDN URLs expire; stored tasks keep
@@ -640,14 +641,20 @@ class BiliRepository(
             val videos = dash.optJSONArray("video") ?: JSONArray()
             val audios = dash.optJSONArray("audio") ?: JSONArray()
             val videoCandidates = (0 until videos.length()).mapNotNull { videos.optJSONObject(it) }
-            val selectedIndex = BiliQualitySelector.chooseIndex(
-                videoCandidates.map { it.optInt("id") },
-                videoCandidates.map { it.optString("codecs") },
-                requestedQuality
-            ) ?: throw IOException(
-                "B站没有返回所选画质或更低画质，已停止下载以避免超出你的画质选择"
-            )
-            val videoItem = if (videoChoice == null) {
+            val selectedIndex = if (audioOnly) {
+                -1
+            } else {
+                BiliQualitySelector.chooseIndex(
+                    videoCandidates.map { it.optInt("id") },
+                    videoCandidates.map { it.optString("codecs") },
+                    requestedQuality
+                ) ?: throw IOException(
+                    "B站没有返回所选画质或更低画质，已停止下载以避免超出你的画质选择"
+                )
+            }
+            val videoItem = if (audioOnly) {
+                null
+            } else if (videoChoice == null) {
                 videoCandidates[selectedIndex]
             } else {
                 videoCandidates.firstOrNull {
@@ -690,7 +697,7 @@ class BiliRepository(
 
             val videoUrls = videoItem?.let { streamUrls(it) }.orEmpty()
             val audioUrls = audioItem?.let { streamUrls(it) }.orEmpty()
-            if (videoUrls.isNotEmpty()) {
+            if (videoUrls.isNotEmpty() || audioUrls.isNotEmpty()) {
                 val videoSegmentBase = videoItem?.optJSONObject("SegmentBase")
                     ?: videoItem?.optJSONObject("segment_base")
                 val audioSegmentBase = audioItem?.optJSONObject("SegmentBase")
