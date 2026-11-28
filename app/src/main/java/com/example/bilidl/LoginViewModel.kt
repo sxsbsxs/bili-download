@@ -110,8 +110,14 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Accepts either a raw SESSDATA value or the full Cookie header returned by BVD-style H5 login. */
+    fun loginWithCookie(rawCookieHeader: String) {
+        verifyAndSaveCookie(rawCookieHeader)
+    }
+
+    /** Backward-compatible entry for the manual SESSDATA field. */
     fun loginWithSessdata(rawSessdata: String) {
-        verifyAndSaveCookie(rawSessdata)
+        loginWithCookie(rawSessdata)
     }
 
     private fun verifyAndSaveCookie(rawSessdata: String) {
