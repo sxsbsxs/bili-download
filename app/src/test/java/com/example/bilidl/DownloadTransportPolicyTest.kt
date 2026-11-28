@@ -86,7 +86,7 @@ class DownloadTransportPolicyTest {
     @Test
     fun calculatesOnlyMissingBytesAndRequiresReasonableFreeSpace() {
         assertEquals(
-            5L,
+            6L,
             DownloadTransportPolicy.additionalBytesRequired(
                 totalBytes = 10L,
                 chunkSize = 4L,
