@@ -29,4 +29,29 @@ class BiliQrLoginProtocolTest {
         )
         assertNull(BiliQrLoginProtocol.extractSessdata(emptyList()))
     }
+
+    @Test
+    fun extractsFullCookieHeaderFromQrPollResponseLikeBvd() {
+        assertEquals(
+            "SESSDATA=abc%2Cdef; bili_jct=csrf; DedeUserID=123",
+            BiliQrLoginProtocol.extractCookieHeader(
+                listOf(
+                    "SESSDATA=abc%2Cdef; Path=/; Secure",
+                    "bili_jct=csrf; Path=/; HttpOnly",
+                    "DedeUserID=123; Domain=.bilibili.com"
+                )
+            )
+        )
+    }
+
+    @Test
+    fun fallsBackToSessdataInCrossDomainTicket() {
+        assertEquals(
+            "SESSDATA=abc%2Cdef",
+            BiliQrLoginProtocol.extractCookieHeader(
+                emptyList(),
+                "https://passport.bilibili.com/crossdomain?SESSDATA=abc%2Cdef"
+            )
+        )
+    }
 }
