@@ -187,7 +187,7 @@ internal object BiliQrLoginProtocol {
             "buvid3", "buvid4", "sid", "b_nut", "buvid_fp", "buvid_fp_plain"
         )
         val values = linkedMapOf<String, String>()
-        val pairPattern = Regex("""(?i)^([^=;\\s]+)=([^;]*)""")
+        val pairPattern = Regex("""(?i)^([^=;\s]+)=([^;]*)""")
         setCookieHeaders.forEach { header ->
             val match = pairPattern.find(header.trim()) ?: return@forEach
             val name = match.groupValues[1]
