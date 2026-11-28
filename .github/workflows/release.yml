@@ -28,18 +28,48 @@ jobs:
           gradle-version: "8.13"
       - name: Validate release version
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: \${{ inputs.version }}
         run: |
           if [[ ! "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Version must look like v1.3.0" >&2
             exit 1
           fi
-      - name: Install NDK and CMake
+          VERSION_NAME="\${RELEASE_VERSION#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_NAME"
+          VERSION_CODE=$((10#$MAJOR * 10000 + 10#$MINOR * 100 + 10#$PATCH))
+          {
+            echo "APP_VERSION_NAME=$VERSION_NAME"
+            echo "APP_VERSION_CODE=$VERSION_CODE"
+          } >> "$GITHUB_ENV"
+      - name: Test native MP4 inspector
+        run: |
+          g++ -std=c++17 -Wall -Wextra -Werror -Iapp/src/main/cpp app/src/main/cpp/mp4_inspector.cpp app/src/test/cpp/mp4_inspector_test.cpp -o /tmp/mp4_inspector_test
+          /tmp/mp4_inspector_test
+      - name: Install NDK, platform and CMake
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.2.12479018" "cmake;3.22.1"
-      - name: Build debug-signed test APK
-        run: gradle --no-daemon :app:assembleDebug
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "ndk;27.2.12479018" "cmake;3.22.1"
+      - name: Build versioned debug-signed test APK
+        run: gradle --no-daemon -PappVersionName="$APP_VERSION_NAME" -PappVersionCode="$APP_VERSION_CODE" :app:assembleDebug
+      - name: Verify APK assets, ABIs and embedded version
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          for ABI in arm64-v8a armeabi-v7a x86_64; do
+            unzip -l "$APK" | grep -q "lib/$ABI/libbilidl_core.so" || {
+              echo "Missing native core for $ABI" >&2
+              exit 1
+            }
+          done
+          unzip -l "$APK" | grep -q "res/mipmap-anydpi-v26/ic_launcher.xml"
+          unzip -l "$APK" | grep -q "res/drawable/ic_stat_download.xml"
+          AAPT="$(find "$ANDROID_HOME/build-tools" -name aapt -type f | sort | tail -1)"
+          test -n "$AAPT"
+          "$AAPT" dump badging "$APK" | grep -F "versionName='$APP_VERSION_NAME'"
+      - name: Run unit tests
+        run: gradle --no-daemon -PappVersionName="$APP_VERSION_NAME" -PappVersionCode="$APP_VERSION_CODE" :app:testDebugUnitTest
+      - name: Run Room SQLite integration tests
+        run: gradle --no-daemon -PappVersionName="$APP_VERSION_NAME" -PappVersionCode="$APP_VERSION_CODE" :app:testDebugUnitTest --tests "com.example.bilidl.data.local.BiliDownloadDatabaseTest"
       - name: Prepare release asset
         env:
           RELEASE_VERSION: ${{ inputs.version }}
