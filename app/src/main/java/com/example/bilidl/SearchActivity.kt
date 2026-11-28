@@ -85,7 +85,7 @@ class SearchActivity : ComponentActivity() {
         keywordInput = EditText(this).apply {
             hint = "搜索视频、番剧或影视"
             textSize = 14f
-            singleLine = true
+            isSingleLine = true
             imeOptions = EditorInfo.IME_ACTION_SEARCH
             setTextColor(Color.rgb(37, 42, 51))
             setHintTextColor(Color.rgb(135, 143, 155))
@@ -147,7 +147,7 @@ class SearchActivity : ComponentActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(2), dp(12), dp(12))
         }
-        scroll.addView(resultList, ScrollView.LayoutParams(
+        scroll.addView(resultList, android.view.ViewGroup.LayoutParams(
             ScrollView.LayoutParams.MATCH_PARENT,
             ScrollView.LayoutParams.WRAP_CONTENT
         ))
