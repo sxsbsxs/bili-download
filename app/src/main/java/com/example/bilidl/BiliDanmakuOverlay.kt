@@ -7,6 +7,7 @@ import android.graphics.Rect
 import android.util.AttributeSet
 import android.util.Xml
 import android.view.View
+import com.example.bilidl.common.content.BiliDanmaku
 import org.xmlpull.v1.XmlPullParser
 import java.io.StringReader
 import kotlin.math.max
@@ -54,6 +55,31 @@ class BiliDanmakuOverlay @JvmOverloads constructor(
         setWillNotDraw(false)
         isClickable = false
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+    }
+
+    fun setDanmaku(items: List<BiliDanmaku>) {
+        val parsed = items
+            .asSequence()
+            .filter { it.progressMs >= 0L && it.content.isNotBlank() && it.mode in setOf(1, 4, 5) }
+            .take(30_000)
+            .map {
+                BiliDanmakuEntry(
+                    progressMs = it.progressMs,
+                    text = it.content,
+                    color = it.color.toInt(),
+                    mode = it.mode,
+                    fontSize = it.fontSize.coerceIn(16, 38).toFloat() *
+                        resources.displayMetrics.density
+                )
+            }
+            .sortedBy { it.progressMs }
+            .toList()
+        assignLanes(parsed)
+        synchronized(entries) {
+            entries.clear()
+            entries.addAll(parsed)
+        }
+        invalidate()
     }
 
     fun setXml(xml: String) {
