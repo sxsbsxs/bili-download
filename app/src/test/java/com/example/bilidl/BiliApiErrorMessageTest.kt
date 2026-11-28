@@ -31,6 +31,21 @@ class BiliApiErrorMessageTest {
     }
 
     @Test
+    fun alreadyReportedCommentIsExplainedClearly() {
+        val message = formatBiliApiError(12008, "已经举报过了", "评论举报失败")
+
+        assertTrue(message.contains("已经举报过这条评论（12008）"))
+    }
+
+    @Test
+    fun reportRateLimitIsExplainedClearly() {
+        val message = formatBiliApiError(12019, "举报过于频繁", "评论举报失败")
+
+        assertTrue(message.contains("举报过于频繁（12019）"))
+        assertTrue(message.contains("稍后再试"))
+    }
+
+    @Test
     fun unknownErrorsKeepOriginalCodeAndMessage() {
         val message = formatBiliApiError(12019, "举报过于频繁", "举报失败")
 
