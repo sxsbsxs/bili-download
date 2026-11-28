@@ -6,7 +6,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -21,9 +23,32 @@ import java.util.concurrent.atomic.AtomicLong
  * BiliDl's own range downloader. It uses Android's HTTP/TLS implementation,
  * but owns range scheduling, checkpointing, concurrent writes and resume logic.
  */
+internal data class DownloadSourceSample(
+    val url: String,
+    val bytes: Int,
+    val elapsedNanos: Long
+)
+
+internal object DownloadSourceRankingPolicy {
+    /** Faster successful probes first; all original candidates remain as fallbacks. */
+    fun rank(
+        originalUrls: List<String>,
+        samples: List<DownloadSourceSample>
+    ): List<String> {
+        val ranked = samples.asSequence()
+            .filter { it.bytes > 0 && it.url in originalUrls }
+            .sortedByDescending {
+                it.bytes.toDouble() / it.elapsedNanos.coerceAtLeast(1L)
+            }
+            .map { it.url }
+            .toList()
+        return (ranked + originalUrls).distinct()
+    }
+}
+
 internal object SegmentedHttpDownloader {
     private const val CHUNK_SIZE = 4L * 1024L * 1024L
-    private const val BUFFER_SIZE = 64 * 1024
+    private const val BUFFER_SIZE = 256 * 1024
     private const val MAX_RANGE_ATTEMPTS = 3
     private const val MAX_SEQUENTIAL_ATTEMPTS = 3
     private const val USER_AGENT =
@@ -36,6 +61,89 @@ internal object SegmentedHttpDownloader {
         val resourceKey: String
     )
 
+    private const val SOURCE_SAMPLE_BYTES = 64 * 1024
+    private const val SOURCE_PROBE_TIMEOUT_MS = 3_000
+    private const val MAX_SOURCE_PROBES = 6
+
+    /**
+     * BVD-style bounded CDN sampling: probe every candidate in parallel with at
+     * most 64 KiB per URL, then try the fastest verified sample first. Every
+     * original URL remains in the fallback list if a sample is blocked/unsupported.
+     */
+    private suspend fun rankCandidatesBySpeed(
+        urls: List<String>,
+        cookie: String?
+    ): List<String> = coroutineScope {
+        if (urls.size <= 1) return@coroutineScope urls
+        val samples = urls.take(MAX_SOURCE_PROBES).map { url ->
+            async(Dispatchers.IO) { sampleSource(url, cookie) }
+        }.awaitAll()
+        DownloadSourceRankingPolicy.rank(
+            originalUrls = urls,
+            samples = samples
+        )
+    }
+
+    private suspend fun sampleSource(
+        url: String,
+        cookie: String?
+    ): DownloadSourceSample {
+        val startedAt = System.nanoTime()
+        val connection = openConnection(url, cookie).apply {
+            connectTimeout = SOURCE_PROBE_TIMEOUT_MS
+            readTimeout = SOURCE_PROBE_TIMEOUT_MS
+            setRequestProperty("Range", "bytes=0-${SOURCE_SAMPLE_BYTES - 1}")
+            setRequestProperty("Accept-Encoding", "identity")
+        }
+        return try {
+            val status = connection.responseCode
+            if (status != HttpURLConnection.HTTP_OK &&
+                status != HttpURLConnection.HTTP_PARTIAL
+            ) {
+                return DownloadSourceSample(url, 0, elapsedSince(startedAt))
+            }
+            val expected = connection.contentLengthLong
+                .takeIf { it >= 0L }
+                ?.coerceAtMost(SOURCE_SAMPLE_BYTES.toLong())
+            var count = 0
+            val buffer = ByteArray(8 * 1024)
+            connection.inputStream.use { input ->
+                while (count < SOURCE_SAMPLE_BYTES) {
+                    currentCoroutineContext().ensureActive()
+                    val read = input.read(buffer, 0, minOf(buffer.size, SOURCE_SAMPLE_BYTES - count))
+                    if (read < 0) break
+                    if (read > 0) count += read
+                }
+            }
+            val rangeValid = if (status == HttpURLConnection.HTTP_PARTIAL) {
+                val match = Regex(
+                    """bytes\s+0-(\d+)/(\d+)""",
+                    RegexOption.IGNORE_CASE
+                ).find(connection.getHeaderField("Content-Range").orEmpty())
+                match != null && match.groupValues[1].toLongOrNull() == count.toLong() - 1L &&
+                    (match.groupValues[2].toLongOrNull() ?: 0L) > count.toLong() - 1L
+            } else {
+                true
+            }
+            val bodyValid = expected == null || count.toLong() == expected
+            DownloadSourceSample(
+                url = url,
+                bytes = if (count > 0 && bodyValid && rangeValid) count else 0,
+                elapsedNanos = elapsedSince(startedAt)
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            currentCoroutineContext().ensureActive()
+            DownloadSourceSample(url, 0, elapsedSince(startedAt))
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun elapsedSince(startedAt: Long): Long =
+        (System.nanoTime() - startedAt).coerceAtLeast(1L)
+
     suspend fun download(
         urls: List<String>,
         target: File,
@@ -44,8 +152,9 @@ internal object SegmentedHttpDownloader {
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit
     ) = withContext(Dispatchers.IO) {
+        val orderedUrls = rankCandidatesBySpeed(urls.distinct(), cookie)
         var lastError: Exception? = null
-        for (url in urls) {
+        for (url in orderedUrls) {
             try {
                 downloadOne(url, target, cookie, concurrency, isCancelled, onProgress)
                 return@withContext
@@ -209,6 +318,7 @@ internal object SegmentedHttpDownloader {
         val total = probe.totalBytes
         val inFlightBytes = AtomicLong(0L)
         val lock = Any()
+        var completedSinceCheckpoint = 0
         val resumedPercent = ((completedBytes.get() * 100L) / total)
             .toInt()
             .coerceIn(0, 99)
@@ -239,11 +349,19 @@ internal object SegmentedHttpDownloader {
                             onProgress = onProgress
                         )
                         synchronized(lock) {
-                            if (!NativeTransfer.sync(descriptor.fd)) {
-                                throw IOException("分段写入同步失败")
-                            }
                             completed[index] = true
-                            mapFile.writeText(completed.joinToString("") { if (it) "1" else "0" })
+                            completedSinceCheckpoint++
+                            // Persist checkpoints in small batches to avoid syncing after
+                            // every range. Uncheckpointed ranges are safely retried on resume.
+                            if (completedSinceCheckpoint >= 4) {
+                                if (!NativeTransfer.sync(descriptor.fd)) {
+                                    throw IOException("分段写入同步失败")
+                                }
+                                mapFile.writeText(
+                                    completed.joinToString("") { if (it) "1" else "0" }
+                                )
+                                completedSinceCheckpoint = 0
+                            }
                         }
                     }
                 }

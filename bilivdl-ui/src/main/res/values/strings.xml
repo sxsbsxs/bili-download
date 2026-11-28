@@ -1,7 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">BiliVdl</string>
+    <string name="app_name">BiliDl</string>
     <string name="nav_home">首页</string>
     <string name="nav_downloads">下载</string>
-    <string name="nav_profile">我的</string>
+    <string name="nav_profile">设置</string>
+    <string name="home_search_hint">搜索视频、UP 主，或粘贴 B 站链接</string>
+    <string name="home_recommendations">热门推荐</string>
+    <string name="search_subtitle">搜索视频、UP 主，或直接输入 BV / AV 号</string>
+
+    <string name="about_section_title">关于</string>
+    <string name="about_app_description">面向 B 站视频的发现、解析与下载工具。</string>
+    <string name="about_repository_title">GitHub 仓库</string>
+    <string name="about_repository_url">github.com/sxsbsxs/bili-download</string>
+    <string name="about_update_title">检查更新</string>
+    <string name="about_update_summary">从 GitHub Releases 检查最新正式安装包</string>
+
 </resources>

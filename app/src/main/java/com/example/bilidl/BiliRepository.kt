@@ -20,6 +20,24 @@ import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.Locale
 
+/**
+ * Turn Bilibili API codes into actionable messages without mislabelling risk
+ * control as an authentication failure.
+ */
+internal fun formatBiliApiError(code: Int, message: String, fallback: String): String {
+    val detail = message.ifBlank { "未知错误" }
+    return when (code) {
+        -352 -> "$fallback：B站风控校验失败（-352）。这不等同于未登录，也不能保证重新登录就能解除；请稍后重试并避免连续提交。原始提示：$detail"
+        -101 -> "$fallback：B站账号未登录（-101），请点击账号区域登录后重试。原始提示：$detail"
+        -111 -> "$fallback：B站 CSRF 校验失败（-111），请重新扫码授权后重试。原始提示：$detail"
+        -403 -> "$fallback：B站拒绝了当前操作（-403），可能是账号权限或风控限制。原始提示：$detail"
+        -509 -> "$fallback：B站请求过于频繁（-509），请稍后再试。原始提示：$detail"
+        12008 -> "$fallback：你已经举报过这条评论（12008）。原始提示：$detail"
+        12019 -> "$fallback：举报过于频繁（12019），请稍后再试。原始提示：$detail"
+        else -> "$fallback：$detail（$code）"
+    }
+}
+
 data class BiliQuality(val id: Int, val label: String)
 
 data class BiliPage(
@@ -61,6 +79,90 @@ data class BiliVideo(
     val tags: List<String> = emptyList()
 )
 
+data class BiliStreamChoice(
+    val id: Int,
+    val codecs: String,
+    val bandwidth: Long,
+    val width: Int = 0,
+    val height: Int = 0,
+    val frameRate: String = "",
+    val codecId: Long = 0L
+) {
+    val label: String
+        get() {
+            val codec = when {
+                codecs.startsWith("avc1", true) -> "AVC"
+                codecs.startsWith("hev1", true) || codecs.startsWith("hvc1", true) -> "HEVC"
+                codecs.startsWith("av01", true) -> "AV1"
+                codecs.contains("mp4a", true) -> "AAC"
+                else -> codecs.ifBlank { "未知编码" }
+            }
+            val rate = if (codecs.contains("mp4a", true)) {
+                "${(bandwidth / 1000L).coerceAtLeast(1)} kbps"
+            } else {
+                "${"%.2f".format(java.util.Locale.US, bandwidth / 1_000_000.0)} Mbps"
+            }
+            val resolution = if (height > 0) " · ${height}P" else ""
+            val fps = frameRate.takeIf { it.isNotBlank() }?.let { " · ${it}fps" }.orEmpty()
+            return if (codecs.contains("mp4a", true)) "$codec · $rate" else "$resolution · $codec · $rate$fps".trimStart(' ', '·')
+        }
+
+    /** Normalize concrete codec strings to the codec family BVD uses for compatibility. */
+    fun codecFamily(): String = when {
+        codecs.startsWith("avc1", true) -> "avc"
+        codecs.startsWith("hev1", true) || codecs.startsWith("hvc1", true) -> "hevc"
+        codecs.startsWith("av01", true) -> "av1"
+        codecs.contains("mp4a", true) -> "aac"
+        codecs.contains("flac", true) -> "flac"
+        codecs.contains("ec-3", true) || codecs.contains("eac3", true) -> "dolby"
+        else -> codecs.substringBefore('.').lowercase(Locale.ROOT)
+    }
+
+    fun sameCodecAs(other: BiliStreamChoice): Boolean =
+        if (codecId > 0L && other.codecId > 0L) codecId == other.codecId
+        else codecFamily() == other.codecFamily()
+
+    fun toStorage(): String = JSONObject()
+        .put("id", id)
+        .put("codecId", codecId)
+        .put("codecs", codecs)
+        .put("bandwidth", bandwidth)
+        .put("width", width)
+        .put("height", height)
+        .put("frameRate", frameRate)
+        .toString()
+
+    companion object {
+        fun fromStorage(raw: String?): BiliStreamChoice? = runCatching {
+            if (raw.isNullOrBlank()) return null
+            val json = JSONObject(raw)
+            BiliStreamChoice(
+                id = json.optInt("id"),
+                codecId = json.optLong("codecId"),
+                codecs = json.optString("codecs"),
+                bandwidth = json.optLong("bandwidth"),
+                width = json.optInt("width"),
+                height = json.optInt("height"),
+                frameRate = json.optString("frameRate")
+            )
+        }.getOrNull()
+    }
+}
+
+data class BiliDownloadStreamOptions(
+    val videoChoices: List<BiliStreamChoice>,
+    val audioChoices: List<BiliStreamChoice>,
+    val direct: Boolean = false
+)
+
+data class BiliAccountProfile(
+    val mid: Long,
+    val name: String,
+    val vip: Boolean,
+    val avatarUrl: String?,
+    val signature: String
+)
+
 data class BiliPlaySource(
     val videoUrls: List<String>,
     val audioUrls: List<String>,
@@ -95,7 +197,9 @@ data class BiliSearchVideo(
     val commentCount: Long,
     val publishTime: Long,
     val description: String,
-    val tags: List<String>
+    val tags: List<String>,
+    val authorMid: Long = 0L,
+    val authorAvatarUrl: String? = null
 )
 
 data class BiliComment(
@@ -106,7 +210,8 @@ data class BiliComment(
     val likeCount: Long,
     val replyCount: Long,
     val createTime: Long,
-    val likedByMe: Boolean
+    val likedByMe: Boolean,
+    val userMid: Long = 0L
 )
 
 data class BiliFavoriteFolder(
@@ -138,15 +243,45 @@ class BiliRepository(
     private var mixinKeyExpiresAt = 0L
 
     fun verifyCookie(rawCookie: String): Pair<String, Boolean> {
-        val cookie = SecureCookieStore.normalizeCookie(rawCookie)
-        val root = requestJson("https://api.bilibili.com/x/web-interface/nav", cookie)
-        val data = root.optJSONObject("data") ?: throw IOException("B站没有返回账号信息")
-        if (!data.optBoolean("isLogin", false)) {
+        val profile = getAccountProfile(rawCookie)
+        return profile.name to profile.vip
+    }
+
+    /**
+     * Verifies the local Bilibili session and reads the account card data.
+     * Signature lookup is optional: a valid nav session stays logged in if the
+     * optional space-profile endpoint is unavailable.
+     */
+    fun getAccountProfile(rawCookie: String): BiliAccountProfile {
+        val cookie = SecureCookieStore.normalizeCookieHeader(rawCookie)
+        val nav = checkedData(requestJson("https://api.bilibili.com/x/web-interface/nav", cookie))
+        if (!nav.optBoolean("isLogin", false)) {
             throw IOException("SESSDATA 无效或已过期，请重新授权")
         }
-        val name = data.optString("uname").ifBlank { "B站用户" }
-        val vip = data.optInt("vipStatus", 0) == 1
-        return name to vip
+        val mid = nav.optLong("mid")
+        val profile = if (mid > 0L) runCatching {
+            val signed = signWbi(mapOf("mid" to mid.toString()))
+            checkedData(
+                requestJson("https://api.bilibili.com/x/space/wbi/acc/info?$signed", cookie)
+            )
+        }.getOrNull() else null
+        return BiliAccountProfile(
+            mid = mid,
+            name = nav.optString("uname").ifBlank { "B站用户" },
+            vip = nav.optInt("vipStatus", 0) == 1,
+            avatarUrl = nav.optString("face").takeIf { it.startsWith("http") },
+            signature = profile?.optString("sign").orEmpty()
+        )
+    }
+
+    /** BVD's passport sign-out flow. The caller clears local credentials only on success. */
+    fun logout() {
+        val csrf = requireCsrf()
+        val response = requestFormJson(
+            "https://passport.bilibili.com/login/exit/v2",
+            mapOf("biliCSRF" to csrf)
+        )
+        ensureMutationSuccess(response, "B站退出登录失败")
     }
 
     /**
@@ -251,6 +386,16 @@ class BiliRepository(
                 else -> null
             }
             val owner = item.optJSONObject("owner")
+            val rawOwnerFace = owner?.optString("face")?.takeIf { it.isNotBlank() }
+                ?: item.optString("face").takeIf { it.isNotBlank() }
+            val ownerFace = when {
+                rawOwnerFace.isNullOrBlank() -> null
+                rawOwnerFace.startsWith("//") -> "https:$rawOwnerFace"
+                rawOwnerFace.startsWith("http://", true) ->
+                    "https://" + rawOwnerFace.substringAfter("://")
+                rawOwnerFace.startsWith("https://", true) -> rawOwnerFace
+                else -> null
+            }
             val stat = item.optJSONObject("stat")
             val tagText = item.optString("tag")
             BiliSearchVideo(
@@ -271,7 +416,10 @@ class BiliRepository(
                 description = cleanSearchText(
                     item.optString("description").ifBlank { item.optString("desc") }
                 ),
-                tags = tagText.split(",").map { cleanSearchText(it) }.filter { it.isNotBlank() }.take(8)
+                tags = tagText.split(",").map { cleanSearchText(it) }.filter { it.isNotBlank() }.take(8),
+                authorMid = owner?.optLong("mid")?.takeIf { it > 0L }
+                    ?: item.optLong("mid").takeIf { it > 0L } ?: 0L,
+                authorAvatarUrl = ownerFace
             )
         }.distinctBy { it.bvid }.take(50)
     }
@@ -423,27 +571,125 @@ class BiliRepository(
         )
     }
 
-    fun getPlaySource(video: BiliVideo, requestedQuality: Int): BiliPlaySource {
-        val root = getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality)
+    /**
+     * Load the exact stream representations exposed for this video and quality.
+     * DASH video and audio are presented separately so the user can choose both,
+     * as in BVD, instead of the downloader silently picking one rendition.
+     */
+    fun getDownloadStreamOptions(
+        video: BiliVideo,
+        @Suppress("UNUSED_PARAMETER") requestedQuality: Int
+    ): BiliDownloadStreamOptions {
+        // Match BVD: omit qn to enumerate every actual video/audio track for this CID.
+        val data = checkedData(getPlayInfo(video.bvid, video.aid, video.cid, null))
+        val dash = data.optJSONObject("dash")
+        if (dash == null) {
+            val direct = data.optJSONArray("durl")
+            return BiliDownloadStreamOptions(
+                videoChoices = emptyList(),
+                audioChoices = emptyList(),
+                direct = direct != null && direct.length() > 0
+            )
+        }
+        val videos = dash.optJSONArray("video") ?: JSONArray()
+        val audios = dash.optJSONArray("audio") ?: JSONArray()
+        val videoChoices = (0 until videos.length()).mapNotNull { index ->
+            val item = videos.optJSONObject(index) ?: return@mapNotNull null
+            val id = item.optInt("id")
+            if (id <= 0) return@mapNotNull null
+            BiliStreamChoice(
+                id = id,
+                codecs = item.optString("codecs"),
+                bandwidth = item.optLong("bandwidth"),
+                width = item.optInt("width"),
+                codecId = item.optLong("codecid"),
+                height = item.optInt("height"),
+                frameRate = item.optString("frameRate")
+            )
+        }.distinctBy { Triple(it.id, it.codecs, it.bandwidth) }
+            .sortedWith(compareByDescending<BiliStreamChoice> { it.id }.thenByDescending { it.bandwidth })
+        val audioChoices = (0 until audios.length()).mapNotNull { index ->
+            val item = audios.optJSONObject(index) ?: return@mapNotNull null
+            val codecs = item.optString("codecs")
+            if (!codecs.contains("mp4a", ignoreCase = true)) return@mapNotNull null
+            BiliStreamChoice(
+                id = item.optInt("id"),
+                codecs = codecs,
+                bandwidth = item.optLong("bandwidth"),
+                codecId = item.optLong("codecid")
+            )
+        }.distinctBy { Triple(it.id, it.codecs, it.bandwidth) }
+            .sortedByDescending { it.bandwidth }
+        return BiliDownloadStreamOptions(videoChoices, audioChoices)
+    }
+
+    fun getPlaySource(
+        video: BiliVideo,
+        requestedQuality: Int,
+        videoChoice: BiliStreamChoice? = null,
+        audioChoice: BiliStreamChoice? = null,
+        includeAudio: Boolean = true,
+        audioOnly: Boolean = false
+    ): BiliPlaySource {
+        // When a concrete track has been selected, re-query without qn so Bilibili
+        // returns the full candidate set again. CDN URLs expire; stored tasks keep
+        // only track identity and resolve fresh URLs for each retry.
+        val root = getPlayInfo(
+            video.bvid, video.aid, video.cid,
+            requestedQuality.takeIf { videoChoice == null && audioChoice == null }
+        )
         val data = checkedData(root)
         val dash = data.optJSONObject("dash")
         if (dash != null) {
             val videos = dash.optJSONArray("video") ?: JSONArray()
             val audios = dash.optJSONArray("audio") ?: JSONArray()
             val videoCandidates = (0 until videos.length()).mapNotNull { videos.optJSONObject(it) }
-            val selectedIndex = BiliQualitySelector.chooseIndex(
-                videoCandidates.map { it.optInt("id") },
-                videoCandidates.map { it.optString("codecs") },
-                requestedQuality
-            ) ?: throw IOException(
-                "B站没有返回所选画质或更低画质，已停止下载以避免超出你的画质选择"
-            )
-            val videoItem = videoCandidates[selectedIndex]
+            val selectedIndex = if (audioOnly) {
+                -1
+            } else {
+                BiliQualitySelector.chooseIndex(
+                    videoCandidates.map { it.optInt("id") },
+                    videoCandidates.map { it.optString("codecs") },
+                    requestedQuality
+                ) ?: throw IOException(
+                    "B站没有返回所选画质或更低画质，已停止下载以避免超出你的画质选择"
+                )
+            }
+            val videoItem = if (audioOnly) {
+                null
+            } else if (videoChoice == null) {
+                videoCandidates[selectedIndex]
+            } else {
+                videoCandidates.firstOrNull {
+                    it.optInt("id") == videoChoice.id &&
+                        BiliStreamChoice(
+                            id = it.optInt("id"),
+                            codecs = it.optString("codecs"),
+                            bandwidth = it.optLong("bandwidth"),
+                            codecId = it.optLong("codecid")
+                        ).sameCodecAs(videoChoice)
+                } ?: throw IOException("所选视频流已变化，请重新打开下载选项并选择规格")
+            }
             val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
-            val audioItem = audioCandidates
-                .filter { it.optString("codecs").contains("mp4a", ignoreCase = true) }
-                .maxByOrNull { it.optLong("bandwidth") }
-            if (audioCandidates.isNotEmpty() && audioItem == null) {
+            val compatibleAudio = audioCandidates.filter {
+                it.optString("codecs").contains("mp4a", ignoreCase = true)
+            }
+            val audioItem = if (!includeAudio) {
+                null
+            } else if (audioChoice == null) {
+                compatibleAudio.maxByOrNull { it.optLong("bandwidth") }
+            } else {
+                compatibleAudio.firstOrNull {
+                    it.optInt("id") == audioChoice.id &&
+                        BiliStreamChoice(
+                            id = it.optInt("id"),
+                            codecs = it.optString("codecs"),
+                            bandwidth = it.optLong("bandwidth"),
+                            codecId = it.optLong("codecid")
+                        ).sameCodecAs(audioChoice)
+                } ?: throw IOException("所选音频流已变化，请重新打开下载选项并选择规格")
+            }
+            if (includeAudio && audioCandidates.isNotEmpty() && compatibleAudio.isEmpty()) {
                 val codecs = audioCandidates.map { it.optString("codecs").ifBlank { "未知编码" } }
                     .distinct()
                     .joinToString("、")
@@ -454,7 +700,7 @@ class BiliRepository(
 
             val videoUrls = videoItem?.let { streamUrls(it) }.orEmpty()
             val audioUrls = audioItem?.let { streamUrls(it) }.orEmpty()
-            if (videoUrls.isNotEmpty()) {
+            if (videoUrls.isNotEmpty() || audioUrls.isNotEmpty()) {
                 val videoSegmentBase = videoItem?.optJSONObject("SegmentBase")
                     ?: videoItem?.optJSONObject("segment_base")
                 val audioSegmentBase = audioItem?.optJSONObject("SegmentBase")
@@ -485,6 +731,9 @@ class BiliRepository(
         val direct = (0 until durl.length()).mapNotNull { durl.optJSONObject(it) }
             .mapNotNull { it.optString("url").takeIf(String::isNotBlank) }
         if (direct.isNotEmpty()) {
+            if (videoChoice != null || audioChoice != null) {
+                throw IOException("该视频使用单流格式，无法应用 DASH 音视频规格选择；请重新选择自动规格")
+            }
             return BiliPlaySource(
                 emptyList(), emptyList(), direct,
                 data.optString("format", "mp4"), "video/mp4", ""
@@ -765,7 +1014,8 @@ class BiliRepository(
                 likeCount = item.optLong("like"),
                 replyCount = item.optLong("rcount"),
                 createTime = item.optLong("ctime"),
-                likedByMe = item.optInt("action") == 1
+                likedByMe = item.optInt("action") == 1,
+                userMid = member?.optLong("mid") ?: 0L
             )
         }
         val total = data.optJSONObject("page")?.optLong("count") ?: comments.size.toLong()
@@ -831,7 +1081,8 @@ class BiliRepository(
                 likeCount = item.optLong("like"),
                 replyCount = item.optLong("rcount"),
                 createTime = item.optLong("ctime"),
-                likedByMe = item.optInt("action") == 1
+                likedByMe = item.optInt("action") == 1,
+                userMid = member?.optLong("mid") ?: 0L
             )
         }
         val total = data.optJSONObject("page")?.optLong("count") ?: comments.size.toLong()
@@ -857,6 +1108,38 @@ class BiliRepository(
             )
         )
         ensureMutationSuccess(root, "评论互动失败")
+    }
+
+    /**
+     * Report a comment or reply using Bilibili's official reply/report endpoint.
+     * Reason 0 accepts an optional free-text note.
+     */
+    fun reportVideoComment(
+        aid: Long,
+        rpid: Long,
+        reason: Int,
+        content: String = ""
+    ) {
+        require(aid > 0L) { "视频 AV 号无效" }
+        require(rpid > 0L) { "评论 ID 无效" }
+        require(reason in 0..17) { "请选择有效的举报原因" }
+        val detail = content.trim()
+        if (detail.length > 200) throw IOException("举报说明不能超过 200 个字符")
+        val csrf = requireCsrf()
+        val form = linkedMapOf(
+            "oid" to aid.toString(),
+            "type" to "1",
+            "rpid" to rpid.toString(),
+            "reason" to reason.toString(),
+            "csrf" to csrf,
+            "csrf_token" to csrf
+        )
+        if (reason == 0 && detail.isNotBlank()) form["content"] = detail
+        val response = requestFormJson(
+            "https://api.bilibili.com/x/v2/reply/report",
+            form
+        )
+        ensureMutationSuccess(response, "评论举报失败")
     }
 
     fun getRelatedVideos(aid: Long): List<BiliSearchVideo> {
@@ -887,7 +1170,7 @@ class BiliRepository(
         val code = root.optInt("code", -1)
         if (code != 0) {
             val message = root.optString("message").ifBlank { fallback }
-            throw IOException(fallback + "：" + message + "（" + code + "）")
+            throw IOException(formatBiliApiError(code, message, fallback))
         }
     }
 
@@ -1007,19 +1290,30 @@ class BiliRepository(
         }
     }
 
-    private fun getPlayInfo(bvid: String?, aid: Long, cid: Long, quality: Int): JSONObject {
+    private fun getPlayInfo(bvid: String?, aid: Long, cid: Long, quality: Int?): JSONObject {
         // First mirror Bilimiao2's public HTTP playurl request. It uses the aid/cid
         // pair and does not require WBI signing when Bilibili returns a public stream.
         val publicParameters = BiliPlayUrlPolicy.publicPlayUrlParameters(aid, cid, quality)
         val publicQuery = publicParameters.entries.joinToString("&") {
             encode(it.key) + "=" + encode(it.value)
         }
-        val publicResponse = runCatching {
-            requestJson("https://api.bilibili.com/x/player/playurl?" + publicQuery)
-        }.getOrNull()
+        val playbackCookie = cookieProvider()
+        val playbackReferer = BiliPlayUrlPolicy.videoReferer(aid)
+        val publicAttempt = runCatching {
+            requestJson(
+                "https://api.bilibili.com/x/player/playurl?" + publicQuery,
+                cookieOverride = playbackCookie,
+                referer = playbackReferer,
+                requestUserAgent = BiliPlayUrlPolicy.PLAYER_USER_AGENT
+            )
+        }
+        val publicResponse = publicAttempt.getOrNull()
         if (publicResponse != null && hasPlayablePlayInfo(publicResponse)) {
             return publicResponse
         }
+        val publicFailure = publicAttempt.exceptionOrNull()?.message
+            ?: publicResponse?.let(::describePlayUrlFailure)
+            ?: "普通播放接口没有返回响应"
 
         // Fall back to WBI. For anonymous requests try_look=1 may expose additional
         // ordinary-user formats; authenticated requests omit it. Neither path
@@ -1027,7 +1321,7 @@ class BiliRepository(
         val parameters = linkedMapOf<String, String>()
         if (!bvid.isNullOrBlank()) parameters["bvid"] = bvid else parameters["aid"] = aid.toString()
         parameters["cid"] = cid.toString()
-        parameters["qn"] = quality.toString()
+        quality?.let { parameters["qn"] = it.toString() }
         parameters["fnval"] = "4048"
         parameters["fnver"] = "0"
         parameters["force_host"] = "2"
@@ -1039,18 +1333,49 @@ class BiliRepository(
             parameters,
             hasSessionCookie = !cookieHeader(cookieProvider()).isNullOrBlank()
         )
-        val signedQuery = signWbi(parameters)
-        return requestJson("https://api.bilibili.com/x/player/wbi/playurl?" + signedQuery)
+        val signedQuery = try {
+            signWbi(parameters)
+        } catch (error: Exception) {
+            throw IOException(
+                "B站普通播放接口未返回可播放流（" + publicFailure +
+                    "）；生成备用 WBI 签名失败：" + (error.message ?: "未知错误"),
+                error
+            )
+        }
+        val fallbackAttempt = runCatching {
+            requestJson(
+                "https://api.bilibili.com/x/player/wbi/playurl?" + signedQuery,
+                cookieOverride = playbackCookie,
+                referer = playbackReferer,
+                requestUserAgent = BiliPlayUrlPolicy.PLAYER_USER_AGENT
+            )
+        }
+        val fallback = fallbackAttempt.getOrNull()
+        if (fallback != null && hasPlayablePlayInfo(fallback)) return fallback
+        val fallbackFailure = fallbackAttempt.exceptionOrNull()?.message
+            ?: fallback?.let(::describePlayUrlFailure)
+            ?: "WBI 备用接口没有返回响应"
+        throw IOException(
+            "B站播放地址获取失败。普通接口：" + publicFailure +
+                "；WBI 备用接口：" + fallbackFailure
+        )
+    }
+
+    private fun describePlayUrlFailure(root: JSONObject): String {
+        val code = root.optInt("code", Int.MIN_VALUE)
+        val message = root.optString("message")
+            .ifBlank { root.optString("msg") }
+            .ifBlank { "没有返回可播放的视频流" }
+        return if (code == Int.MIN_VALUE) message else "code=" + code + "，" + message
     }
 
     private fun hasPlayablePlayInfo(root: JSONObject): Boolean {
         if (root.optInt("code", -1) != 0) return false
         val data = root.optJSONObject("data") ?: return false
-        val dash = data.optJSONObject("dash")
-        val hasDashVideo = (dash?.optJSONArray("video")?.length() ?: 0) > 0
-        val hasDashAudio = (dash?.optJSONArray("audio")?.length() ?: 0) > 0
-        val hasDurl = (data.optJSONArray("durl")?.length() ?: 0) > 0
-        return (hasDashVideo && hasDashAudio) || hasDurl
+        val dashVideoCount = data.optJSONObject("dash")
+            ?.optJSONArray("video")?.length() ?: 0
+        val durlCount = data.optJSONArray("durl")?.length() ?: 0
+        return BiliPlayUrlPolicy.hasPlayableStream(dashVideoCount, durlCount)
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
@@ -1159,7 +1484,7 @@ class BiliRepository(
         val code = root.optInt("code", 0)
         if (code != 0) {
             val message = root.optString("message").ifBlank { "未知错误" }
-            throw IOException("B站接口错误 " + code + "：" + message)
+            throw IOException(formatBiliApiError(code, message, "B站接口错误"))
         }
         return root.optJSONObject(key) ?: throw IOException("B站返回内容不完整")
     }
@@ -1206,14 +1531,19 @@ class BiliRepository(
         }
     }
 
-    private fun requestJson(url: String, cookieOverride: String? = cookieProvider()): JSONObject {
+    private fun requestJson(
+        url: String,
+        cookieOverride: String? = cookieProvider(),
+        referer: String = "https://www.bilibili.com/",
+        requestUserAgent: String = userAgent
+    ): JSONObject {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 15_000
             readTimeout = 25_000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", userAgent)
-            setRequestProperty("Referer", "https://www.bilibili.com/")
+            setRequestProperty("User-Agent", requestUserAgent)
+            setRequestProperty("Referer", referer)
             setRequestProperty("Origin", "https://www.bilibili.com")
             setRequestProperty("Accept", "application/json, text/plain, */*")
             setRequestProperty("Accept-Encoding", "identity")

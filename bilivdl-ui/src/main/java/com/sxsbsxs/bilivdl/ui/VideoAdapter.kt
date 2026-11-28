@@ -9,7 +9,7 @@ import com.bumptech.glide.load.model.GlideUrl
 import com.bumptech.glide.load.model.LazyHeaders
 import com.sxsbsxs.bilivdl.ui.databinding.ItemVideoBinding
 
-/** Original BiliVdl video card, with display data supplied by the host app. */
+/** Shared video poster card used by both home recommendations and search results. */
 class VideoAdapter(private val onClick: (BiliVdlVideo) -> Unit) : RecyclerView.Adapter<VideoAdapter.Holder>() {
     private val items = mutableListOf<BiliVdlVideo>()
 
@@ -35,7 +35,10 @@ class VideoAdapter(private val onClick: (BiliVdlVideo) -> Unit) : RecyclerView.A
         fun bind(video: BiliVdlVideo) {
             binding.videoTitle.text = video.title
             binding.videoAuthor.text = "UP主 · " + video.author
-            binding.videoMeta.text = "播放 " + video.play + " · " + video.duration
+            binding.videoMeta.text = "播放 " + video.play
+            binding.videoDuration.text = video.duration
+            binding.videoCover.contentDescription = video.title
+
             val imageUrl = video.cover.trim().let {
                 when {
                     it.startsWith("//") -> "https:$it"
@@ -47,15 +50,17 @@ class VideoAdapter(private val onClick: (BiliVdlVideo) -> Unit) : RecyclerView.A
                 .addHeader("Referer", "https://www.bilibili.com/")
                 .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36")
                 .build()
+
             binding.videoCover.setImageResource(R.drawable.bg_empty_card)
             Glide.with(binding.videoCover)
                 .load(GlideUrl(imageUrl, headers))
                 .placeholder(R.drawable.bg_empty_card)
                 .error(R.drawable.bg_empty_card)
                 .diskCacheStrategy(DiskCacheStrategy.ALL)
-                .override(480, 320)
+                .override(720, 405)
                 .centerCrop()
                 .into(binding.videoCover)
+
             binding.root.setOnClickListener { onClick(video) }
         }
     }

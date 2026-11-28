@@ -5,7 +5,7 @@ import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Toast
-import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.GridLayoutManager
 import com.sxsbsxs.bilivdl.ui.databinding.FragmentSearchBinding
 
 class SearchController(
@@ -21,8 +21,9 @@ class SearchController(
 
     fun bind() {
         adapter = VideoAdapter(host::openVideo)
-        binding.searchResults.layoutManager = LinearLayoutManager(fragment.requireContext())
+        binding.searchResults.layoutManager = GridLayoutManager(fragment.requireContext(), 2)
         binding.searchResults.adapter = adapter
+        binding.searchResults.setHasFixedSize(true)
         binding.searchButton.setOnClickListener { search() }
         binding.searchInput.setOnEditorActionListener { _, action, _ ->
             if (action == EditorInfo.IME_ACTION_SEARCH) {

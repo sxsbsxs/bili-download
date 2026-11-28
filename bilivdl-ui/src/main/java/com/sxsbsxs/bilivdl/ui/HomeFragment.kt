@@ -4,10 +4,10 @@ import android.os.Bundle
 import android.view.View
 import androidx.core.widget.NestedScrollView
 import androidx.fragment.app.Fragment
-import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.GridLayoutManager
 import com.sxsbsxs.bilivdl.ui.databinding.FragmentHomeBinding
 
-/** Original BiliVdl recommendation screen; data comes from the host repository. */
+/** Original BiliVdl feed flow, displayed as a Bilibili-style poster grid. */
 class HomeFragment : Fragment(R.layout.fragment_home) {
     private var binding: FragmentHomeBinding? = null
     private var page = 0
@@ -27,9 +27,9 @@ class HomeFragment : Fragment(R.layout.fragment_home) {
         val b = FragmentHomeBinding.bind(view)
         binding = b
         adapter = VideoAdapter(host::openVideo)
-        b.homeRecommendations.layoutManager = LinearLayoutManager(requireContext())
+        b.homeRecommendations.layoutManager = GridLayoutManager(requireContext(), 2)
         b.homeRecommendations.adapter = adapter
-        b.homeSearchButton.setOnClickListener { host.navigateToDiscover() }
+        b.homeRecommendations.isNestedScrollingEnabled = false
         b.homeSearchEntry.setOnClickListener { host.navigateToDiscover() }
         b.homeSwipe.setOnRefreshListener { refresh() }
         b.homeScroll.setOnScrollChangeListener(
@@ -52,6 +52,7 @@ class HomeFragment : Fragment(R.layout.fragment_home) {
         loading = false
         videos.clear()
         adapter.submitList(emptyList())
+        b.homeFeedStatus.visibility = View.GONE
         b.homeSwipe.isRefreshing = true
         loadPage(1)
     }
@@ -73,10 +74,11 @@ class HomeFragment : Fragment(R.layout.fragment_home) {
                     duplicatePages = if (fresh.isEmpty() && result.size >= 20) duplicatePages + 1 else 0
                     hasMore = result.size >= 20 && duplicatePages < 3
                     adapter.submitList(videos.toList())
-                    b.homeFeedStatus.text = when {
-                        videos.isEmpty() -> "暂时没有推荐视频 · 下拉重试"
-                        hasMore -> "已加载 " + videos.size + " 条 · 下滑继续加载"
-                        else -> "已加载全部推荐 · 下拉刷新换一批"
+                    if (videos.isEmpty()) {
+                        b.homeFeedStatus.text = "暂无推荐视频"
+                        b.homeFeedStatus.visibility = View.VISIBLE
+                    } else {
+                        b.homeFeedStatus.visibility = View.GONE
                     }
                     b.homeRecommendations.post {
                         val live = binding ?: return@post
@@ -85,7 +87,8 @@ class HomeFragment : Fragment(R.layout.fragment_home) {
                     }
                 },
                 onFailure = { error ->
-                    b.homeFeedStatus.text = "加载失败：" + (error.message ?: "网络异常") + " · 下拉重试"
+                    b.homeFeedStatus.text = "加载失败：" + (error.message ?: "网络异常")
+                    b.homeFeedStatus.visibility = View.VISIBLE
                 }
             )
             b.homeProgress.visibility = View.GONE

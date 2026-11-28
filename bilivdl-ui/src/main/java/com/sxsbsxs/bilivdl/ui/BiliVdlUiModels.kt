@@ -8,7 +8,9 @@ data class BiliVdlVideo(
     val duration: String,
     val bvid: String,
     val aid: Long,
-    val description: String = ""
+    val description: String = "",
+    val authorMid: Long = 0L,
+    val authorAvatarUrl: String? = null
 )
 
 data class BiliVdlComment(
@@ -17,7 +19,9 @@ data class BiliVdlComment(
     val text: String,
     val likes: Long,
     val replyCount: Long,
-    val liked: Boolean = false
+    val liked: Boolean = false,
+    val avatarUrl: String? = null,
+    val userMid: Long = 0L
 )
 
 data class BiliVdlDanmaku(
@@ -40,7 +44,10 @@ data class BiliVdlDownloadTask(
 data class BiliVdlAccount(
     val name: String,
     val status: String,
-    val loggedIn: Boolean
+    val loggedIn: Boolean,
+    val avatarUrl: String? = null,
+    val signature: String = "",
+    val mid: Long = 0L
 )
 
 data class BiliVdlSettings(
@@ -50,5 +57,6 @@ data class BiliVdlSettings(
     val downloadDanmaku: Boolean,
     val downloadSubtitles: Boolean,
     val audioOnly: Boolean,
-    val downloadPath: String
+    val downloadPath: String,
+    val batchQualityMismatchIndex: Int = 0
 )

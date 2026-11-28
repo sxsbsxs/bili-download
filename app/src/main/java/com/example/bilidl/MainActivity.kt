@@ -30,6 +30,12 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.media3.common.util.UnstableApi
 import android.app.AlertDialog
+import android.app.ProgressDialog
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.documentfile.provider.DocumentFile
+import androidx.core.content.FileProvider
 import java.io.File
 import android.content.ClipboardManager
 import android.content.ClipData
@@ -99,6 +105,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
+        private const val APP_REPOSITORY_URL = "https://github.com/sxsbsxs/bili-download"
+        private const val APP_RELEASES_URL = "https://github.com/sxsbsxs/bili-download/releases"
+        private const val PREF_PENDING_UPDATE_FILE = "pending_update_file"
         const val ST_DOWNLOADING = DownloadTaskStatus.RUNNING
         const val ST_WAITING = DownloadTaskStatus.QUEUED
         const val ST_PAUSED = DownloadTaskStatus.PAUSED
@@ -330,14 +339,39 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             ellipsize = TextUtils.TruncateAt.END
             setLineSpacing(0f, 1.08f)
         }, LinearLayout.LayoutParams(match, wrap))
-        body.addView(TextView(this).apply {
+        val authorRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, 0)
+        }
+        val authorAvatar = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = circle(Color.parseColor("#FFEAF0"))
+        }
+        if (!item.authorAvatarUrl.isNullOrBlank()) {
+            Glide.with(this)
+                .load(item.authorAvatarUrl)
+                .circleCrop()
+                .placeholder(com.sxsbsxs.bilivdl.ui.R.drawable.ic_account_placeholder)
+                .error(com.sxsbsxs.bilivdl.ui.R.drawable.ic_account_placeholder)
+                .into(authorAvatar)
+        } else {
+            authorAvatar.setImageResource(com.sxsbsxs.bilivdl.ui.R.drawable.ic_account_placeholder)
+        }
+        authorAvatar.setOnClickListener { openUserSpacePage(item.authorMid) }
+        authorAvatar.isClickable = item.authorMid > 0L
+        authorRow.addView(authorAvatar, LinearLayout.LayoutParams(dp(22), dp(22)))
+        authorRow.addView(TextView(this).apply {
             text = item.author
             textSize = 11f
             setTextColor(sub)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(6), 0, 0)
-        }, LinearLayout.LayoutParams(match, wrap))
+            setPadding(dp(7), 0, 0, 0)
+            isClickable = item.authorMid > 0L
+            setOnClickListener { openUserSpacePage(item.authorMid) }
+        }, LinearLayout.LayoutParams(0, wrap, 1f))
+        body.addView(authorRow, LinearLayout.LayoutParams(match, wrap))
         body.addView(TextView(this).apply {
             text = "播放 " + formatCount(item.viewCount) + "  ·  弹幕 " + formatCount(item.danmakuCount)
             textSize = 10f
@@ -403,6 +437,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private fun showVideoDetail(video: BiliVideo, searchItem: BiliSearchVideo?) {
         say("", sub)
         parsedVideo = video
+        detailDanmakuVisible = prefs.getBoolean("danmaku_display_enabled", true)
         selectedQualityId = preferredQualityId(video.qualities)
         detailSearchItem = searchItem
         commentsRequestToken++
@@ -432,33 +467,27 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private fun buildVideoDetailPage(video: BiliVideo, searchItem: BiliSearchVideo?): View {
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#101014"))
+            setBackgroundColor(Color.parseColor("#F5F6F8"))
         }
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), dp(4), dp(18), dp(4))
-            setBackgroundColor(Color.parseColor("#17171D"))
+            setBackgroundColor(Color.WHITE)
         }
         toolbar.addView(TextView(this).apply {
             text = "‹"
             textSize = 32f
             gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor("#181A1F"))
             setOnClickListener { closeVideoDetail() }
         }, LinearLayout.LayoutParams(dp(44), dp(48)))
         toolbar.addView(TextView(this).apply {
             text = "视频详情"
             textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor("#181A1F"))
         }, LinearLayout.LayoutParams(0, wrap, 1f))
-        toolbar.addView(TextView(this).apply {
-            text = "BiliDl"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#FB7299"))
-        })
         page.addView(toolbar, LinearLayout.LayoutParams(match, dp(52)))
 
         val content = layoutInflater.inflate(
@@ -483,7 +512,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             positionProvider = { currentPlayer?.currentPosition ?: 0L }
             playingProvider = { currentPlayer?.isPlaying == true }
             danmakuEnabled = detailDanmakuVisible
-        }
+        }.also(::applyDanmakuDisplaySettings)
         detailDanmakuOverlay = overlay
 
         content.findViewById<TextView>(com.sxsbsxs.bilivdl.ui.R.id.player_title).text = video.title
@@ -492,7 +521,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         val avatar = content.findViewById<ImageView>(
             com.sxsbsxs.bilivdl.ui.R.id.owner_avatar
         )
+        val ownerName = content.findViewById<TextView>(com.sxsbsxs.bilivdl.ui.R.id.owner_name)
+        val openOwnerSpace = View.OnClickListener { openUserSpacePage(video.ownerMid) }
+        ownerName.setOnClickListener(openOwnerSpace)
+        ownerName.isClickable = video.ownerMid > 0L
         val avatarUrl = video.ownerAvatarUrl.orEmpty()
+        avatar.setOnClickListener(openOwnerSpace)
+        avatar.isClickable = video.ownerMid > 0L
         if (avatarUrl.isNotBlank()) {
             Glide.with(this)
                 .load(avatarUrl)
@@ -510,18 +545,85 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 formatCount(video.likeCount) + " 点赞  ·  " +
                 formatCount(video.commentCount) + " 评论"
 
-        content.findViewById<TextView>(com.sxsbsxs.bilivdl.ui.R.id.video_description).text =
-            buildString {
-                if (video.categoryName.isNotBlank()) append("分区：").append(video.categoryName).append('\n')
-                val publishTime = if (video.publishTime > 0L) video.publishTime else searchItem?.publishTime ?: 0L
-                if (publishTime > 0L) append("投稿：").append(formatPublishDate(publishTime)).append('\n')
-                if (video.bvid.isNullOrBlank().not()) append("BV号：").append(video.bvid).append('\n')
-                append(video.description.ifBlank { "暂无简介" })
-                if (video.tags.isNotEmpty()) {
-                    append("\n\n标签：")
-                    append(video.tags.joinToString("  ·  "))
+        val pagesScroll = content.findViewById<HorizontalScrollView>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_pages_scroll
+        )
+        val pagesContainer = content.findViewById<LinearLayout>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_pages_container
+        )
+        pagesContainer.removeAllViews()
+        pagesScroll.visibility = if (video.pages.size > 1) View.VISIBLE else View.GONE
+        video.pages.sortedBy { it.pageNumber }.forEach { pageInfo ->
+            val currentPage = pageInfo.pageNumber == video.page
+            val pageCard = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                gravity = Gravity.CENTER_VERTICAL
+                background = rippleShape(if (currentPage) Color.parseColor("#FFF0F5") else field, 12)
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    if (pageInfo.cid != video.cid) onParseClicked(pageUrl(video, pageInfo))
                 }
             }
+            pageCard.addView(TextView(this).apply {
+                text = "P${pageInfo.pageNumber}"
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(if (currentPage) pink else ink)
+            }, LinearLayout.LayoutParams(wrap, wrap))
+            pageCard.addView(TextView(this).apply {
+                text = pageInfo.part.ifBlank { formatDuration(pageInfo.durationSeconds) }
+                textSize = 11f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setTextColor(sub)
+            }, LinearLayout.LayoutParams(dp(102), wrap))
+            pagesContainer.addView(
+                pageCard,
+                LinearLayout.LayoutParams(wrap, dp(52)).apply { marginEnd = dp(8) }
+            )
+        }
+
+        val tagsScroll = content.findViewById<HorizontalScrollView>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_tags_scroll
+        )
+        val tagsContainer = content.findViewById<LinearLayout>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_tags_container
+        )
+        tagsContainer.removeAllViews()
+        tagsScroll.visibility = if (video.tags.isNotEmpty()) View.VISIBLE else View.GONE
+        video.tags.take(12).forEach { tag ->
+            tagsContainer.addView(TextView(this).apply {
+                text = tag
+                textSize = 11f
+                setTextColor(ink)
+                background = rippleShape(field, 14)
+                setPadding(dp(10), dp(5), dp(10), dp(5))
+                isClickable = true
+                isFocusable = true
+                setOnClickListener {
+                    openExternalPage("https://search.bilibili.com/all?keyword=" + Uri.encode(tag))
+                }
+            }, LinearLayout.LayoutParams(wrap, wrap).apply { marginEnd = dp(7) })
+        }
+
+        val descriptionView = content.findViewById<TextView>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_description
+        )
+        descriptionView.text = buildString {
+            if (video.categoryName.isNotBlank()) append("分区：").append(video.categoryName).append('\n')
+            val publishTime = if (video.publishTime > 0L) video.publishTime else searchItem?.publishTime ?: 0L
+            if (publishTime > 0L) append("投稿：").append(formatPublishDate(publishTime)).append('\n')
+            if (video.bvid.isNullOrBlank().not()) append("BV号：").append(video.bvid).append('\n')
+            append(video.description.ifBlank { "暂无简介" })
+        }
+        var descriptionExpanded = false
+        descriptionView.setOnClickListener {
+            descriptionExpanded = !descriptionExpanded
+            descriptionView.maxLines = if (descriptionExpanded) Int.MAX_VALUE else 3
+            descriptionView.ellipsize = if (descriptionExpanded) null else android.text.TextUtils.TruncateAt.END
+        }
 
         detailPlaybackStatus = content.findViewById(
             com.sxsbsxs.bilivdl.ui.R.id.player_status
@@ -561,8 +663,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         val partButton = content.findViewById<MaterialButton>(
             com.sxsbsxs.bilivdl.ui.R.id.part_button
         )
-        partButton.visibility = if (video.pages.size > 1) View.VISIBLE else View.GONE
-        partButton.text = if (video.pages.size > 1) "选择分P（共 " + video.pages.size + " P）" else "单P视频"
+        partButton.visibility = if (video.pages.size > 4) View.VISIBLE else View.GONE
+        partButton.text = "全部分P（共 " + video.pages.size + " P）"
         partButton.setOnClickListener { showAvailablePages() }
 
         val danmakuButton = content.findViewById<MaterialButton>(
@@ -574,8 +676,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         updateDanmakuButton()
         danmakuButton.setOnClickListener {
             detailDanmakuVisible = !detailDanmakuVisible
+            prefs.edit().putBoolean("danmaku_display_enabled", detailDanmakuVisible).apply()
             detailDanmakuOverlay?.danmakuEnabled = detailDanmakuVisible
             updateDanmakuButton()
+        }
+        danmakuButton.setOnLongClickListener {
+            showDanmakuDisplaySettings()
+            true
         }
 
         content.findViewById<MaterialButton>(
@@ -603,6 +710,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         content.findViewById<MaterialButton>(
             com.sxsbsxs.bilivdl.ui.R.id.video_triple
         ).setOnClickListener { performTripleLike(video) }
+
+        content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_share
+        ).setOnClickListener { showVideoMoreActions(video) }
 
         content.findViewById<MaterialButton>(
             com.sxsbsxs.bilivdl.ui.R.id.danmaku_send
@@ -634,17 +745,34 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             loadVideoComments(video, true)
         }
 
-        val playerScroll = content as? androidx.core.widget.NestedScrollView
-        playerScroll?.setOnScrollChangeListener(
-            androidx.core.widget.NestedScrollView.OnScrollChangeListener { scroll, _, y, _, _ ->
-                val child = scroll.getChildAt(0) ?: return@OnScrollChangeListener
-                if (!commentsLoading && commentsHasMore &&
-                    y + scroll.height >= child.measuredHeight - dp(420)
-                ) {
-                    loadVideoComments(video, false)
-                }
-            }
+        // BiliMiao-style separation: keep the player anchored while details and replies
+        // switch independently, rather than stacking every interaction into one long page.
+        val detailInfoSection = content.findViewById<View>(
+            com.sxsbsxs.bilivdl.ui.R.id.detail_info_section
         )
+        val commentsSection = content.findViewById<View>(
+            com.sxsbsxs.bilivdl.ui.R.id.detail_comments_section
+        )
+        val detailsTab = content.findViewById<TextView>(
+            com.sxsbsxs.bilivdl.ui.R.id.tab_details
+        )
+        val commentsTab = content.findViewById<TextView>(
+            com.sxsbsxs.bilivdl.ui.R.id.tab_comments
+        )
+        fun selectDetailTab(showComments: Boolean) {
+            detailInfoSection.visibility = if (showComments) View.GONE else View.VISIBLE
+            commentsSection.visibility = if (showComments) View.VISIBLE else View.GONE
+            detailsTab.setTextColor(if (showComments) sub else ink)
+            commentsTab.setTextColor(if (showComments) ink else sub)
+            detailsTab.typeface = if (showComments) Typeface.DEFAULT else Typeface.DEFAULT_BOLD
+            commentsTab.typeface = if (showComments) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            if (showComments && detailComments.isEmpty() && !commentsLoading) {
+                loadVideoComments(video, true)
+            }
+        }
+        detailsTab.setOnClickListener { selectDetailTab(false) }
+        commentsTab.setOnClickListener { selectDetailTab(true) }
+        selectDetailTab(false)
 
         val commentsList = content.findViewById<RecyclerView>(
             com.sxsbsxs.bilivdl.ui.R.id.comments_list
@@ -659,6 +787,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             onLike = { uiComment ->
                 detailComments.firstOrNull { it.id == uiComment.id }?.let { comment ->
                     parsedVideo?.let { currentVideo -> performCommentLike(currentVideo, comment) }
+                }
+            },
+            onUserProfile = { uiComment -> openUserSpacePage(uiComment.userMid) },
+            onReport = { uiComment ->
+                detailComments.firstOrNull { it.id == uiComment.id }?.let { comment ->
+                    parsedVideo?.let { currentVideo -> showCommentReportDialog(currentVideo, comment) }
                 }
             }
         )
@@ -875,12 +1009,29 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             )
         }
         val colorChoices = listOf(
-            "白色" to 0xFFFFFF,
-            "黄色" to 0xFFFF00,
-            "粉色" to 0xFF79B8,
-            "蓝色" to 0x66CCFF,
-            "绿色" to 0x66CC66
+            "#FFFFFF" to 0xFFFFFF,
+            "#FE0302" to 0xFE0302,
+            "#FF7204" to 0xFF7204,
+            "#FFAA02" to 0xFFAA02,
+            "#FFD302" to 0xFFD302,
+            "#FFFF00" to 0xFFFF00,
+            "#A0EE00" to 0xA0EE00,
+            "#00CD00" to 0x00CD00,
+            "#019899" to 0x019899,
+            "#4266BE" to 0x4266BE,
+            "#89D5FF" to 0x89D5FF,
+            "#CC0273" to 0xCC0273,
+            "#222222" to 0x222222,
+            "#9B9B9B" to 0x9B9B9B
         )
+        val fontSizes = listOf(25, 18)
+        val fontSizeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("默认字号（25）", "小号（18）")
+            )
+        }
         val colorSpinner = Spinner(this).apply {
             adapter = ArrayAdapter(
                 this@MainActivity,
@@ -906,6 +1057,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 setPadding(0, dp(8), 0, dp(2))
             })
             addView(colorSpinner, LinearLayout.LayoutParams(match, dp(44)))
+            addView(TextView(this@MainActivity).apply {
+                text = "字体大小"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(8), 0, dp(2))
+            })
+            addView(fontSizeSpinner, LinearLayout.LayoutParams(match, dp(44)))
         }
         val dialog = AlertDialog.Builder(this)
             .setTitle("发送弹幕")
@@ -925,6 +1083,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 val selectedColor = colorChoices.getOrElse(colorSpinner.selectedItemPosition) {
                     colorChoices.first()
                 }.second
+                val selectedFontSize = fontSizes.getOrElse(fontSizeSpinner.selectedItemPosition) { 25 }
                 val progressMs = currentPlayer?.currentPosition ?: 0L
                 setBusy(dialog.getButton(AlertDialog.BUTTON_POSITIVE), true)
                 backgroundExecutor.execute {
@@ -934,12 +1093,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                             text = message,
                             progressMs = progressMs,
                             color = selectedColor,
+                            fontSize = selectedFontSize,
                             mode = selectedMode
                         )
                         runOnUiThread {
                             if (parsedVideo?.cid == video.cid) {
                                 detailDanmakuOverlay?.addLocalDanmaku(
-                                    message, selectedColor, selectedMode, progressMs
+                                    message, selectedColor, selectedMode, progressMs, selectedFontSize
                                 )
                             }
                             toast("弹幕发送成功")
@@ -956,6 +1116,112 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }
         dialog.show()
         editor.requestFocus()
+    }
+
+    private fun applyDanmakuDisplaySettings(
+        overlay: com.sxsbsxs.bilivdl.ui.DanmakuOverlayView
+    ) {
+        overlay.setDisplaySettings(
+            fontScale = prefs.getFloat("danmaku_font_scale", 1f),
+            opacity = prefs.getFloat("danmaku_opacity", 1f),
+            speed = prefs.getFloat("danmaku_speed", 1f),
+            showScrolling = prefs.getBoolean("danmaku_show_scrolling", true),
+            showTop = prefs.getBoolean("danmaku_show_top", true),
+            showBottom = prefs.getBoolean("danmaku_show_bottom", true),
+            showAdvanced = prefs.getBoolean("danmaku_show_advanced", true)
+        )
+    }
+
+    private fun showDanmakuDisplaySettings() {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            addView(content)
+        }
+
+        fun addSlider(
+            title: String,
+            initial: Int,
+            max: Int,
+            valueText: (Int) -> String,
+        ): android.widget.SeekBar {
+            val label = TextView(this).apply {
+                text = "$title · ${valueText(initial)}"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(10), 0, dp(2))
+            }
+            val slider = android.widget.SeekBar(this).apply {
+                this.max = max
+                progress = initial.coerceIn(0, max)
+            }
+            slider.setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(
+                    seekBar: android.widget.SeekBar?,
+                    progress: Int,
+                    fromUser: Boolean
+                ) {
+                    label.text = "$title · ${valueText(progress)}"
+                }
+                override fun onStartTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: android.widget.SeekBar?) = Unit
+            })
+            content.addView(label, LinearLayout.LayoutParams(match, wrap))
+            content.addView(slider, LinearLayout.LayoutParams(match, wrap))
+            return slider
+        }
+
+        val fontProgress = ((prefs.getFloat("danmaku_font_scale", 1f) - 0.5f) * 100f)
+            .toInt().coerceIn(0, 150)
+        val opacityProgress = (prefs.getFloat("danmaku_opacity", 1f) * 100f)
+            .toInt().coerceIn(0, 100)
+        val speedProgress = ((prefs.getFloat("danmaku_speed", 1f) - 0.1f) * 10f)
+            .toInt().coerceIn(0, 19)
+        val fontSlider = addSlider("字体大小", fontProgress, 150) { "${(0.5f + it / 100f).toString().take(4)} 倍" }
+        val opacitySlider = addSlider("不透明度", opacityProgress, 100) { "$it%" }
+        val speedSlider = addSlider("弹幕速度", speedProgress, 19) { "${(0.1f + it / 10f).toString().take(3)} 倍" }
+
+        fun settingCheck(key: String, title: String): CheckBox =
+            CheckBox(this).apply {
+                text = title
+                setTextColor(ink)
+                isChecked = prefs.getBoolean(key, true)
+            }
+        val enabled = settingCheck("danmaku_display_enabled", "启用弹幕")
+        val rolling = settingCheck("danmaku_show_scrolling", "滚动弹幕")
+        val top = settingCheck("danmaku_show_top", "顶部弹幕")
+        val bottom = settingCheck("danmaku_show_bottom", "底部弹幕")
+        val advanced = settingCheck("danmaku_show_advanced", "高级动画弹幕")
+        content.addView(enabled)
+        content.addView(rolling)
+        content.addView(top)
+        content.addView(bottom)
+        content.addView(advanced)
+
+        AlertDialog.Builder(this)
+            .setTitle("弹幕显示设置")
+            .setView(scroll)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("应用") { _, _ ->
+                prefs.edit()
+                    .putFloat("danmaku_font_scale", 0.5f + fontSlider.progress / 100f)
+                    .putFloat("danmaku_opacity", opacitySlider.progress / 100f)
+                    .putFloat("danmaku_speed", 0.1f + speedSlider.progress / 10f)
+                    .putBoolean("danmaku_display_enabled", enabled.isChecked)
+                    .putBoolean("danmaku_show_scrolling", rolling.isChecked)
+                    .putBoolean("danmaku_show_top", top.isChecked)
+                    .putBoolean("danmaku_show_bottom", bottom.isChecked)
+                    .putBoolean("danmaku_show_advanced", advanced.isChecked)
+                    .apply()
+                detailDanmakuVisible = enabled.isChecked
+                detailDanmakuOverlay?.danmakuEnabled = detailDanmakuVisible
+                detailDanmakuOverlay?.let(::applyDanmakuDisplaySettings)
+                toast("弹幕显示设置已应用")
+            }
+            .show()
     }
 
     private fun performVideoLike(video: BiliVideo) {
@@ -1233,7 +1499,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 text = comment.message,
                 likes = comment.likeCount,
                 replyCount = comment.replyCount,
-                liked = comment.likedByMe
+                liked = comment.likedByMe,
+                avatarUrl = comment.avatarUrl,
+                userMid = comment.userMid
             )
         }
         detailCommentsAdapter?.submit(mapped)
@@ -1248,17 +1516,74 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         detailCommentSortButton?.text = if (commentsSort == 2) "按热度" else "按时间"
     }
 
+    private fun buildCommentIdentityRow(
+        name: String,
+        avatarUrl: String?,
+        userMid: Long,
+        meta: String,
+        onReport: (() -> Unit)? = null
+    ): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val avatar = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = circle(Color.parseColor("#FFEAF0"))
+            isClickable = userMid > 0L
+            setOnClickListener { openUserSpacePage(userMid) }
+        }
+        Glide.with(this)
+            .load(avatarUrl)
+            .circleCrop()
+            .placeholder(com.sxsbsxs.bilivdl.ui.R.drawable.ic_account_placeholder)
+            .error(com.sxsbsxs.bilivdl.ui.R.drawable.ic_account_placeholder)
+            .into(avatar)
+        row.addView(avatar, LinearLayout.LayoutParams(dp(34), dp(34)))
+        val identity = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), 0, 0, 0)
+        }
+        identity.addView(TextView(this).apply {
+            text = name
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            isClickable = userMid > 0L
+            setOnClickListener { openUserSpacePage(userMid) }
+        })
+        identity.addView(TextView(this).apply {
+            text = meta
+            textSize = 10f
+            setTextColor(sub)
+        }, LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = dp(2) })
+        row.addView(identity, LinearLayout.LayoutParams(0, wrap, 1f))
+        if (onReport != null) {
+            row.addView(chip("举报", false).apply {
+                textSize = 11f
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                setOnClickListener { onReport() }
+            })
+        }
+        return row
+    }
+
     private fun showCommentReplyDialog(video: BiliVideo, rootComment: BiliComment) {
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(8), dp(18), dp(8))
         }
-        body.addView(TextView(this).apply {
-            text = rootComment.userName + "  ·  " + formatPublishDate(rootComment.createTime)
-            textSize = 12f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(sub)
-        })
+        body.addView(
+            buildCommentIdentityRow(
+                name = rootComment.userName,
+                avatarUrl = rootComment.avatarUrl,
+                userMid = rootComment.userMid,
+                meta = formatPublishDate(rootComment.createTime),
+                onReport = { showCommentReportDialog(video, rootComment) }
+            )
+        )
         body.addView(TextView(this).apply {
             text = rootComment.message
             textSize = 14f
@@ -1324,25 +1649,66 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     val row = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL
                     }
-                    row.addView(TextView(this).apply {
-                        text = reply.userName + "  ·  " + formatPublishDate(reply.createTime)
-                        textSize = 11f
-                        typeface = Typeface.DEFAULT_BOLD
-                        setTextColor(ink)
-                    })
+                    row.addView(
+                        buildCommentIdentityRow(
+                            name = reply.userName,
+                            avatarUrl = reply.avatarUrl,
+                            userMid = reply.userMid,
+                            meta = formatPublishDate(reply.createTime),
+                            onReport = { showCommentReportDialog(video, reply) }
+                        )
+                    )
                     row.addView(TextView(this).apply {
                         text = reply.message
                         textSize = 13f
                         setTextColor(ink)
                         setPadding(0, dp(4), 0, dp(4))
                     })
-                    row.addView(chip("回复", false).apply {
+                    val actions = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    val likeButton = chip(
+                        (if (reply.likedByMe) "已赞 " else "点赞 ") + formatCount(reply.likeCount),
+                        reply.likedByMe
+                    )
+                    likeButton.setOnClickListener {
+                        if (!requireInteractionLogin()) return@setOnClickListener
+                        val targetLiked = !reply.likedByMe
+                        setBusy(likeButton, true)
+                        backgroundExecutor.execute {
+                            try {
+                                repositoryWithSavedCookie().likeVideoComment(video.aid, reply.id, targetLiked)
+                                runOnUiThread {
+                                    setBusy(likeButton, false)
+                                    val replyIndex = replyItems.indexOfFirst { it.id == reply.id }
+                                    if (replyIndex >= 0) {
+                                        val latest = replyItems[replyIndex]
+                                        replyItems[replyIndex] = latest.copy(
+                                            likedByMe = targetLiked,
+                                            likeCount = (latest.likeCount + if (targetLiked) 1L else -1L)
+                                                .coerceAtLeast(0L)
+                                        )
+                                        render()
+                                    }
+                                }
+                            } catch (error: Exception) {
+                                runOnUiThread {
+                                    setBusy(likeButton, false)
+                                    toast(error.message ?: "回复点赞失败")
+                                }
+                            }
+                        }
+                    }
+                    actions.addView(likeButton)
+                    actions.addView(chip("回复", false).apply {
                         setOnClickListener {
                             targetParentId = reply.id
                             editor.hint = "回复 " + reply.userName
                             editor.requestFocus()
                         }
                     })
+                    row.addView(actions)
                     repliesContainer.addView(row, LinearLayout.LayoutParams(match, wrap))
                 }
             }
@@ -1445,6 +1811,68 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }
         dialog.show()
         loadReplies(true)
+    }
+
+    private fun showCommentReportDialog(video: BiliVideo, comment: BiliComment) {
+        if (!requireInteractionLogin()) return
+        val reasonCodes = intArrayOf(
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 0
+        )
+        val reasons = arrayOf(
+            "垃圾广告", "色情", "刷屏", "引战", "剧透", "政治", "人身攻击",
+            "内容不相关", "违法违规", "低俗", "非法网站", "赌博诈骗",
+            "传播不实信息", "怂恿教唆", "侵犯隐私", "抢楼", "青少年不良信息",
+            "其他原因"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("举报评论 · ${comment.userName}")
+            .setItems(reasons) { _, which ->
+                val reason = reasonCodes[which]
+                if (reason == 0) {
+                    val input = EditText(this).apply {
+                        hint = "补充说明（可选）"
+                        minLines = 2
+                        maxLines = 4
+                        textSize = 14f
+                        setPadding(dp(12), dp(9), dp(12), dp(9))
+                        background = shape(field, 10)
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle("其他举报原因")
+                        .setView(input)
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("提交") { _, _ ->
+                            submitCommentReport(video, comment, reason, input.text?.toString().orEmpty())
+                        }
+                        .show()
+                } else {
+                    submitCommentReport(video, comment, reason, "")
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun submitCommentReport(
+        video: BiliVideo,
+        comment: BiliComment,
+        reason: Int,
+        detail: String
+    ) {
+        if (!requireInteractionLogin()) return
+        backgroundExecutor.execute {
+            try {
+                repositoryWithSavedCookie().reportVideoComment(
+                    aid = video.aid,
+                    rpid = comment.id,
+                    reason = reason,
+                    content = detail
+                )
+                runOnUiThread { toast("举报已提交，感谢反馈") }
+            } catch (error: Exception) {
+                runOnUiThread { toast(error.message ?: "举报提交失败") }
+            }
+        }
     }
 
     private fun performCommentLike(video: BiliVideo, comment: BiliComment) {
@@ -1574,8 +2002,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         return@runOnUiThread
                     }
                     val headers = HashMap<String, String>().apply {
-                        put("Referer", "https://www.bilibili.com/")
+                        put("Referer", BiliPlayUrlPolicy.videoReferer(video.aid))
                         put("Origin", "https://www.bilibili.com")
+                        put("User-Agent", BiliPlayUrlPolicy.PLAYER_USER_AGENT)
                         if (!cookie.isNullOrBlank()) {
                             put(
                                 "Cookie",
@@ -1585,7 +2014,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         }
                     }
                     val dataSourceFactory = DefaultHttpDataSource.Factory()
-                        .setUserAgent("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36")
+                        .setUserAgent(BiliPlayUrlPolicy.PLAYER_USER_AGENT)
                         .setAllowCrossProtocolRedirects(true)
                         .setDefaultRequestProperties(headers)
                     val progressiveFactory = ProgressiveMediaSource.Factory(dataSourceFactory)
@@ -1712,21 +2141,205 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             toast("请先解析一个 B站视频")
             return
         }
-        val spec = DownloadSpec(
-            video = video,
-            qualityId = selectedQualityId.takeIf { it > 0 } ?: video.qualities.firstOrNull()?.id ?: 80,
-            audioOnly = prefs.getBoolean("audio_only", false),
-            downloadDanmaku = prefs.getBoolean("danmaku", false),
-            downloadSubtitles = prefs.getBoolean("subtitles", false)
-        )
-        val id = "bili_" + System.currentTimeMillis()
-        downloadSpecs[id] = spec
-        persistDownloadSpec(id, spec)
-        addDownload(id, video.title, video.cover)
-        enqueueDownload(id, spec)
-        closeVideoDetail()
-        selectTab(1)
-        toast("已加入下载任务")
+        val quality = selectedQualityId.takeIf { it > 0 }
+            ?: video.qualities.firstOrNull()?.id ?: 80
+        toast("正在获取 BVD 式音视频规格列表…")
+        backgroundExecutor.execute {
+            try {
+                val repository = BiliRepository {
+                    SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+                }
+                val options = repository.getDownloadStreamOptions(video, quality)
+                runOnUiThread {
+                    if (isFinishing || parsedVideo?.cid != video.cid) return@runOnUiThread
+                    showDownloadOptions(video, quality, options)
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    toast("获取音视频规格失败：" + (error.message ?: "未知错误"))
+                }
+            }
+        }
+    }
+
+    private fun showDownloadOptions(
+        video: BiliVideo,
+        quality: Int,
+        options: BiliDownloadStreamOptions,
+        batchPages: List<BiliPage>? = null
+    ) {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), dp(4))
+        }
+        content.addView(TextView(this).apply {
+            text = "分别选择视频流与音频流"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }, LinearLayout.LayoutParams(match, wrap))
+
+        fun addSection(title: String): TextView {
+            return TextView(this).apply {
+                text = title
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(sub)
+                setPadding(0, dp(12), 0, dp(5))
+            }.also { content.addView(it, LinearLayout.LayoutParams(match, wrap)) }
+        }
+
+        addSection("视频流 · 画质 / 编码 / 码率")
+        val videoSpinner = android.widget.Spinner(this)
+        val videoLabels = options.videoChoices.map { it.label }.ifEmpty {
+            listOf(if (options.direct) "B站直连媒体流" else "单流媒体（MP4）")
+        }
+        videoSpinner.adapter = android.widget.ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            videoLabels
+        ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        videoSpinner.isEnabled = options.videoChoices.isNotEmpty()
+        content.addView(videoSpinner, LinearLayout.LayoutParams(match, dp(48)))
+
+        addSection("音频流 · 编码 / 码率")
+        val audioSpinner = android.widget.Spinner(this)
+        val audioLabels = options.audioChoices.map { it.label }.ifEmpty {
+            listOf("B站没有返回可用的 AAC 音频轨")
+        }
+        audioSpinner.adapter = android.widget.ArrayAdapter(
+            this,
+            android.R.layout.simple_spinner_item,
+            audioLabels
+        ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        audioSpinner.setSelection(0)
+        content.addView(audioSpinner, LinearLayout.LayoutParams(match, dp(48)))
+
+        val mediaGroup = android.widget.RadioGroup(this).apply {
+            orientation = android.widget.RadioGroup.VERTICAL
+        }
+        val combinedOption = android.widget.RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "视频 + 音频（合并 MP4）"
+            textSize = 14f
+            isEnabled = !options.direct && options.videoChoices.isNotEmpty() &&
+                options.audioChoices.isNotEmpty()
+        }
+        val videoOnlyOption = android.widget.RadioButton(this).apply {
+            id = View.generateViewId()
+            text = if (options.direct) "保存 B站直连视频" else "仅视频（不合并音频）"
+            textSize = 14f
+            isEnabled = options.direct || options.videoChoices.isNotEmpty()
+        }
+        val audioOption = android.widget.RadioButton(this).apply {
+            id = View.generateViewId()
+            text = "仅音频（M4A）"
+            textSize = 14f
+            isEnabled = options.audioChoices.isNotEmpty()
+        }
+        mediaGroup.addView(combinedOption)
+        mediaGroup.addView(videoOnlyOption)
+        mediaGroup.addView(audioOption)
+        val preferAudioOnly = prefs.getBoolean("audio_only", false) && audioOption.isEnabled
+        val defaultMediaOption = when {
+            preferAudioOnly -> audioOption.id
+            combinedOption.isEnabled -> combinedOption.id
+            videoOnlyOption.isEnabled -> videoOnlyOption.id
+            else -> audioOption.id
+        }
+        mediaGroup.check(defaultMediaOption)
+        content.addView(mediaGroup, LinearLayout.LayoutParams(match, wrap))
+
+        fun updateStreamEnabledState() {
+            val audioOnly = mediaGroup.checkedRadioButtonId == audioOption.id
+            val videoOnly = mediaGroup.checkedRadioButtonId == videoOnlyOption.id
+            videoSpinner.isEnabled = !audioOnly && !options.direct && options.videoChoices.isNotEmpty()
+            audioSpinner.isEnabled = !videoOnly && options.audioChoices.isNotEmpty()
+        }
+        mediaGroup.setOnCheckedChangeListener { _, _ -> updateStreamEnabledState() }
+        updateStreamEnabledState()
+
+        addSection("附加文件 · 可多选")
+        val coverOption = android.widget.CheckBox(this).apply {
+            text = "视频封面（JPG）"
+            isEnabled = !video.coverUrl.isNullOrBlank()
+            textSize = 14f
+        }
+        val danmakuOption = android.widget.CheckBox(this).apply {
+            text = "弹幕文件（XML）"
+            isChecked = prefs.getBoolean("danmaku", false)
+            textSize = 14f
+        }
+        val subtitleOption = android.widget.CheckBox(this).apply {
+            text = "字幕文件（SRT）"
+            isChecked = prefs.getBoolean("subtitles", false)
+            textSize = 14f
+        }
+        content.addView(coverOption)
+        content.addView(danmakuOption)
+        content.addView(subtitleOption)
+        content.addView(TextView(this).apply {
+            text = if (options.direct) {
+                "B站本次只返回直连媒体文件，将按原始媒体格式保存。"
+            } else {
+                "规格以当前视频接口实际返回为准；选定流会保存在任务中，重试不会自动换成其他码率。"
+            }
+            textSize = 11f
+            setTextColor(sub)
+            setPadding(dp(2), dp(8), dp(2), 0)
+        }, LinearLayout.LayoutParams(match, wrap))
+
+        AlertDialog.Builder(this)
+            .setTitle("下载内容与流规格")
+            .setView(content)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("加入下载") { _, _ ->
+                val audioOnly = mediaGroup.checkedRadioButtonId == audioOption.id
+                val videoOnly = mediaGroup.checkedRadioButtonId == videoOnlyOption.id
+                val includeAudio = !videoOnly
+                val videoChoice = if (!audioOnly && !options.direct) {
+                    options.videoChoices.getOrNull(videoSpinner.selectedItemPosition)
+                } else null
+                val audioChoice = if (includeAudio) {
+                    options.audioChoices.getOrNull(audioSpinner.selectedItemPosition)
+                } else null
+                if (audioOnly && audioChoice == null) {
+                    toast("当前没有可用的 AAC 音频流")
+                    return@setPositiveButton
+                }
+                if (combinedOption.isChecked && audioChoice == null) {
+                    toast("请选择一个实际可用的 AAC 音频流")
+                    return@setPositiveButton
+                }
+                val selectedQuality = videoChoice?.id
+                    ?: video.qualities.firstOrNull()?.id
+                    ?: quality
+                val spec = DownloadSpec(
+                    video = video,
+                    qualityId = selectedQuality,
+                    audioOnly = audioOnly,
+                    downloadDanmaku = danmakuOption.isChecked,
+                    downloadSubtitles = subtitleOption.isChecked,
+                    downloadCover = coverOption.isChecked,
+                    videoStreamChoice = videoChoice,
+                    audioStreamChoice = audioChoice,
+                    includeAudio = includeAudio
+                )
+                prefs.edit().putBoolean("audio_only", audioOnly).apply()
+                if (batchPages.isNullOrEmpty()) {
+                    val id = "bili_" + System.currentTimeMillis()
+                    downloadSpecs[id] = spec
+                    persistDownloadSpec(id, spec)
+                    addDownload(id, video.title, video.cover)
+                    enqueueDownload(id, spec)
+                    closeVideoDetail()
+                    selectTab(1)
+                    toast("已加入下载任务")
+                } else {
+                    enqueueBatchPages(video, batchPages, spec)
+                }
+            }
+            .show()
     }
 
     private fun enqueueDownload(id: String, spec: DownloadSpec) {
@@ -1749,10 +2362,15 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     BiliDownloadWorker.KEY_PAGE to spec.video.page,
                     BiliDownloadWorker.KEY_DURATION to spec.video.durationSeconds,
                     BiliDownloadWorker.KEY_TITLE to spec.video.title,
+                    BiliDownloadWorker.KEY_COVER_URL to spec.video.coverUrl.orEmpty(),
                     BiliDownloadWorker.KEY_QUALITY to spec.qualityId,
                     BiliDownloadWorker.KEY_AUDIO_ONLY to spec.audioOnly,
                     BiliDownloadWorker.KEY_DOWNLOAD_DANMAKU to spec.downloadDanmaku,
                     BiliDownloadWorker.KEY_DOWNLOAD_SUBTITLES to spec.downloadSubtitles,
+                    BiliDownloadWorker.KEY_DOWNLOAD_COVER to spec.downloadCover,
+                    BiliDownloadWorker.KEY_VIDEO_CHOICE to (spec.videoStreamChoice?.toStorage() ?: ""),
+                    BiliDownloadWorker.KEY_AUDIO_CHOICE to (spec.audioStreamChoice?.toStorage() ?: ""),
+                    BiliDownloadWorker.KEY_INCLUDE_AUDIO to spec.includeAudio,
                     BiliDownloadWorker.KEY_CONCURRENT to intArrayOf(1, 2, 3, 5)[prefs.getInt("concurrent", 1).coerceIn(0, 3)]
                 )
             )
@@ -1790,8 +2408,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             .put("coverUrl", spec.video.coverUrl ?: "")
             .put("quality", spec.qualityId)
             .put("audioOnly", spec.audioOnly)
+            .put("includeAudio", spec.includeAudio)
+            .put("videoStreamChoice", spec.videoStreamChoice?.toStorage() ?: "")
+            .put("audioStreamChoice", spec.audioStreamChoice?.toStorage() ?: "")
             .put("downloadDanmaku", spec.downloadDanmaku)
             .put("downloadSubtitles", spec.downloadSubtitles)
+.put("downloadCover", spec.downloadCover)
         taskPrefs.edit().putString(id, value.toString()).apply()
 
         // Keep SharedPreferences readable for upgrades, while Room becomes the
@@ -1809,7 +2431,11 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             qualityId = spec.qualityId,
             audioOnly = spec.audioOnly,
             downloadDanmaku = spec.downloadDanmaku,
-            downloadSubtitles = spec.downloadSubtitles
+            downloadSubtitles = spec.downloadSubtitles,
+            downloadCover = spec.downloadCover,
+            videoStreamChoice = spec.videoStreamChoice?.toStorage(),
+            audioStreamChoice = spec.audioStreamChoice?.toStorage(),
+            includeAudio = spec.includeAudio
         )
         backgroundExecutor.execute {
             runCatching {
@@ -1883,7 +2509,11 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 json.optInt("quality", 80),
                 json.optBoolean("audioOnly", false),
                 json.optBoolean("downloadDanmaku", false),
-                json.optBoolean("downloadSubtitles", false)
+                json.optBoolean("downloadSubtitles", false),
+                json.optBoolean("downloadCover", false),
+                BiliStreamChoice.fromStorage(json.optString("videoStreamChoice")),
+                BiliStreamChoice.fromStorage(json.optString("audioStreamChoice")),
+                json.optBoolean("includeAudio", true)
             )
             downloadSpecs[id] = spec
             if (!items.containsKey(id)) addDownload(id, video.title, null)
@@ -1936,7 +2566,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         qualityId = task.qualityId,
                         audioOnly = task.audioOnly,
                         downloadDanmaku = task.downloadDanmaku,
-                        downloadSubtitles = task.downloadSubtitles
+                        downloadSubtitles = task.downloadSubtitles,
+                        downloadCover = task.downloadCover,
+                        videoStreamChoice = BiliStreamChoice.fromStorage(task.videoStreamChoice),
+                        audioStreamChoice = BiliStreamChoice.fromStorage(task.audioStreamChoice)
                     )
                     downloadSpecs[task.taskId] = spec
                     if (!items.containsKey(task.taskId)) addDownload(task.taskId, task.title, null)
@@ -2107,7 +2740,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     @Volatile private var qrLoginGeneration = 0
     @Volatile private var qrLoginActive = false
-    private var activeLoginSegment = -1
 
     private fun onRequestQrCode() {
         val generation = ++qrLoginGeneration
@@ -2198,28 +2830,91 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         qrLoginGeneration++
     }
 
-    private fun onCookieLogin(cookie: String) {
-        backgroundExecutor.execute {
-            try {
-                val (name, vip) = BiliRepository().verifyCookie(cookie)
-                SecureCookieStore.save(this, cookie)
-                runOnUiThread { loginSuccess(name, null, vip) }
-            } catch (error: Exception) {
-                loginFailed(error.message ?: "授权验证失败")
-            }
-        }
-    }
-
     private fun onLogoutClicked() {
-        SecureCookieStore.clear(this)
-        logoutDone()
+        val cookie = SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+        if (cookie.isNullOrBlank()) {
+            SecureCookieStore.clear(this)
+            logoutDone()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("退出 B 站账号")
+            .setMessage("将向 B 站提交退出请求。服务端确认成功后，才会清除本机保存的登录凭据。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确认退出") { _, _ ->
+                val progress = ProgressDialog(this).apply {
+                    setMessage("正在向 B 站退出账号…")
+                    setCancelable(false)
+                    show()
+                }
+                backgroundExecutor.execute {
+                    val result = runCatching { BiliRepository { cookie }.logout() }
+                    runOnUiThread {
+                        if (progress.isShowing) progress.dismiss()
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        result.onSuccess {
+                            SecureCookieStore.clear(this)
+                            logoutDone()
+                        }.onFailure {
+                            toast("B 站尚未确认退出，已保留本机登录凭据：${it.message ?: "请求失败"}")
+                        }
+                    }
+                }
+            }
+            .show()
     }
 
     private fun onSettingChanged(key: String, value: Any) {
         if (key == "quality") refreshQuality()
     }
     private fun onChoosePathClicked() {
-        toast("视频保存位置：Download/BiliDl")
+        AlertDialog.Builder(this)
+            .setTitle("下载保存位置")
+            .setItems(arrayOf("选择文件夹…", "恢复默认目录（Download/BiliDl）")) { _, which ->
+                when (which) {
+                    0 -> downloadDirectoryPicker.launch(null)
+                    1 -> {
+                        prefs.edit()
+                            .remove("download_tree_uri")
+                            .remove("download_tree_label")
+                            .apply()
+                        refreshVisibleProfileSettings()
+                        toast("已恢复默认保存位置：Download/BiliDl")
+                    }
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun handleDownloadDirectoryResult(uri: Uri?) {
+        if (uri == null) return
+        try {
+            val directory = DocumentFile.fromTreeUri(this, uri)
+                ?: throw IOException("无法读取所选文件夹")
+            if (!directory.isDirectory || !directory.canWrite()) {
+                throw IOException("所选位置不是可写文件夹")
+            }
+            contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            val label = directory.name?.takeIf { it.isNotBlank() } ?: "自定义文件夹"
+            prefs.edit()
+                .putString("download_tree_uri", uri.toString())
+                .putString("download_tree_label", label)
+                .apply()
+            refreshVisibleProfileSettings()
+            toast("保存位置已更新：$label")
+        } catch (error: Exception) {
+            toast("无法使用这个文件夹：" + (error.message ?: "授权失败，请重新选择"))
+        }
+    }
+
+    private fun refreshVisibleProfileSettings() {
+        supportFragmentManager.fragments
+            .filterIsInstance<ProfileFragment>()
+            .forEach { it.refreshSettings() }
     }
 
     private fun onClearCacheClicked() {
@@ -2274,6 +2969,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             .setItems(labels) { _, which ->
                 onParseClicked(pageUrl(video, pages[which]))
             }
+            .setPositiveButton("批量选择下载") { _, _ ->
+                showBatchPageSelection(video, pages)
+            }
             .setNeutralButton("下载全部 " + pages.size + " P") { _, _ ->
                 downloadAllPages(video, pages)
             }
@@ -2281,32 +2979,383 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             .show()
     }
 
-    private fun downloadAllPages(video: BiliVideo, pages: List<BiliPage>) {
+    /** Multi-select parts and enqueue one real WorkManager task per selected part. */
+    private fun showBatchPageSelection(video: BiliVideo, pages: List<BiliPage>) {
         if (pages.isEmpty()) return
-        toast("正在逐P获取画质并准备下载任务…")
-        val audioOnly = prefs.getBoolean("audio_only", false)
+        val labels = pages.map { page ->
+            "P" + page.pageNumber + " · " + page.part + " · " + formatDuration(page.durationSeconds)
+        }.toTypedArray()
+        val checked = BooleanArray(pages.size)
+        lateinit var dialog: AlertDialog
+
+        dialog = AlertDialog.Builder(this)
+            .setTitle("批量下载分P（0/" + pages.size + "）")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+                val count = checked.count { it }
+                dialog.setTitle("批量下载分P（" + count + "/" + pages.size + "）")
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = count > 0
+            }
+            .setNegativeButton("取消", null)
+            .setNeutralButton("全选", null)
+            .setPositiveButton("下载选中", null)
+            .create()
+
+        dialog.setOnShowListener {
+            val downloadButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            downloadButton.isEnabled = false
+            downloadButton.setOnClickListener {
+                val selected = pages.filterIndexed { index, _ -> checked[index] }
+                if (selected.isEmpty()) {
+                    toast("请至少选择一个分P")
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                downloadAllPages(video, selected)
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                val selectAll = checked.any { !it }
+                for (index in checked.indices) {
+                    checked[index] = selectAll
+                    dialog.listView.setItemChecked(index, selectAll)
+                }
+                val count = checked.count { it }
+                dialog.setTitle("批量下载分P（" + count + "/" + pages.size + "）")
+                downloadButton.isEnabled = count > 0
+            }
+        }
+        dialog.show()
+    }
+
+    /**
+     * BVD-style batch flow: select streams from the first chosen P, then match
+     * the same quality/codec on each remaining P using a no-upgrade fallback.
+     */
+    private fun downloadAllPages(video: BiliVideo, pages: List<BiliPage>) {
+        val ordered = pages.distinctBy { it.cid }.sortedBy { it.pageNumber }
+        if (ordered.isEmpty()) return
+        toast("正在读取首个分P的实际音视频轨道…")
+        backgroundExecutor.execute {
+            val result = runCatching {
+                val repository = BiliRepository {
+                    SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+                }
+                val first = ordered.first()
+                val firstVideo = if (first.cid == video.cid) video
+                    else repository.inspect(pageUrl(video, first))
+                val quality = preferredQualityId(firstVideo.qualities)
+                val options = repository.getDownloadStreamOptions(firstVideo, quality)
+                Triple(firstVideo, quality, options)
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                result.onSuccess { (firstVideo, quality, options) ->
+                    showDownloadOptions(firstVideo, quality, options, batchPages = ordered)
+                }.onFailure { error ->
+                    toast("读取批量下载规格失败：" + (error.message ?: "未知错误"))
+                }
+            }
+        }
+    }
+
+    /**
+     * BVD's ASK strategy: for a P whose stream pair cannot match the first P,
+     * show the real representations returned for that P. Runs on the preparation
+     * worker and waits there; the Android main thread is never blocked.
+     *
+     * Negative: skip this P. Neutral: cancel the whole batch preparation.
+     */
+    private fun awaitBatchStreamSelection(
+        video: BiliVideo,
+        options: BiliDownloadStreamOptions,
+        preferred: DownloadSpec,
+        cancelled: java.util.concurrent.atomic.AtomicBoolean
+    ): BatchStreamSelection? {
+        if (options.direct) return null
+        val hasVideo = options.videoChoices.isNotEmpty()
+        val hasAudio = options.audioChoices.isNotEmpty()
+        if (!hasVideo && !hasAudio) return null
+
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val result = java.util.concurrent.atomic.AtomicReference<BatchStreamSelection?>()
+        val dialogRef = java.util.concurrent.atomic.AtomicReference<AlertDialog?>()
+
+        runOnUiThread {
+            if (cancelled.get() || isFinishing || isDestroyed) {
+                cancelled.set(true)
+                latch.countDown()
+                return@runOnUiThread
+            }
+            val body = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(20), dp(6), dp(20), dp(4))
+            }
+            fun heading(value: String) {
+                body.addView(TextView(this).apply {
+                    text = value
+                    textSize = 12f
+                    typeface = Typeface.DEFAULT_BOLD
+                    setTextColor(sub)
+                    setPadding(0, dp(10), 0, dp(4))
+                }, LinearLayout.LayoutParams(match, wrap))
+            }
+
+            val videoToggle = CheckBox(this).apply {
+                text = "下载视频轨"
+                setTextColor(ink)
+                isEnabled = hasVideo
+                isChecked = hasVideo && !preferred.audioOnly
+            }
+            val audioToggle = CheckBox(this).apply {
+                text = "下载音频轨"
+                setTextColor(ink)
+                isEnabled = hasAudio
+                isChecked = hasAudio && preferred.includeAudio
+            }
+            body.addView(videoToggle)
+            body.addView(audioToggle)
+
+            val videoSpinner = android.widget.Spinner(this)
+            val audioSpinner = android.widget.Spinner(this)
+            if (hasVideo) {
+                heading("视频规格 · 画质 / 编码 / 码率")
+                videoSpinner.adapter = android.widget.ArrayAdapter(
+                    this,
+                    android.R.layout.simple_spinner_item,
+                    options.videoChoices.map { it.label }
+                ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+                videoSpinner.setSelection(
+                    options.videoChoices.indexOfFirst {
+                        it.id == preferred.videoStreamChoice?.id &&
+                            (preferred.videoStreamChoice?.let(it::sameCodecAs) == true)
+                    }.coerceAtLeast(0)
+                )
+                body.addView(videoSpinner, LinearLayout.LayoutParams(match, dp(48)))
+            }
+            if (hasAudio) {
+                heading("音频规格 · 编码 / 码率")
+                audioSpinner.adapter = android.widget.ArrayAdapter(
+                    this,
+                    android.R.layout.simple_spinner_item,
+                    options.audioChoices.map { it.label }
+                ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+                audioSpinner.setSelection(
+                    options.audioChoices.indexOfFirst {
+                        it.id == preferred.audioStreamChoice?.id &&
+                            (preferred.audioStreamChoice?.let(it::sameCodecAs) == true)
+                    }.coerceAtLeast(0)
+                )
+                body.addView(audioSpinner, LinearLayout.LayoutParams(match, dp(48)))
+            }
+
+            fun updateSelectionControls() {
+                videoSpinner.isEnabled = hasVideo && videoToggle.isChecked
+                audioSpinner.isEnabled = hasAudio && audioToggle.isChecked
+            }
+            videoToggle.setOnCheckedChangeListener { _, _ -> updateSelectionControls() }
+            audioToggle.setOnCheckedChangeListener { _, _ -> updateSelectionControls() }
+            updateSelectionControls()
+
+            body.addView(TextView(this).apply {
+                text = "可只选视频、只选音频，或同时选择两条轨道。未选择的轨道不会加入该分P任务。"
+                textSize = 11f
+                setTextColor(sub)
+                setPadding(0, dp(10), 0, dp(2))
+            }, LinearLayout.LayoutParams(match, wrap))
+
+            val dialog = AlertDialog.Builder(this)
+                .setTitle("P${video.page} 规格不一致")
+                .setView(body)
+                .setNegativeButton("跳过此P") { _, _ -> latch.countDown() }
+                .setNeutralButton("取消整批") { _, _ ->
+                    cancelled.set(true)
+                    latch.countDown()
+                }
+                .setPositiveButton("使用所选轨道", null)
+                .create()
+            dialogRef.set(dialog)
+            dialog.setOnCancelListener { latch.countDown() }
+            dialog.setOnShowListener {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    val includeVideo = videoToggle.isChecked
+                    val includeAudio = audioToggle.isChecked
+                    if (!includeVideo && !includeAudio) {
+                        toast("请至少选择视频轨或音频轨")
+                        return@setOnClickListener
+                    }
+                    val selectedVideo = if (includeVideo) {
+                        options.videoChoices.getOrNull(videoSpinner.selectedItemPosition)
+                    } else null
+                    val selectedAudio = if (includeAudio) {
+                        options.audioChoices.getOrNull(audioSpinner.selectedItemPosition)
+                    } else null
+                    if ((includeVideo && selectedVideo == null) ||
+                        (includeAudio && selectedAudio == null)
+                    ) {
+                        toast("所选轨道已不可用，请重新选择")
+                        return@setOnClickListener
+                    }
+                    result.set(
+                        BatchStreamSelection(
+                            video = selectedVideo,
+                            audio = selectedAudio,
+                            audioOnly = !includeVideo && includeAudio,
+                            includeAudio = includeAudio
+                        )
+                    )
+                    dialog.dismiss()
+                    latch.countDown()
+                }
+            }
+            dialog.show()
+        }
+
+        while (!latch.await(100, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+            if (cancelled.get() || isFinishing || isDestroyed) {
+                runOnUiThread { dialogRef.getAndSet(null)?.dismiss() }
+                return null
+            }
+        }
+        return result.get()
+    }
+
+    private fun enqueueBatchPages(
+        sourceVideo: BiliVideo,
+        pages: List<BiliPage>,
+        preferred: DownloadSpec
+    ) {
+        val ordered = pages.distinctBy { it.cid }.sortedBy { it.pageNumber }
+        if (ordered.isEmpty()) return
+        val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val progressDialog = ProgressDialog(this).apply {
+            setTitle("准备批量下载")
+            setMessage("正在逐P匹配音视频规格…")
+            setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
+            max = ordered.size
+            progress = 0
+            setCancelable(false)
+            setButton(
+                ProgressDialog.BUTTON_NEGATIVE,
+                "取消准备"
+            ) { _, _ -> cancelled.set(true) }
+        }
+        progressDialog.show()
+
         backgroundExecutor.execute {
             val prepared = ArrayList<DownloadSpec>()
             val skipped = ArrayList<Int>()
-            val repository = BiliRepository { SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this) }
-            for (page in pages.sortedBy { it.pageNumber }) {
+            val repository = BiliRepository {
+                SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+            }
+
+            for ((index, page) in ordered.withIndex()) {
+                if (cancelled.get()) break
                 try {
-                    // Fetch each P independently so its available quality list is respected.
-                    val partVideo = repository.inspect(pageUrl(video, page))
-                    val quality = preferredQualityId(partVideo.qualities)
-                    prepared += DownloadSpec(
+                    val partVideo = if (page.cid == sourceVideo.cid) sourceVideo
+                        else repository.inspect(pageUrl(sourceVideo, page))
+                    val options = repository.getDownloadStreamOptions(
                         partVideo,
-                        quality,
-                        audioOnly,
-                        prefs.getBoolean("danmaku", false),
-                        prefs.getBoolean("subtitles", false)
+                        preferred.qualityId
                     )
+
+                    val mode = BatchQualityMismatchMode.fromPreference(
+                        prefs.getInt("batch_quality_mismatch", 0)
+                    )
+                    val videoChoice = when {
+                        options.direct || preferred.audioOnly -> null
+                        mode == BatchQualityMismatchMode.AUTO_FALLBACK ->
+                            BiliBatchStreamPolicy.selectCompatible(
+                                preferred.videoStreamChoice,
+                                options.videoChoices
+                            )
+                        else -> BiliBatchStreamPolicy.selectExact(
+                            preferred.videoStreamChoice,
+                            options.videoChoices
+                        )
+                    }
+                    val audioChoice = when {
+                        !preferred.includeAudio || preferred.audioStreamChoice == null -> null
+                        mode == BatchQualityMismatchMode.AUTO_FALLBACK ->
+                            BiliBatchStreamPolicy.selectCompatible(
+                                preferred.audioStreamChoice,
+                                options.audioChoices
+                            )
+                        else -> BiliBatchStreamPolicy.selectExact(
+                            preferred.audioStreamChoice,
+                            options.audioChoices
+                        )
+                    }
+                    val missingVideo = !options.direct && !preferred.audioOnly &&
+                        preferred.videoStreamChoice != null && videoChoice == null
+                    val missingAudio = preferred.includeAudio &&
+                        preferred.audioStreamChoice != null && audioChoice == null
+                    val incompatibleDirect = options.direct &&
+                        (preferred.videoStreamChoice != null || preferred.audioStreamChoice != null)
+                    val noUsableVideo = !options.direct && !preferred.audioOnly &&
+                        options.videoChoices.isEmpty()
+                    // A direct MP4 already carries its own media tracks; it has no separate
+                    // DASH audio representation to select or compare.
+                    val noUsableAudio = !options.direct &&
+                        preferred.includeAudio && options.audioChoices.isEmpty()
+                    val mismatch = missingVideo || missingAudio || incompatibleDirect ||
+                        noUsableVideo || noUsableAudio
+
+                    val finalSelection = when {
+                        !mismatch -> BatchStreamSelection(
+                            video = videoChoice,
+                            audio = audioChoice,
+                            audioOnly = preferred.audioOnly,
+                            includeAudio = preferred.includeAudio,
+                            direct = options.direct
+                        )
+                        mode == BatchQualityMismatchMode.ASK ->
+                            awaitBatchStreamSelection(partVideo, options, preferred, cancelled)
+                        else -> null
+                    }
+                    if (cancelled.get()) break
+
+                    val hasSelectedMedia = finalSelection != null &&
+                        (finalSelection.direct || finalSelection.video != null || finalSelection.audio != null)
+                    if (!hasSelectedMedia) {
+                        skipped += page.pageNumber
+                    } else {
+                        val selected = requireNotNull(finalSelection)
+                        val targetQuality = selected.video?.id
+                            ?: partVideo.qualities.firstOrNull()?.id
+                            ?: preferred.qualityId
+                        prepared += DownloadSpec(
+                            video = partVideo,
+                            qualityId = targetQuality,
+                            audioOnly = selected.audioOnly,
+                            downloadDanmaku = preferred.downloadDanmaku,
+                            downloadSubtitles = preferred.downloadSubtitles,
+                            downloadCover = preferred.downloadCover,
+                            videoStreamChoice = selected.video,
+                            audioStreamChoice = selected.audio,
+                            includeAudio = selected.includeAudio
+                        )
+                    }
                 } catch (_: Exception) {
                     skipped += page.pageNumber
+                }
+
+                val completed = index + 1
+                runOnUiThread {
+                    if (!isFinishing && progressDialog.isShowing) {
+                        progressDialog.progress = completed
+                        progressDialog.setMessage(
+                            "正在匹配 P${page.pageNumber}（$completed/${ordered.size}）"
+                        )
+                    }
                 }
             }
 
             runOnUiThread {
+                if (progressDialog.isShowing) progressDialog.dismiss()
+                if (cancelled.get()) {
+                    toast("已取消批量准备，尚未加入新的下载任务")
+                    return@runOnUiThread
+                }
                 val batchId = System.currentTimeMillis()
                 prepared.forEachIndexed { index, spec ->
                     val id = "bili_" + batchId + "_" + spec.video.page + "_" + index
@@ -2323,9 +3372,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     append("已加入 ")
                     append(prepared.size)
                     append("/")
-                    append(pages.size)
+                    append(ordered.size)
                     append(" 个分P任务")
-                    if (skipped.isNotEmpty()) append("；跳过 P" + skipped.joinToString(", P"))
+                    if (skipped.isNotEmpty()) {
+                        append("；规格不兼容或解析失败，跳过 P")
+                        append(skipped.distinct().joinToString(", P"))
+                    }
                 }
                 toast(message)
             }
@@ -2442,7 +3494,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     fun loginSuccess(name: String, avatar: Bitmap?, vip: Boolean = false) = runOnUiThread {
         loggedIn = true; userName = name; userAvatar = avatar; userVip = vip
-        setBusy(cookieBtn, false); cookieBtn.text = "登录"; cookieInput.setText("")
         refreshAccountUi()
         hideLogin()
         (supportFragmentManager.findFragmentByTag("bilivdl-profile") as? ProfileFragment)?.refreshAccount()
@@ -2450,8 +3501,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
 
     fun loginFailed(message: String) = runOnUiThread {
-        setBusy(cookieBtn, false); cookieBtn.text = "登录"
-        cookieErrTv.text = message
         setQrStatus(message, true)
     }
 
@@ -2484,6 +3533,30 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     // ---------------- 状态 ----------------
     private lateinit var prefs: SharedPreferences
+
+    private val installUpdatePermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+            val pendingPath = prefs.getString(PREF_PENDING_UPDATE_FILE, null)
+            prefs.edit().remove(PREF_PENDING_UPDATE_FILE).apply()
+            if (pendingPath.isNullOrBlank()) return@registerForActivityResult
+
+            val apk = File(pendingPath)
+            if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                packageManager.canRequestPackageInstalls() &&
+                apk.isFile
+            ) {
+                installUpdateApk(apk)
+            } else {
+                Toast.makeText(this, "未获得安装授权，更新包仍保留在缓存中。", Toast.LENGTH_LONG).show()
+            }
+        }
+
+    private val downloadDirectoryPicker =
+        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+            handleDownloadDirectoryResult(uri)
+        }
+
     private lateinit var pages: List<View>
     private lateinit var rootFrame: FrameLayout
     private lateinit var mainContainer: LinearLayout
@@ -2551,12 +3624,24 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
     private var parsedVideo: BiliVideo? = null
     private var selectedQualityId = 0
+    private data class BatchStreamSelection(
+        val video: BiliStreamChoice?,
+        val audio: BiliStreamChoice?,
+        val audioOnly: Boolean,
+        val includeAudio: Boolean,
+        val direct: Boolean = false
+    )
+
     private data class DownloadSpec(
         val video: BiliVideo,
         val qualityId: Int,
         val audioOnly: Boolean,
         val downloadDanmaku: Boolean = false,
-        val downloadSubtitles: Boolean = false
+        val downloadSubtitles: Boolean = false,
+        val downloadCover: Boolean = false,
+        val videoStreamChoice: BiliStreamChoice? = null,
+        val audioStreamChoice: BiliStreamChoice? = null,
+        val includeAudio: Boolean = true
     )
     private val downloadSpecs = HashMap<String, DownloadSpec>()
     private val savedFileUris = HashMap<String, Uri>()
@@ -2612,15 +3697,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     // 登录页
     private lateinit var loginPage: View
-    private lateinit var loginSegs: List<TextView>
     private lateinit var qrPanel: LinearLayout
-    private lateinit var cookiePanel: LinearLayout
     private lateinit var qrIv: ImageView
     private lateinit var qrOverlay: TextView
     private lateinit var qrStatusTv: TextView
-    private lateinit var cookieInput: EditText
-    private lateinit var cookieBtn: Button
-    private lateinit var cookieErrTv: TextView
 
     // ---------------- 通用小工具 ----------------
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -2816,7 +3896,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         duration = item.duration,
                         bvid = item.bvid,
                         aid = item.aid,
-                        description = item.description
+                        description = item.description,
+                        authorMid = item.authorMid,
+                        authorAvatarUrl = item.authorAvatarUrl
                     )
                 }
             }
@@ -2843,7 +3925,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                             duration = formatDuration(video.durationSeconds),
                             bvid = video.bvid.orEmpty(),
                             aid = video.aid,
-                            description = video.description
+                            description = video.description,
+                            authorMid = video.ownerMid,
+                            authorAvatarUrl = video.ownerAvatarUrl
                         )
                     )
                 } else {
@@ -2856,7 +3940,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                             duration = item.duration,
                             bvid = item.bvid,
                             aid = item.aid,
-                            description = item.description
+                            description = item.description,
+                            authorMid = item.authorMid,
+                            authorAvatarUrl = item.authorAvatarUrl
                         )
                     }
                 }
@@ -2868,6 +3954,18 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     override fun openVideo(video: BiliVdlVideo) {
         val identity = video.bvid.takeIf { it.isNotBlank() } ?: ("av" + video.aid)
         onParseClicked("https://www.bilibili.com/video/" + identity)
+    }
+
+    override fun openUserSpace(mid: Long) {
+        openUserSpacePage(mid)
+    }
+
+    override fun openDanmakuSettings() {
+        showDanmakuDisplaySettings()
+    }
+
+    override fun chooseDownloadDirectory() {
+        onChoosePathClicked()
     }
 
     override fun navigateToDiscover() {
@@ -2958,14 +4056,23 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }
         backgroundExecutor.execute {
             val account = runCatching {
-                val (name, vip) = BiliRepository().verifyCookie(cookie)
+                val profile = BiliRepository { cookie }.getAccountProfile(cookie)
                 loggedIn = true
-                userName = name
-                userVip = vip
-                BiliVdlAccount(name, if (vip) "账号已连接 · 大会员" else "账号已连接", true)
+                userName = profile.name
+                userVip = profile.vip
+                BiliVdlAccount(
+                    name = profile.name,
+                    status = if (profile.vip) "账号已连接 · 大会员" else "账号已连接",
+                    loggedIn = true,
+                    avatarUrl = profile.avatarUrl,
+                    signature = profile.signature,
+                    mid = profile.mid
+                )
             }.getOrElse { error ->
                 SecureCookieStore.clear(this)
                 loggedIn = false
+                userName = ""
+                userVip = false
                 BiliVdlAccount("未登录", error.message ?: "登录状态已失效", false)
             }
             runOnUiThread { callback(account) }
@@ -2980,7 +4087,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             downloadDanmaku = prefs.getBoolean("danmaku", false),
             downloadSubtitles = prefs.getBoolean("subtitles", false),
             audioOnly = prefs.getBoolean("audio_only", false),
-            downloadPath = "Download/BiliDl"
+            downloadPath = prefs.getString("download_tree_label", "Download/BiliDl")
+                ?.takeIf { it.isNotBlank() } ?: "Download/BiliDl",
+            batchQualityMismatchIndex = prefs.getInt("batch_quality_mismatch", 0)
+                .coerceIn(0, BatchQualityMismatchMode.values().lastIndex)
         )
         runOnUiThread { callback(settings) }
     }
@@ -2992,6 +4102,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 val last = if (key == "quality") qualityOptions.lastIndex else concurrentOptions.lastIndex
                 prefs.edit().putInt(key, index.coerceIn(0, last)).apply()
                 if (key == "quality") refreshQuality()
+            }
+            "batch_quality_mismatch" -> {
+                val index = (value as? Int) ?: return
+                prefs.edit()
+                    .putInt("batch_quality_mismatch", index.coerceIn(0, BatchQualityMismatchMode.values().lastIndex))
+                    .apply()
             }
             "wifi_only", "danmaku", "subtitles", "audio_only" -> {
                 val enabled = value as? Boolean ?: return
@@ -3014,6 +4130,209 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         onLogoutClicked()
     }
 
+    override fun openRepository() {
+        openExternalPage(APP_REPOSITORY_URL)
+    }
+
+    override fun checkForUpdates() {
+        checkLatestGitHubRelease()
+    }
+
+    private fun openUserSpacePage(mid: Long) {
+        if (mid <= 0L) {
+            toast("B站没有返回这个用户的 UID")
+            return
+        }
+        openExternalPage("https://space.bilibili.com/$mid")
+    }
+
+    private fun openExternalPage(url: String) {
+        runCatching {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        }.onFailure {
+            Toast.makeText(this, "无法打开链接，请检查浏览器。", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun checkLatestGitHubRelease() {
+        val checking = ProgressDialog(this).apply {
+            setMessage("正在检查 GitHub Releases…")
+            setCancelable(false)
+            show()
+        }
+        backgroundExecutor.execute {
+            val result = GitHubReleaseUpdater.checkLatest(this)
+            runOnUiThread {
+                if (checking.isShowing) checking.dismiss()
+                if (isFinishing || isDestroyed) return@runOnUiThread
+
+                when (result) {
+                    is GitHubReleaseUpdater.CheckResult.UpdateAvailable -> {
+                        val notes = result.release.notes
+                            .take(1400)
+                            .ifBlank { "仓库已发布新版本。" }
+                        val message = buildString {
+                            append("当前版本：")
+                            append(result.currentVersion.ifBlank { "未知" })
+                            append("\n最新版本：")
+                            append(result.release.tagName)
+                            append("\n安装包：")
+                            append(result.release.assetName)
+                            append("\n\n")
+                            append(notes)
+                        }
+                        AlertDialog.Builder(this)
+                            .setTitle("发现新版本")
+                            .setMessage(message)
+                            .setNegativeButton("稍后", null)
+                            .setPositiveButton("下载并安装") { _, _ ->
+                                downloadAndInstallRelease(result.release)
+                            }
+                            .show()
+                    }
+                    is GitHubReleaseUpdater.CheckResult.AlreadyLatest -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("已经是最新版本")
+                            .setMessage("当前版本 ${result.currentVersion} 已经是仓库发布的最新版本。")
+                            .setPositiveButton("知道了", null)
+                            .show()
+                    }
+                    GitHubReleaseUpdater.CheckResult.NoReleasePublished -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("暂未发布正式安装包")
+                            .setMessage(
+                                "仓库目前还没有发布 GitHub Release，因此暂时没有可供应用内更新的正式 APK。发布带 APK 的正式版本后，这里会自动识别最新版本。"
+                            )
+                            .setNegativeButton("关闭", null)
+                            .setPositiveButton("打开 Releases") { _, _ ->
+                                openExternalPage(APP_RELEASES_URL)
+                            }
+                            .show()
+                    }
+                    is GitHubReleaseUpdater.CheckResult.NoApkAsset -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("没有找到 APK")
+                            .setMessage("Release ${result.releaseTag} 已发布，但没有附带可安装的 APK 文件。")
+                            .setPositiveButton("打开 Releases") { _, _ ->
+                                openExternalPage(APP_RELEASES_URL)
+                            }
+                            .setNegativeButton("关闭", null)
+                            .show()
+                    }
+                    is GitHubReleaseUpdater.CheckResult.Failed -> {
+                        AlertDialog.Builder(this)
+                            .setTitle("检查更新失败")
+                            .setMessage(result.message)
+                            .setNegativeButton("关闭", null)
+                            .setPositiveButton("重试") { _, _ ->
+                                checkLatestGitHubRelease()
+                            }
+                            .show()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun downloadAndInstallRelease(release: GitHubReleaseUpdater.ReleaseInfo) {
+        val progress = ProgressDialog(this).apply {
+            setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
+            max = 100
+            progress = 0
+            setMessage("正在下载更新包…")
+            setCancelable(false)
+            show()
+        }
+
+        backgroundExecutor.execute {
+            try {
+                var lastShown = -2
+                val apk = GitHubReleaseUpdater.download(this, release) { percent ->
+                    if (percent != lastShown) {
+                        lastShown = percent
+                        runOnUiThread {
+                            if (progress.isShowing && percent >= 0) {
+                                progress.progress = percent
+                            } else if (progress.isShowing && percent < 0) {
+                                progress.setMessage("正在下载更新包…")
+                            }
+                        }
+                    }
+                }
+                runOnUiThread {
+                    if (progress.isShowing) progress.dismiss()
+                    if (!isFinishing && !isDestroyed) promptInstallUpdate(apk)
+                }
+            } catch (error: Exception) {
+                runOnUiThread {
+                    if (progress.isShowing) progress.dismiss()
+                    if (!isFinishing && !isDestroyed) {
+                        AlertDialog.Builder(this)
+                            .setTitle("下载更新失败")
+                            .setMessage(error.message ?: "网络异常，请稍后重试。")
+                            .setPositiveButton("重试") { _, _ ->
+                                downloadAndInstallRelease(release)
+                            }
+                            .setNegativeButton("关闭", null)
+                            .show()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun promptInstallUpdate(apk: File) {
+        if (!apk.isFile) {
+            Toast.makeText(this, "更新安装包不存在，请重新下载。", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+            !packageManager.canRequestPackageInstalls()
+        ) {
+            prefs.edit().putString(PREF_PENDING_UPDATE_FILE, apk.absolutePath).apply()
+            AlertDialog.Builder(this)
+                .setTitle("需要安装授权")
+                .setMessage("Android 需要你允许 BiliDl 安装从 GitHub 下载的更新包。")
+                .setNegativeButton("取消") { _, _ ->
+                    prefs.edit().remove(PREF_PENDING_UPDATE_FILE).apply()
+                }
+                .setPositiveButton("前往授权") { _, _ ->
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName")
+                    )
+                    installUpdatePermissionLauncher.launch(intent)
+                }
+                .show()
+            return
+        }
+
+        installUpdateApk(apk)
+    }
+
+    private fun installUpdateApk(apk: File) {
+        try {
+            val uri = FileProvider.getUriForFile(
+                this,
+                "$packageName.fileprovider",
+                apk
+            )
+            val installIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(installIntent)
+        } catch (error: Exception) {
+            AlertDialog.Builder(this)
+                .setTitle("无法打开安装程序")
+                .setMessage(error.message ?: "请确认系统允许安装此来源的应用。")
+                .setPositiveButton("知道了", null)
+                .show()
+        }
+    }
+
     private fun formatUiCount(value: Long): String = when {
         value >= 100_000_000L -> String.format(java.util.Locale.US, "%.1f亿", value / 100_000_000.0)
         value >= 10_000L -> String.format(java.util.Locale.US, "%.1f万", value / 10_000.0)
@@ -3024,9 +4343,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("ui", Context.MODE_PRIVATE)
-        window.statusBarColor = Color.parseColor("#101014")
-        window.navigationBarColor = Color.parseColor("#101014")
-        window.decorView.systemUiVisibility = 0
+        window.statusBarColor = Color.WHITE
+        window.navigationBarColor = Color.WHITE
+        window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
 
         // The UI shell and its resources are imported from the user's BiliVdl project.
         rootFrame = FrameLayout(this)
@@ -3067,7 +4387,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         rootFrame.addView(loginPage, FrameLayout.LayoutParams(match, match))
         setContentView(rootFrame)
 
-        bottomNavigation.selectedItemId = com.sxsbsxs.bilivdl.ui.R.id.nav_home
+        // Initialize the first fragment through the same non-recursive path as later tab taps.
+        selectTab(0)
         refreshAccountUi()
         restoreDownloadTasks()
         restoreRoomTasks()
@@ -3090,6 +4411,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 }
             }
         }
+
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -3143,13 +4465,14 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             1 -> com.sxsbsxs.bilivdl.ui.R.id.nav_downloads
             else -> com.sxsbsxs.bilivdl.ui.R.id.nav_profile
         }
+
+        // Check the menu item directly. Setting BottomNavigationView.selectedItemId here
+        // dispatches OnItemSelectedListener again and recursively re-enters selectTab().
         val navigation = mainContainer.findViewById<BottomNavigationView>(
             com.sxsbsxs.bilivdl.ui.R.id.bottom_navigation
         )
-        if (navigation.selectedItemId != targetId) {
-            navigation.selectedItemId = targetId
-            return true
-        }
+        navigation.menu.findItem(targetId).isChecked = true
+
         val tag = when (i) {
             0 -> "bilivdl-home"
             1 -> "bilivdl-downloads"
@@ -3956,11 +5279,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }, 0)
         col.addView(h, match, wrap)
 
-        val (segBox, segs) = buildSegmented(listOf("扫码登录", "Cookie 登录")) { i -> selectLoginSeg(i) }
-        loginSegs = segs
-        col.addView(segBox, sideMargins().apply { topMargin = -dp(26) })
-
-        // 扫码面板
+        // QR authorization is the only sign-in route; the session is stored internally after approval.
         qrPanel = card()
         val qrBox = FrameLayout(this).apply {
             background = shape(Color.WHITE, 16, Color.parseColor("#E6E8EE"))
@@ -3998,71 +5317,23 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }, match, wrap)
         col.addView(qrPanel, sideMargins())
 
-        // Cookie 面板
-        cookiePanel = card().apply { visibility = View.GONE }
-        cookiePanel.addView(TextView(this).apply {
-            text = "使用 Cookie 登录"
-            textSize = 16f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(ink)
-        })
-        cookiePanel.addView(TextView(this).apply {
-            text = "粘贴 B 站完整 Cookie（需包含 SESSDATA 和 bili_jct），才能使用点赞、投币、收藏、评论和弹幕互动。凭据使用 Android Keystore 加密保存，不会上传到本应用服务器；请勿分享给他人。"
+        col.addView(TextView(this).apply {
+            text = "使用哔哩哔哩 App 扫描并确认授权，无需手动复制 Cookie。授权信息仅保存在本机，用于访问你账号允许的内容。"
             textSize = 12f
             setTextColor(sub)
-            setLineSpacing(0f, 1.2f)
-            setPadding(0, dp(6), 0, dp(12))
-        })
-        cookieInput = EditText(this).apply {
-            hint = "粘贴完整 Cookie，至少包含 SESSDATA 和 bili_jct"
-            setHintTextColor(sub)
-            setTextColor(ink)
-            textSize = 14f
-            minLines = 3
-            gravity = Gravity.TOP
-            background = shape(field, 14)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-        }
-        cookiePanel.addView(cookieInput, match, wrap)
-        cookieErrTv = TextView(this).apply { textSize = 13f; setTextColor(err) }
-        cookiePanel.addView(cookieErrTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
-        cookieBtn = pillButton("登录", true)
-        cookieBtn.setOnClickListener {
-            val v = cookieInput.text.toString().trim()
-            if (v.isEmpty()) { cookieErrTv.text = "请先粘贴完整 Cookie"; return@setOnClickListener }
-            cookieErrTv.text = ""
-            setBusy(cookieBtn, true)
-            cookieBtn.text = "登录中…"
-            onCookieLogin(v)
-        }
-        cookiePanel.addView(cookieBtn, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(12) })
-        col.addView(cookiePanel, sideMargins())
-
-        col.addView(View(this), match, dp(32))
-        styleSegs(loginSegs, 0)
+            setPadding(dp(4), dp(12), dp(4), dp(28))
+        }, match, wrap)
         return page
     }
 
-    private fun selectLoginSeg(i: Int) {
-        val changed = activeLoginSegment != i
-        activeLoginSegment = i
-        if (i != 0) stopQrLogin()
-        styleSegs(loginSegs, i)
-        qrPanel.visibility = if (i == 0) View.VISIBLE else View.GONE
-        cookiePanel.visibility = if (i == 1) View.VISIBLE else View.GONE
-        if (i == 0 && changed) refreshQr()
-    }
-
     private fun showLogin() {
-        cookieErrTv.text = ""
         loginPage.visibility = View.VISIBLE
         loginPage.bringToFront()
-        selectLoginSeg(0)
+        refreshQr()
     }
 
     private fun hideLogin() {
         stopQrLogin()
-        activeLoginSegment = -1
         loginPage.visibility = View.GONE
     }
 

@@ -2,6 +2,7 @@ package com.example.bilidl
 
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
 import android.media.MediaCodec
 import android.media.MediaExtractor
 import android.media.MediaFormat
@@ -9,17 +10,22 @@ import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import androidx.documentfile.provider.DocumentFile
 import com.example.bilidl.common.content.BiliContentExporter
 import com.example.bilidl.common.content.BiliDanmaku
 import com.example.bilidl.common.content.BiliDanmakuProtoParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 
 data class SavedResource(
     val uri: Uri,
@@ -61,11 +67,22 @@ object BiliDownloadEngine {
         cookie: String?,
         downloadDanmaku: Boolean = false,
         downloadSubtitles: Boolean = false,
+        downloadCover: Boolean = false,
+        videoChoice: BiliStreamChoice? = null,
+        audioChoice: BiliStreamChoice? = null,
+        includeAudio: Boolean = true,
         isCancelled: () -> Boolean = { false },
         progress: (Int, String) -> Unit
     ): SavedDownload = withContext(Dispatchers.IO) {
         val repository = BiliRepository { cookie }
-        val source = repository.getPlaySource(video, qualityId)
+        val source = repository.getPlaySource(
+            video = video,
+            requestedQuality = qualityId,
+            videoChoice = videoChoice,
+            audioChoice = audioChoice,
+            includeAudio = includeAudio,
+            audioOnly = audioOnly
+        )
         val workDir = File(context.filesDir, "bilidl_transfers").apply { mkdirs() }
         val safeId = transferId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
         val prefix = "task_" + safeId
@@ -77,7 +94,7 @@ object BiliDownloadEngine {
         val audioTemp = File(workDir, prefix + "_audio.m4s")
         val directTemp = File(workDir, prefix + "_direct")
         try {
-            if (source.videoUrls.isNotEmpty()) {
+            if (source.videoUrls.isNotEmpty() || (audioOnly && source.audioUrls.isNotEmpty())) {
                 if (audioOnly) {
                     if (source.audioUrls.isEmpty()) throw IOException("这个视频没有独立音频流")
                     progress(3, "正在下载音频流")
@@ -102,6 +119,7 @@ object BiliDownloadEngine {
                         video = video,
                         downloadDanmaku = downloadDanmaku,
                         downloadSubtitles = downloadSubtitles,
+                        downloadCover = downloadCover,
                         isCancelled = isCancelled,
                         onPublished = { publishedUris.add(it) },
                         progress = progress
@@ -114,14 +132,44 @@ object BiliDownloadEngine {
                         warnings = sidecars.warnings
                     )
                 } else {
-                    progress(2, "正在下载视频流")
-                    downloadStream(source.videoUrls, videoTemp, cookie, concurrency, isCancelled) { value ->
-                        progress(2 + (value * if (source.audioUrls.isEmpty()) 92 else 45) / 100, "视频流")
-                    }
                     if (source.audioUrls.isNotEmpty()) {
-                        progress(49, "正在下载音频流")
-                        downloadStream(source.audioUrls, audioTemp, cookie, concurrency, isCancelled) { value ->
-                            progress(49 + value * 44 / 100, "音频流")
+                        val videoPercent = AtomicInteger(0)
+                        val audioPercent = AtomicInteger(0)
+                        val videoConcurrency = maxOf(1, (concurrency + 1) / 2)
+                        val audioConcurrency = maxOf(1, concurrency / 2)
+                        progress(2, "正在并行下载视频和音频")
+                        coroutineScope {
+                            val videoJob = async(Dispatchers.IO) {
+                                downloadStream(
+                                    source.videoUrls, videoTemp, cookie, videoConcurrency, isCancelled
+                                ) { value ->
+                                    videoPercent.set(value)
+                                    val combined = (videoPercent.get() + audioPercent.get()) / 2
+                                    progress(
+                                        2 + combined * 90 / 100,
+                                        "视频 ${videoPercent.get()}% · 音频 ${audioPercent.get()}%"
+                                    )
+                                }
+                            }
+                            val audioJob = async(Dispatchers.IO) {
+                                downloadStream(
+                                    source.audioUrls, audioTemp, cookie, audioConcurrency, isCancelled
+                                ) { value ->
+                                    audioPercent.set(value)
+                                    val combined = (videoPercent.get() + audioPercent.get()) / 2
+                                    progress(
+                                        2 + combined * 90 / 100,
+                                        "视频 ${videoPercent.get()}% · 音频 ${audioPercent.get()}%"
+                                    )
+                                }
+                            }
+                            videoJob.await()
+                            audioJob.await()
+                        }
+                    } else {
+                        progress(2, "正在下载视频流")
+                        downloadStream(source.videoUrls, videoTemp, cookie, concurrency, isCancelled) { value ->
+                            progress(2 + value * 90 / 100, "视频流")
                         }
                     }
                     progress(95, "正在封装 MP4")
@@ -136,6 +184,7 @@ object BiliDownloadEngine {
                         video = video,
                         downloadDanmaku = downloadDanmaku,
                         downloadSubtitles = downloadSubtitles,
+                        downloadCover = downloadCover,
                         isCancelled = isCancelled,
                         onPublished = { publishedUris.add(it) },
                         progress = progress
@@ -181,6 +230,7 @@ object BiliDownloadEngine {
                         video = video,
                         downloadDanmaku = downloadDanmaku,
                         downloadSubtitles = downloadSubtitles,
+                        downloadCover = downloadCover,
                         isCancelled = isCancelled,
                         onPublished = { publishedUris.add(it) },
                         progress = progress
@@ -210,6 +260,7 @@ object BiliDownloadEngine {
                         video = video,
                         downloadDanmaku = downloadDanmaku,
                         downloadSubtitles = downloadSubtitles,
+                        downloadCover = downloadCover,
                         isCancelled = isCancelled,
                         onPublished = { publishedUris.add(it) },
                         progress = progress
@@ -254,14 +305,59 @@ object BiliDownloadEngine {
         video: BiliVideo,
         downloadDanmaku: Boolean,
         downloadSubtitles: Boolean,
+        downloadCover: Boolean,
         isCancelled: () -> Boolean,
         onPublished: (Uri) -> Unit,
         progress: (Int, String) -> Unit
     ): SidecarSummary {
-        if (!downloadDanmaku && !downloadSubtitles) return SidecarSummary(emptyList(), emptyList())
+        if (!downloadDanmaku && !downloadSubtitles && !downloadCover) {
+            return SidecarSummary(emptyList(), emptyList())
+        }
 
         val files = ArrayList<SavedResource>()
         val warnings = ArrayList<String>()
+
+        if (downloadCover) {
+            try {
+                progress(96, "正在保存封面")
+                if (isCancelled()) throw CancellationException("下载已取消")
+                val bitmap = repository.loadCoverImage(video.coverUrl)
+                if (bitmap == null) {
+                    warnings += "封面获取失败：B站没有返回可用图片"
+                } else {
+                    val temp = File(workDir, "${prefix}_cover.jpg")
+                    try {
+                        FileOutputStream(temp).use { output ->
+                            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)) {
+                                throw IOException("封面图片编码失败")
+                            }
+                        }
+                        val published = publishFile(
+                            context,
+                            temp,
+                            video.title + "_封面",
+                            "jpg",
+                            "image/jpeg"
+                        )
+                        onPublished(published.uri)
+                        files += SavedResource(
+                            uri = published.uri,
+                            displayName = published.displayName,
+                            sizeBytes = published.sizeBytes,
+                            mimeType = published.mimeType,
+                            resourceType = com.example.bilidl.data.local.entity.DownloadResourceType.COVER_IMAGE
+                        )
+                    } finally {
+                        bitmap.recycle()
+                        temp.delete()
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                warnings += "封面导出失败：" + (error.message ?: "未知错误")
+            }
+        }
 
         if (downloadDanmaku) {
             try {
@@ -630,6 +726,11 @@ object BiliDownloadEngine {
             .take(80)
             .ifBlank { "BiliDl video" }
         val displayName = safeTitle + "." + extension
+        val selectedTree = context.getSharedPreferences("ui", Context.MODE_PRIVATE)
+            .getString("download_tree_uri", null)
+        if (!selectedTree.isNullOrBlank()) {
+            return publishFileToTree(context, source, displayName, mimeType, selectedTree)
+        }
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
             put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
@@ -664,6 +765,82 @@ object BiliDownloadEngine {
             resolver.delete(uri, null, null)
             throw error
         }
+    }
+
+    /**
+     * Publishes an output through the Storage Access Framework. The tree URI is
+     * persisted by MainActivity and is shared by WorkManager workers through the
+     * app's "ui" preferences. All sidecar files use this same path.
+     */
+    private fun publishFileToTree(
+        context: Context,
+        source: File,
+        displayName: String,
+        mimeType: String,
+        treeUriValue: String
+    ): SavedDownload {
+        if (!source.isFile || source.length() <= 0L) {
+            throw IOException("待保存文件为空或不存在")
+        }
+        val treeUri = runCatching { Uri.parse(treeUriValue) }
+            .getOrElse { throw IOException("保存目录地址无效，请重新选择保存文件夹", it) }
+        val folder = try {
+            DocumentFile.fromTreeUri(context, treeUri)
+        } catch (error: SecurityException) {
+            throw IOException("保存目录授权已失效，请回到设置重新选择保存位置", error)
+        } ?: throw IOException("无法打开所选保存目录，请重新选择")
+
+        if (!folder.isDirectory || !folder.canWrite()) {
+            throw IOException("所选目录不可写或授权已失效，请回到设置重新选择保存位置")
+        }
+
+        val uniqueName = uniqueDocumentName(folder, displayName)
+        val target = try {
+            folder.createFile(mimeType, uniqueName)
+        } catch (error: SecurityException) {
+            throw IOException("系统拒绝向所选目录写入文件，请重新授权保存位置", error)
+        } ?: throw IOException("无法在所选文件夹中创建文件")
+
+        try {
+            val expectedBytes = source.length()
+            val copiedBytes = source.inputStream().buffered().use { input ->
+                context.contentResolver.openOutputStream(target.uri, "w")
+                    ?.buffered()
+                    ?.use { output -> input.copyTo(output) }
+                    ?: throw IOException("无法打开所选目录中的文件输出流")
+            }
+            if (copiedBytes != expectedBytes) {
+                throw IOException("保存文件时长度不匹配：$copiedBytes / $expectedBytes 字节")
+            }
+            return SavedDownload(
+                uri = target.uri,
+                displayName = target.name ?: uniqueName,
+                sizeBytes = copiedBytes,
+                mimeType = mimeType
+            )
+        } catch (error: Exception) {
+            runCatching { target.delete() }
+            if (error is SecurityException) {
+                throw IOException("保存目录权限已失效，请重新选择保存文件夹", error)
+            }
+            throw error
+        }
+    }
+
+    private fun uniqueDocumentName(folder: DocumentFile, desiredName: String): String {
+        if (folder.findFile(desiredName) == null) return desiredName
+
+        val extensionStart = desiredName.lastIndexOf('.').takeIf { it > 0 }
+            ?: desiredName.length
+        val base = desiredName.substring(0, extensionStart)
+        val extension = desiredName.substring(extensionStart)
+        var suffix = 1
+        var candidate: String
+        do {
+            candidate = "$base ($suffix)$extension"
+            suffix++
+        } while (folder.findFile(candidate) != null)
+        return candidate
     }
 
     private fun extensionForMime(mime: String, fallback: String): String {

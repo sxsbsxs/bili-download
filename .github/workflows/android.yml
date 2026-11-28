@@ -2,7 +2,7 @@ name: Android build
 
 on:
   push:
-    branches: [main, feat/real-bilibili-download, feat/bilivdl-ui-adoption]
+    branches: [main, feat/real-bilibili-download, feat/bilivdl-ui-adoption, ui/bilidl-bilibili-first-redesign]
   pull_request:
     branches: [main]
   workflow_dispatch:

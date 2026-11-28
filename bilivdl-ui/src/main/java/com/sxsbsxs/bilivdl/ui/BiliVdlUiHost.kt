@@ -8,6 +8,9 @@ interface BiliVdlUiHost {
     fun loadPopular(page: Int, callback: (Result<List<BiliVdlVideo>>) -> Unit)
     fun searchVideos(query: String, page: Int, callback: (Result<List<BiliVdlVideo>>) -> Unit)
     fun openVideo(video: BiliVdlVideo)
+    fun openUserSpace(mid: Long)
+    fun openDanmakuSettings()
+    fun chooseDownloadDirectory()
     fun navigateToDiscover()
     fun loadDownloadTasks(callback: (List<BiliVdlDownloadTask>) -> Unit)
     fun pauseDownload(taskId: String)
@@ -23,4 +26,6 @@ interface BiliVdlUiHost {
     fun clearTemporaryCache()
     fun requestLogin()
     fun requestLogout()
+    fun openRepository()
+    fun checkForUpdates()
 }

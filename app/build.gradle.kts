@@ -1,3 +1,6 @@
+import java.awt.image.BufferedImage
+import java.util.ArrayDeque
+import javax.imageio.ImageIO
 import org.gradle.api.tasks.testing.Test
 
 plugins {
@@ -9,10 +12,78 @@ plugins {
 val configuredVersionName = providers.gradleProperty("appVersionName").orElse("1.2.0").get()
 val configuredVersionCode = providers.gradleProperty("appVersionCode").orElse("10200").get().toInt()
 
+val launcherIconSource = file("src/main/res/mipmap-nodpi/bilidl_icon_source.png")
+val generatedLauncherRes = layout.buildDirectory.dir("generated/res/launcherIcon")
+val generateLauncherIcon = tasks.register("generateLauncherIcon") {
+    inputs.file(launcherIconSource)
+    outputs.file(generatedLauncherRes.map { it.file("mipmap-nodpi/bilidl_icon.png") })
+    doLast {
+        val sourceImage = ImageIO.read(launcherIconSource)
+            ?: error("Unable to decode the supplied BiliDl launcher PNG")
+        val width = sourceImage.width
+        val height = sourceImage.height
+        val exteriorMatte = BooleanArray(width * height)
+        val queue = ArrayDeque<Int>()
+
+        fun isWhiteMatte(index: Int): Boolean {
+            val argb = sourceImage.getRGB(index % width, index / width)
+            val alpha = (argb ushr 24) and 0xff
+            val red = (argb ushr 16) and 0xff
+            val green = (argb ushr 8) and 0xff
+            val blue = argb and 0xff
+            return alpha > 0 && red >= 232 && green >= 232 && blue >= 232 &&
+                (maxOf(red, green, blue) - minOf(red, green, blue)) <= 20
+        }
+
+        fun visitEdge(index: Int) {
+            if (!exteriorMatte[index] && isWhiteMatte(index)) {
+                exteriorMatte[index] = true
+                queue.addLast(index)
+            }
+        }
+
+        for (x in 0 until width) {
+            visitEdge(x)
+            visitEdge((height - 1) * width + x)
+        }
+        for (y in 0 until height) {
+            visitEdge(y * width)
+            visitEdge(y * width + width - 1)
+        }
+        while (queue.isNotEmpty()) {
+            val index = queue.removeFirst()
+            val x = index % width
+            val y = index / width
+            if (x > 0) visitEdge(index - 1)
+            if (x + 1 < width) visitEdge(index + 1)
+            if (y > 0) visitEdge(index - width)
+            if (y + 1 < height) visitEdge(index + width)
+        }
+
+        val output = BufferedImage(
+            width, height, BufferedImage.TYPE_INT_ARGB
+        )
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val index = y * width + x
+                val argb = sourceImage.getRGB(x, y)
+                output.setRGB(x, y, if (exteriorMatte[index]) 0 else (argb or (0xff shl 24)))
+            }
+        }
+        val outputFile = generatedLauncherRes.get().file("mipmap-nodpi/bilidl_icon.png").asFile
+        outputFile.parentFile.mkdirs()
+        check(ImageIO.write(output, "png", outputFile)) {
+            "Unable to encode the transparent BiliDl launcher PNG"
+        }
+    }
+}
+
 android {
     namespace = "com.example.bilidl"
     compileSdk = 36
     ndkVersion = "27.2.12479018"
+
+    sourceSets.getByName("main").res.srcDir(generatedLauncherRes)
 
     defaultConfig {
         applicationId = "com.example.bilidl"
@@ -62,6 +133,7 @@ dependencies {
 
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("androidx.core:core-ktx:1.16.0")
+    implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
     implementation("com.google.zxing:core:3.5.3")
 
@@ -76,6 +148,10 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.14.1")
 }
 
+
+tasks.named("preBuild").configure {
+    dependsOn(generateLauncherIcon)
+}
 
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
