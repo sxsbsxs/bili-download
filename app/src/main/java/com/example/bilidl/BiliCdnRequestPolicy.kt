@@ -37,7 +37,8 @@ internal object BiliCdnRequestPolicy {
 
         val cookieHeader = sessionCookie
             ?.takeIf { it.isNotBlank() }
-            ?.let { "SESSDATA=" + SecureCookieStore.normalizeCookie(it) }
+            ?.let(SecureCookieStore::normalizeCookieHeader)
+            ?.takeIf { it.isNotBlank() }
             ?: visitorCookies()
         if (!cookieHeader.isNullOrBlank()) {
             connection.setRequestProperty("Cookie", cookieHeader)
