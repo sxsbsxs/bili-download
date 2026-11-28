@@ -43,6 +43,7 @@ object SecureCookieStore {
             cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, iv))
             val stored = String(cipher.doFinal(Base64.decode(valueText, Base64.NO_WRAP)), Charsets.UTF_8)
             cookieValue(stored, "SESSDATA").takeIf { it.isNotBlank() }
+                ?: stored.takeIf { it.isNotBlank() && !it.contains('=') }
         } catch (_: Exception) {
             clear(context)
             null
@@ -84,7 +85,7 @@ object SecureCookieStore {
 
     fun normalizeCookie(rawCookie: String): String {
         val trimmed = rawCookie.trim()
-        val match = Regex("""(?:^|;\\s*)SESSDATA=([^;]+)""").find(trimmed)
+        val match = Regex("""(?:^|;\s*)SESSDATA=([^;]+)""").find(trimmed)
         return match?.groupValues?.get(1) ?: trimmed
     }
 
@@ -94,7 +95,7 @@ object SecureCookieStore {
             "buvid3", "buvid4", "sid", "b_nut", "buvid_fp", "buvid_fp_plain"
         )
         val values = linkedMapOf<String, String>()
-        rawCookie.replace("\\r", ";").replace("\\n", ";")
+        rawCookie.replace("\r", ";").replace("\n", ";")
             .split(';')
             .map(String::trim)
             .filter { it.isNotBlank() && it.contains('=') }
@@ -111,7 +112,7 @@ object SecureCookieStore {
 
     fun cookieValue(cookieHeader: String, name: String): String {
         val escaped = Regex.escape(name)
-        return Regex("""(?:^|;\\s*)$escaped=([^;]+)""")
+        return Regex("""(?:^|;\s*)$escaped=([^;]+)""")
             .find(cookieHeader)?.groupValues?.getOrNull(1).orEmpty()
     }
 
