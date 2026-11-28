@@ -30,7 +30,10 @@ internal fun formatBiliApiError(code: Int, message: String, fallback: String): S
         -352 -> "$fallback：B站风控校验失败（-352）。这不等同于未登录，也不能保证重新登录就能解除；请稍后重试并避免连续提交。原始提示：$detail"
         -101 -> "$fallback：B站账号未登录（-101），请点击账号区域登录后重试。原始提示：$detail"
         -111 -> "$fallback：B站 CSRF 校验失败（-111），请重新扫码授权后重试。原始提示：$detail"
+        -403 -> "$fallback：B站拒绝了当前操作（-403），可能是账号权限或风控限制。原始提示：$detail"
         -509 -> "$fallback：B站请求过于频繁（-509），请稍后再试。原始提示：$detail"
+        12008 -> "$fallback：你已经举报过这条评论（12008）。原始提示：$detail"
+        12019 -> "$fallback：举报过于频繁（12019），请稍后再试。原始提示：$detail"
         else -> "$fallback：$detail（$code）"
     }
 }
@@ -1109,7 +1112,7 @@ class BiliRepository(
 
     /**
      * Report a comment or reply using Bilibili's official reply/report endpoint.
-     * Reason 0 is the free-text "other" category and requires a description.
+     * Reason 0 accepts an optional free-text note.
      */
     fun reportVideoComment(
         aid: Long,
@@ -1121,9 +1124,6 @@ class BiliRepository(
         require(rpid > 0L) { "评论 ID 无效" }
         require(reason in 0..17) { "请选择有效的举报原因" }
         val detail = content.trim()
-        if (reason == 0 && detail.isBlank()) {
-            throw IOException("请选择其他原因时，请填写举报说明")
-        }
         if (detail.length > 200) throw IOException("举报说明不能超过 200 个字符")
         val csrf = requireCsrf()
         val form = linkedMapOf(
