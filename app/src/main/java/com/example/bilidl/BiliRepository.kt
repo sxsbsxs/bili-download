@@ -402,14 +402,10 @@ class BiliRepository(
                     format = "dash",
                     videoMime = videoItem?.optString("mimeType").orEmpty(),
                     audioMime = audioItem?.optString("mimeType").orEmpty(),
-                    videoInitializationRange = videoSegmentBase?.optString("Initialization")
-                        ?.ifBlank { videoSegmentBase.optString("initialization") },
-                    videoIndexRange = videoSegmentBase?.optString("indexRange")
-                        ?.ifBlank { videoSegmentBase.optString("index_range") },
-                    audioInitializationRange = audioSegmentBase?.optString("Initialization")
-                        ?.ifBlank { audioSegmentBase.optString("initialization") },
-                    audioIndexRange = audioSegmentBase?.optString("indexRange")
-                        ?.ifBlank { audioSegmentBase.optString("index_range") },
+                    videoInitializationRange = videoSegmentBase?.let { it.optString("Initialization").ifBlank { it.optString("initialization") } },
+                    videoIndexRange = videoSegmentBase?.let { it.optString("indexRange").ifBlank { it.optString("index_range") } },
+                    audioInitializationRange = audioSegmentBase?.let { it.optString("Initialization").ifBlank { it.optString("initialization") } },
+                    audioIndexRange = audioSegmentBase?.let { it.optString("indexRange").ifBlank { it.optString("index_range") } },
                     videoBandwidth = videoItem?.optLong("bandwidth") ?: 0L,
                     audioBandwidth = audioItem?.optLong("bandwidth") ?: 0L,
                     videoCodecs = videoItem?.optString("codecs").orEmpty(),
