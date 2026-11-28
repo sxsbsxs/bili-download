@@ -13,7 +13,7 @@ BiliDl is a Bilibili-focused Android downloader. The project uses its own Bilibi
 - Use Bilibili's WBI-signed playurl endpoint to request DASH streams and show only qualities actually returned by the API.
 - Download video and audio streams with BiliDl's own HTTP Range scheduler: parallel chunks, per-chunk checkpoints, validator-aware resume, bounded retry, and sequential fallback.
 - Mux DASH video/audio into MP4, interleaving samples by presentation timestamp without re-encoding. AAC audio-only downloads are packaged as M4A.
-- Support Bilibili web QR authorization and optional SESSDATA entry. Credentials are validated against Bilibili and encrypted locally with Android Keystore AES-GCM.
+- Support Bilibili web QR authorization and optional Cookie entry. Recognized session fields are encrypted locally with Android Keystore AES-GCM; the complete stored Cookie header is reused for authenticated playurl and CDN requests.
 - Handle multipart video selection, batch task creation, WorkManager background tasks, foreground progress notifications, and task restoration.
 - Optionally export segmented Bilibili danmaku as XML and BCC subtitles as SRT. The two options are controlled separately in Settings and are saved with each task.
 - Save finished media and sidecar files in Download/BiliDl through MediaStore without requesting broad storage access.
@@ -49,7 +49,7 @@ The Android workflow also builds the native C++ inspector tests, verifies the pa
 - DASH remuxing still uses Android MediaExtractor/MediaMuxer. Device codec availability and behavior may vary.
 - Danmaku/subtitle export is implemented but still needs live Bilibili CDN and on-device validation across representative public and account-authorized videos.
 - The native MP4 inspector validates the container and sample-table references; it does not decode frames or prove audio/video perceptual quality.
-- The persistent task specification currently uses SharedPreferences with WorkManager state; a versioned Room task database remains planned.
+- Room v1 is the durable task index for task specifications, lifecycle state, resource records, and transition history. WorkManager owns execution scheduling; SharedPreferences is retained as a compatibility mirror for older installs.
 - The app does not bypass DRM, paid access, or Bilibili's access controls.
 
 Use BiliDl only for content you are authorized to save, and follow Bilibili's terms and the creator's rights.
