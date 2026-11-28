@@ -147,9 +147,11 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             mainViewModel.parseState.collect { state ->
                 when (state) {
-                    VideoParseState.Idle -> Unit
+                    VideoParseState.Idle -> setParseLoading(false)
                     VideoParseState.Loading -> {
                         setBusy(parseBtn, true)
+                        input.isEnabled = false
+                        setParseLoading(true)
                         parseBtn.text = "正在解析…"
                         say("正在解析 B 站视频信息…", sub)
                         homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
@@ -157,6 +159,8 @@ class MainActivity : ComponentActivity() {
                     is VideoParseState.Success -> {
                         val video = state.video
                         setBusy(parseBtn, false)
+                        input.isEnabled = true
+                        setParseLoading(false)
                         parseBtn.text = "解析视频"
                         parsedVideo = video
                         selectedQualityId = preferredQualityId(video.qualities)
@@ -186,12 +190,21 @@ class MainActivity : ComponentActivity() {
                     }
                     is VideoParseState.Error -> {
                         setBusy(parseBtn, false)
+                        input.isEnabled = true
+                        setParseLoading(false)
                         parseBtn.text = "解析视频"
                         showError(state.message)
                         homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
                     }
                 }
             }
+        }
+    }
+
+    private fun setParseLoading(loading: Boolean) {
+        if (::parseProgress.isInitialized) {
+            parseProgress.visibility = if (loading) View.VISIBLE else View.GONE
+            parseProgress.isIndeterminate = loading
         }
     }
 
@@ -209,6 +222,7 @@ class MainActivity : ComponentActivity() {
         homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
         resultCard.visibility = View.GONE
         setBusy(parseBtn, true)
+        setParseLoading(true)
         parseBtn.text = "正在准备批量任务…"
         say("已选择 " + targets.size + " 项，正在逐条解析；失败项不会影响其他任务", sub)
         downloadBatchLinks(targets)
@@ -286,6 +300,7 @@ class MainActivity : ComponentActivity() {
 
             runOnUiThread {
                 setBusy(parseBtn, false)
+                setParseLoading(false)
                 parseBtn.text = "解析视频"
                 if (mismatchMode == BatchQualityMismatchMode.ASK && mismatches.isNotEmpty()) {
                     val details = mismatches.take(8).mapNotNull { it.mismatchDescription }
@@ -1026,7 +1041,7 @@ class MainActivity : ComponentActivity() {
 
     // ===================== 供后端调用的界面方法 =====================
     fun showVideo(title: String, uploader: String, cover: Bitmap?, meta: String = "") = runOnUiThread {
-        setBusy(parseBtn, false); parseBtn.text = "解析视频"
+        setBusy(parseBtn, false); input.isEnabled = true; setParseLoading(false); parseBtn.text = "解析视频"
         titleTv.text = title
         upTv.text = "UP主 · $uploader"
         metaTv.text = meta
@@ -1050,7 +1065,7 @@ class MainActivity : ComponentActivity() {
     }
 
     fun showError(message: String) = runOnUiThread {
-        setBusy(parseBtn, false); parseBtn.text = "解析视频"
+        setBusy(parseBtn, false); input.isEnabled = true; setParseLoading(false); parseBtn.text = "解析视频"
         parsedVideo = null
         resultCard.visibility = View.GONE
         say(message, err)
@@ -1225,6 +1240,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var dlBtn: Button
     private lateinit var dlAllPagesBtn: Button
     private lateinit var statusTv: TextView
+    private lateinit var parseStatusRow: LinearLayout
+    private lateinit var parseProgress: ProgressBar
 
     // 下载页
     private class DlItem(val id: String, var title: String, var cover: Bitmap?) {
@@ -1424,6 +1441,7 @@ class MainActivity : ComponentActivity() {
         statusTv.text = msg
         statusTv.setTextColor(color)
         statusTv.visibility = if (msg.isEmpty()) View.GONE else View.VISIBLE
+        parseStatusRow.visibility = if (msg.isEmpty()) View.GONE else View.VISIBLE
         statusTv.isClickable = onClick != null
         statusTv.setOnClickListener(if (onClick == null) null else View.OnClickListener { onClick() })
     }
@@ -1828,6 +1846,24 @@ class MainActivity : ComponentActivity() {
         col.addView(brand, match, wrap)
 
         val inputCard = card()
+        val inputHeading = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        inputHeading.addView(TextView(this).apply {
+            text = "解析视频"
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        })
+        inputHeading.addView(TextView(this).apply {
+            text = "粘贴 B 站链接，查看视频信息与可用下载选项"
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(0, dp(3), 0, 0)
+        })
+        inputCard.addView(inputHeading, LinearLayout.LayoutParams(match, wrap).apply {
+            bottomMargin = dp(12)
+        })
         input = EditText(this).apply {
             hint = "粘贴 B 站视频或番剧链接"
             setHintTextColor(sub)
@@ -1848,7 +1884,7 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         val helper = TextView(this).apply {
-            text = "支持多条链接批量导入"
+            text = "支持 BV / av / ep / ss · 多条链接可批量导入"
             textSize = 12f
             setTextColor(sub)
         }
@@ -1865,14 +1901,26 @@ class MainActivity : ComponentActivity() {
         })
         col.addView(inputCard, sideMargins(4))
 
-        statusTv = TextView(this).apply {
-            textSize = 13f
+        parseStatusRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             visibility = View.GONE
             setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        parseProgress = ProgressBar(this).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(pink)
+            visibility = View.GONE
+        }
+        parseStatusRow.addView(parseProgress, LinearLayout.LayoutParams(dp(16), dp(16)))
+        statusTv = TextView(this).apply {
+            textSize = 13f
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(8), 0, dp(4), 0)
             setLineSpacing(0f, 1.15f)
         }
-        col.addView(statusTv, LinearLayout.LayoutParams(match, wrap).apply {
+        parseStatusRow.addView(statusTv, LinearLayout.LayoutParams(wrap, wrap))
+        col.addView(parseStatusRow, LinearLayout.LayoutParams(match, wrap).apply {
             topMargin = dp(8)
             leftMargin = dp(20)
             rightMargin = dp(20)
@@ -2115,6 +2163,7 @@ class MainActivity : ComponentActivity() {
                 }
                 resultCard.visibility = View.GONE
                 setBusy(parseBtn, true)
+                setParseLoading(true)
                 parseBtn.text = "正在准备批量任务…"
                 say("正在逐条解析，失败项不会影响其他任务", sub)
                 homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
@@ -2129,7 +2178,9 @@ class MainActivity : ComponentActivity() {
             }
             input.setText(target)
             input.setSelection(input.text.length)
+            input.isEnabled = false
             setBusy(parseBtn, true)
+            setParseLoading(true)
             parseBtn.text = "正在解析…"
             // Keep the last successful result on screen while the new URL is loading.
             // Success replaces it; failure is reported by the normal parse error state.
