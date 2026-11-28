@@ -41,6 +41,8 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
                 .setPositiveButton("清理") { _, _ -> host.clearTemporaryCache() }
                 .show()
         }
+        binding?.settingRepository?.setOnClickListener { host.openRepository() }
+        binding?.settingCheckUpdates?.setOnClickListener { host.checkForUpdates() }
         bindSwitches()
         refreshAccount()
         refreshSettings()
