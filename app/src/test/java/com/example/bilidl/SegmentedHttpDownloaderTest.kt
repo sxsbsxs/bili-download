@@ -177,7 +177,7 @@ class SegmentedHttpDownloaderTest {
 
             assertArrayEquals(bytes, target.readBytes())
             assertTrue(server.referers.isNotEmpty())
-            assertTrue(server.referers.all { it == referer })
+            assertTrue(server.referers.all { it == BiliCdnRequestPolicy.MOBILE_REFERER })
         }
     }
 
