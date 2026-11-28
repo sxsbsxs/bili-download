@@ -88,6 +88,17 @@ data class BiliStreamChoice(
             return if (codecs.contains("mp4a", true)) "$codec · $rate" else "$resolution · $codec · $rate$fps".trimStart(' ', '·')
         }
 
+    /** Normalize concrete codec strings to the codec family BVD uses for compatibility. */
+    fun codecFamily(): String = when {
+        codecs.startsWith("avc1", true) -> "avc"
+        codecs.startsWith("hev1", true) || codecs.startsWith("hvc1", true) -> "hevc"
+        codecs.startsWith("av01", true) -> "av1"
+        codecs.contains("mp4a", true) -> "aac"
+        codecs.contains("flac", true) -> "flac"
+        codecs.contains("ec-3", true) || codecs.contains("eac3", true) -> "dolby"
+        else -> codecs.substringBefore('.').lowercase(Locale.ROOT)
+    }
+
     fun toStorage(): String = JSONObject()
         .put("id", id)
         .put("codecs", codecs)
@@ -526,9 +537,10 @@ class BiliRepository(
      */
     fun getDownloadStreamOptions(
         video: BiliVideo,
-        requestedQuality: Int
+        @Suppress("UNUSED_PARAMETER") requestedQuality: Int
     ): BiliDownloadStreamOptions {
-        val data = checkedData(getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality))
+        // Match BVD: omit qn to enumerate every actual video/audio track for this CID.
+        val data = checkedData(getPlayInfo(video.bvid, video.aid, video.cid, null))
         val dash = data.optJSONObject("dash")
         if (dash == null) {
             val direct = data.optJSONArray("durl")
@@ -543,7 +555,7 @@ class BiliRepository(
         val videoChoices = (0 until videos.length()).mapNotNull { index ->
             val item = videos.optJSONObject(index) ?: return@mapNotNull null
             val id = item.optInt("id")
-            if (id <= 0 || (requestedQuality > 0 && id > requestedQuality)) return@mapNotNull null
+            if (id <= 0) return@mapNotNull null
             BiliStreamChoice(
                 id = id,
                 codecs = item.optString("codecs"),
@@ -574,7 +586,13 @@ class BiliRepository(
         videoChoice: BiliStreamChoice? = null,
         audioChoice: BiliStreamChoice? = null
     ): BiliPlaySource {
-        val root = getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality)
+        // When a concrete track has been selected, re-query without qn so Bilibili
+        // returns the full candidate set again. CDN URLs expire; stored tasks keep
+        // only track identity and resolve fresh URLs for each retry.
+        val root = getPlayInfo(
+            video.bvid, video.aid, video.cid,
+            requestedQuality.takeIf { videoChoice == null && audioChoice == null }
+        )
         val data = checkedData(root)
         val dash = data.optJSONObject("dash")
         if (dash != null) {
@@ -593,8 +611,11 @@ class BiliRepository(
             } else {
                 videoCandidates.firstOrNull {
                     it.optInt("id") == videoChoice.id &&
-                        it.optString("codecs") == videoChoice.codecs &&
-                        it.optLong("bandwidth") == videoChoice.bandwidth
+                        BiliStreamChoice(
+                            id = it.optInt("id"),
+                            codecs = it.optString("codecs"),
+                            bandwidth = it.optLong("bandwidth")
+                        ).codecFamily() == videoChoice.codecFamily()
                 } ?: throw IOException("所选视频流已变化，请重新打开下载选项并选择规格")
             }
             val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
@@ -606,8 +627,11 @@ class BiliRepository(
             } else {
                 compatibleAudio.firstOrNull {
                     it.optInt("id") == audioChoice.id &&
-                        it.optString("codecs") == audioChoice.codecs &&
-                        it.optLong("bandwidth") == audioChoice.bandwidth
+                        BiliStreamChoice(
+                            id = it.optInt("id"),
+                            codecs = it.optString("codecs"),
+                            bandwidth = it.optLong("bandwidth")
+                        ).codecFamily() == audioChoice.codecFamily()
                 } ?: throw IOException("所选音频流已变化，请重新打开下载选项并选择规格")
             }
             if (audioCandidates.isNotEmpty() && compatibleAudio.isEmpty()) {
@@ -1177,7 +1201,7 @@ class BiliRepository(
         }
     }
 
-    private fun getPlayInfo(bvid: String?, aid: Long, cid: Long, quality: Int): JSONObject {
+    private fun getPlayInfo(bvid: String?, aid: Long, cid: Long, quality: Int?): JSONObject {
         // First mirror Bilimiao2's public HTTP playurl request. It uses the aid/cid
         // pair and does not require WBI signing when Bilibili returns a public stream.
         val publicParameters = BiliPlayUrlPolicy.publicPlayUrlParameters(aid, cid, quality)
@@ -1208,7 +1232,7 @@ class BiliRepository(
         val parameters = linkedMapOf<String, String>()
         if (!bvid.isNullOrBlank()) parameters["bvid"] = bvid else parameters["aid"] = aid.toString()
         parameters["cid"] = cid.toString()
-        parameters["qn"] = quality.toString()
+        quality?.let { parameters["qn"] = it.toString() }
         parameters["fnval"] = "4048"
         parameters["fnver"] = "0"
         parameters["force_host"] = "2"

@@ -15,21 +15,26 @@ internal object BiliPlayUrlPolicy {
     fun hasPlayableStream(dashVideoCount: Int, durlCount: Int): Boolean =
         dashVideoCount > 0 || durlCount > 0
 
+    /**
+     * BVD enumerates DASH renditions with qn omitted. The user-selected quality
+     * is supplied only when no stable stream choice has been stored (legacy tasks).
+     */
     fun publicPlayUrlParameters(
         aid: Long,
         cid: Long,
-        quality: Int
+        quality: Int?
     ): MutableMap<String, String> = linkedMapOf(
         "avid" to aid.toString(),
         "cid" to cid.toString(),
-        "qn" to quality.toString(),
         "fnval" to "4048",
         "fnver" to "0",
         "force_host" to "2",
         "type" to "",
         "otype" to "json",
         "fourk" to "1"
-    )
+    ).apply {
+        quality?.let { put("qn", it.toString()) }
+    }
 
     fun applyTryLook(
         parameters: MutableMap<String, String>,

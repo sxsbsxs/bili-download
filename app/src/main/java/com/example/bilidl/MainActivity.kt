@@ -1959,7 +1959,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private fun showDownloadOptions(
         video: BiliVideo,
         quality: Int,
-        options: BiliDownloadStreamOptions
+        options: BiliDownloadStreamOptions,
+        batchPages: List<BiliPage>? = null
     ) {
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -2015,7 +2016,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             id = View.generateViewId()
             text = if (options.direct) "视频文件（B站直连流）" else "视频 + 音频（MP4）"
             textSize = 14f
-            isEnabled = options.direct || options.videoChoices.isNotEmpty() || options.audioChoices.isEmpty()
+            isEnabled = options.direct || options.videoChoices.isNotEmpty()
         }
         val audioOption = android.widget.RadioButton(this).apply {
             id = View.generateViewId()
@@ -2082,9 +2083,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     options.videoChoices.getOrNull(videoSpinner.selectedItemPosition)
                 } else null
                 val audioChoice = options.audioChoices.getOrNull(audioSpinner.selectedItemPosition)
+                val selectedQuality = videoChoice?.id
+                    ?: video.qualities.firstOrNull()?.id
+                    ?: quality
                 val spec = DownloadSpec(
                     video = video,
-                    qualityId = quality,
+                    qualityId = selectedQuality,
                     audioOnly = audioOnly,
                     downloadDanmaku = danmakuOption.isChecked,
                     downloadSubtitles = subtitleOption.isChecked,
@@ -2092,14 +2096,19 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     videoStreamChoice = videoChoice,
                     audioStreamChoice = audioChoice
                 )
-                val id = "bili_" + System.currentTimeMillis()
-                downloadSpecs[id] = spec
-                persistDownloadSpec(id, spec)
-                addDownload(id, video.title, video.cover)
-                enqueueDownload(id, spec)
-                closeVideoDetail()
-                selectTab(1)
-                toast("已加入下载任务")
+                prefs.edit().putBoolean("audio_only", audioOnly).apply()
+                if (batchPages.isNullOrEmpty()) {
+                    val id = "bili_" + System.currentTimeMillis()
+                    downloadSpecs[id] = spec
+                    persistDownloadSpec(id, spec)
+                    addDownload(id, video.title, video.cover)
+                    enqueueDownload(id, spec)
+                    closeVideoDetail()
+                    selectTab(1)
+                    toast("已加入下载任务")
+                } else {
+                    enqueueBatchPages(video, batchPages, spec)
+                }
             }
             .show()
     }
@@ -2739,33 +2748,138 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         dialog.show()
     }
 
+    /**
+     * BVD-style batch flow: select streams from the first chosen P, then match
+     * the same quality/codec on each remaining P using a no-upgrade fallback.
+     */
     private fun downloadAllPages(video: BiliVideo, pages: List<BiliPage>) {
-        if (pages.isEmpty()) return
-        toast("正在逐P获取画质并准备下载任务…")
-        val audioOnly = prefs.getBoolean("audio_only", false)
+        val ordered = pages.distinctBy { it.cid }.sortedBy { it.pageNumber }
+        if (ordered.isEmpty()) return
+        toast("正在读取首个分P的实际音视频轨道…")
+        backgroundExecutor.execute {
+            val result = runCatching {
+                val repository = BiliRepository {
+                    SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+                }
+                val first = ordered.first()
+                val firstVideo = if (first.cid == video.cid) video
+                    else repository.inspect(pageUrl(video, first))
+                val quality = preferredQualityId(firstVideo.qualities)
+                val options = repository.getDownloadStreamOptions(firstVideo, quality)
+                Triple(firstVideo, quality, options)
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                result.onSuccess { (firstVideo, quality, options) ->
+                    showDownloadOptions(firstVideo, quality, options, batchPages = ordered)
+                }.onFailure { error ->
+                    toast("读取批量下载规格失败：" + (error.message ?: "未知错误"))
+                }
+            }
+        }
+    }
+
+    private fun enqueueBatchPages(
+        sourceVideo: BiliVideo,
+        pages: List<BiliPage>,
+        preferred: DownloadSpec
+    ) {
+        val ordered = pages.distinctBy { it.cid }.sortedBy { it.pageNumber }
+        if (ordered.isEmpty()) return
+        val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val progressDialog = ProgressDialog(this).apply {
+            setTitle("准备批量下载")
+            setMessage("正在逐P匹配音视频规格…")
+            setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
+            max = ordered.size
+            progress = 0
+            setCancelable(false)
+            setButton(
+                ProgressDialog.BUTTON_NEGATIVE,
+                "取消准备"
+            ) { _, _ -> cancelled.set(true) }
+        }
+        progressDialog.show()
+
         backgroundExecutor.execute {
             val prepared = ArrayList<DownloadSpec>()
             val skipped = ArrayList<Int>()
-            val repository = BiliRepository { SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this) }
-            for (page in pages.sortedBy { it.pageNumber }) {
+            val repository = BiliRepository {
+                SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+            }
+
+            for ((index, page) in ordered.withIndex()) {
+                if (cancelled.get()) break
                 try {
-                    // Fetch each P independently so its available quality list is respected.
-                    val partVideo = repository.inspect(pageUrl(video, page))
-                    val quality = preferredQualityId(partVideo.qualities)
-                    prepared += DownloadSpec(
+                    val partVideo = if (page.cid == sourceVideo.cid) sourceVideo
+                        else repository.inspect(pageUrl(sourceVideo, page))
+                    val options = repository.getDownloadStreamOptions(
                         partVideo,
-                        quality,
-                        audioOnly,
-                        prefs.getBoolean("danmaku", false),
-                        prefs.getBoolean("subtitles", false),
-                        false
+                        preferred.qualityId
                     )
+
+                    val videoChoice = if (options.direct) {
+                        null
+                    } else {
+                        BiliBatchStreamPolicy.selectCompatible(
+                            preferred.videoStreamChoice,
+                            options.videoChoices
+                        )
+                    }
+                    val audioChoice = if (preferred.audioStreamChoice == null) {
+                        null
+                    } else {
+                        BiliBatchStreamPolicy.selectCompatible(
+                            preferred.audioStreamChoice,
+                            options.audioChoices
+                        )
+                    }
+                    val missingVideo = preferred.videoStreamChoice != null &&
+                        !options.direct && videoChoice == null
+                    val missingAudio = preferred.audioStreamChoice != null && audioChoice == null
+                    val incompatibleDirect = options.direct &&
+                        (preferred.videoStreamChoice != null || preferred.audioStreamChoice != null)
+
+                    if (missingVideo || missingAudio || incompatibleDirect ||
+                        (!options.direct && options.videoChoices.isEmpty())
+                    ) {
+                        skipped += page.pageNumber
+                    } else {
+                        val targetQuality = videoChoice?.id
+                            ?: partVideo.qualities.firstOrNull()?.id
+                            ?: preferred.qualityId
+                        prepared += DownloadSpec(
+                            video = partVideo,
+                            qualityId = targetQuality,
+                            audioOnly = preferred.audioOnly,
+                            downloadDanmaku = preferred.downloadDanmaku,
+                            downloadSubtitles = preferred.downloadSubtitles,
+                            downloadCover = preferred.downloadCover,
+                            videoStreamChoice = videoChoice,
+                            audioStreamChoice = audioChoice
+                        )
+                    }
                 } catch (_: Exception) {
                     skipped += page.pageNumber
+                }
+
+                val completed = index + 1
+                runOnUiThread {
+                    if (!isFinishing && progressDialog.isShowing) {
+                        progressDialog.progress = completed
+                        progressDialog.setMessage(
+                            "正在匹配 P${page.pageNumber}（$completed/${ordered.size}）"
+                        )
+                    }
                 }
             }
 
             runOnUiThread {
+                if (progressDialog.isShowing) progressDialog.dismiss()
+                if (cancelled.get()) {
+                    toast("已取消批量准备，尚未加入新的下载任务")
+                    return@runOnUiThread
+                }
                 val batchId = System.currentTimeMillis()
                 prepared.forEachIndexed { index, spec ->
                     val id = "bili_" + batchId + "_" + spec.video.page + "_" + index
@@ -2782,9 +2896,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     append("已加入 ")
                     append(prepared.size)
                     append("/")
-                    append(pages.size)
+                    append(ordered.size)
                     append(" 个分P任务")
-                    if (skipped.isNotEmpty()) append("；跳过 P" + skipped.joinToString(", P"))
+                    if (skipped.isNotEmpty()) {
+                        append("；规格不兼容或解析失败，跳过 P")
+                        append(skipped.distinct().joinToString(", P"))
+                    }
                 }
                 toast(message)
             }

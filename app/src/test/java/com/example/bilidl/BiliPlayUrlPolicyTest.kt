@@ -25,6 +25,17 @@ class BiliPlayUrlPolicyTest {
     }
 
     @Test
+    fun unboundedCandidateEnumerationOmitsQnLikeBvd() {
+        val params = BiliPlayUrlPolicy.publicPlayUrlParameters(
+            aid = 123456L,
+            cid = 654321L,
+            quality = null
+        )
+        assertFalse(params.containsKey("qn"))
+        assertEquals("4048", params["fnval"])
+    }
+
+    @Test
     fun playerHeadersUseTheVideoSpecificReferer() {
         assertEquals("https://www.bilibili.com/av123456", BiliPlayUrlPolicy.videoReferer(123456L))
     }
