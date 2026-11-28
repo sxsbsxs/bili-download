@@ -63,6 +63,8 @@ class MainActivity : ComponentActivity() {
     private val loginViewModel: LoginViewModel by viewModels()
     private val settingsViewModel: SettingsViewModel by viewModels()
     private var downloadSourceHostValue: TextView? = null
+    private val downloadSourceModeIndicators = mutableMapOf<Int, TextView>()
+    private var downloadSourceCustomContent: View? = null
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
@@ -2035,19 +2037,8 @@ class MainActivity : ComponentActivity() {
             ), sideMargins(20)
         )
 
-        // 下载源：与 BVD 一样区分默认、自动探测和自定义 Host。
-        col.addView(
-            group(
-                "下载源",
-                choiceRow(
-                    "下载源策略",
-                    BiliDownloadSourcePolicy.KEY_MODE,
-                    arrayOf("默认（B站主/备用地址）", "自动探测（64 KB 测速）", "自定义 CDN Host"),
-                    BiliDownloadSourceMode.DEFAULT.code
-                ),
-                downloadSourceHostRow()
-            ), sideMargins(20)
-        )
+        // 下载源：沿用 BVD 的内嵌策略单选布局。
+        col.addView(buildDownloadSourceSettingsCard(), sideMargins(20))
 
         // 内容
         col.addView(
@@ -2083,6 +2074,86 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(24), 0, dp(32))
         }, match, wrap)
         return scroll
+    }
+
+    private fun buildDownloadSourceSettingsCard(): View {
+        downloadSourceModeIndicators.clear()
+        fun indicator(mode: BiliDownloadSourceMode): TextView =
+            TextView(this).apply {
+                textSize = 18f
+                text = "○"
+                setTextColor(sub)
+                gravity = Gravity.CENTER
+                downloadSourceModeIndicators[mode.code] = this
+            }
+
+        val defaultRow = settingRow(
+            "默认",
+            "优先使用 B站返回的主地址和备用地址",
+            indicator(BiliDownloadSourceMode.DEFAULT)
+        ) {
+            selectDownloadSourceMode(BiliDownloadSourceMode.DEFAULT)
+        }
+        val autoProbeRow = settingRow(
+            "自动探测",
+            "下载前并发读取最多 64 KB 样本，按实际速度排序；失败源仍保留回退",
+            indicator(BiliDownloadSourceMode.AUTO_PROBE)
+        ) {
+            selectDownloadSourceMode(BiliDownloadSourceMode.AUTO_PROBE)
+        }
+        val customHostRow = settingRow(
+            "自定义 Host",
+            "优先尝试指定 CDN 节点，失败后回退 B站原始地址",
+            indicator(BiliDownloadSourceMode.CUSTOM_HOST)
+        ) {
+            selectDownloadSourceMode(BiliDownloadSourceMode.CUSTOM_HOST)
+        }
+
+        val customContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(downloadSourceHostRow(), match, wrap)
+            addView(
+                settingRow(
+                    "可用 Host",
+                    "选择 BVD 常用的 B站 CDN 镜像节点",
+                    valueText("选择  ›")
+                ) { showDownloadSourcePresetPicker() },
+                match,
+                wrap
+            )
+        }
+        downloadSourceCustomContent = customContent
+
+        val card = group(
+            "下载源",
+            defaultRow,
+            autoProbeRow,
+            customHostRow,
+            customContent
+        )
+        refreshDownloadSourceModeUi()
+        return card
+    }
+
+    private fun selectDownloadSourceMode(mode: BiliDownloadSourceMode) {
+        settingsViewModel.setInt(BiliDownloadSourcePolicy.KEY_MODE, mode.code)
+        refreshDownloadSourceModeUi()
+    }
+
+    private fun refreshDownloadSourceModeUi() {
+        val selected = BiliDownloadSourceMode.fromCode(
+            settingsViewModel.getInt(
+                BiliDownloadSourcePolicy.KEY_MODE,
+                BiliDownloadSourceMode.DEFAULT.code
+            )
+        )
+        downloadSourceModeIndicators.forEach { (code, view) ->
+            val isSelected = code == selected.code
+            view.text = if (isSelected) "●" else "○"
+            view.setTextColor(if (isSelected) pink else sub)
+        }
+        downloadSourceCustomContent?.visibility =
+            if (selected == BiliDownloadSourceMode.CUSTOM_HOST) View.VISIBLE else View.GONE
     }
 
     private fun downloadSourceHostRow(): View {
