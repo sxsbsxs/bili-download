@@ -1,6 +1,9 @@
 package com.example.bilidl
 
 import android.app.PictureInPictureParams
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.media.MediaPlayer
@@ -11,6 +14,8 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Rational
 import android.view.Gravity
+import android.view.View
+import android.widget.PopupMenu
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.MediaController
@@ -30,6 +35,45 @@ class LocalPlaybackActivity : ComponentActivity() {
     private var durationText: TextView? = null
     private var isPrepared = false
     private var pipAspectRatio = Rational(16, 9)
+    private var playbackSpeed = 1f
+    private var speedLabel: TextView? = null
+    private var audioManager: AudioManager? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
+    private var resumeAfterTransientFocusLoss = false
+
+    private val audioFocusListener = AudioManager.OnAudioFocusChangeListener { change ->
+        val player = mediaPlayer
+        when (change) {
+            AudioManager.AUDIOFOCUS_GAIN -> {
+                player?.setVolume(1f, 1f)
+                if (resumeAfterTransientFocusLoss && isPrepared) {
+                    runCatching { player?.start() }
+                    playButton?.text = "暂停"
+                    handler.removeCallbacks(progressUpdater)
+                    handler.post(progressUpdater)
+                }
+                resumeAfterTransientFocusLoss = false
+            }
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+            AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
+                resumeAfterTransientFocusLoss = player?.isPlaying == true
+                if (resumeAfterTransientFocusLoss) {
+                    runCatching { player?.pause() }
+                    playButton?.text = "继续播放"
+                    handler.removeCallbacks(progressUpdater)
+                } else {
+                    player?.setVolume(0.2f, 0.2f)
+                }
+            }
+            AudioManager.AUDIOFOCUS_LOSS -> {
+                resumeAfterTransientFocusLoss = false
+                if (player?.isPlaying == true) runCatching { player.pause() }
+                playButton?.text = "播放"
+                handler.removeCallbacks(progressUpdater)
+                abandonAudioFocus()
+            }
+        }
+    }
 
     private val handler = Handler(Looper.getMainLooper())
     private val progressUpdater = object : Runnable {
@@ -75,6 +119,7 @@ class LocalPlaybackActivity : ComponentActivity() {
                 val safeRatio = ratio.coerceIn(1.0 / 2.39, 2.39)
                 pipAspectRatio = Rational((safeRatio * 1000).toInt(), 1000)
             }
+            applyPlaybackSpeed()
             player.start()
         }
         player.setOnErrorListener { _, _, _ ->
@@ -157,6 +202,17 @@ class LocalPlaybackActivity : ComponentActivity() {
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
             }, LinearLayout.LayoutParams(0, -2, 1f))
+            speedLabel = TextView(this@LocalPlaybackActivity).apply {
+                text = PlaybackSpeedPolicy.label(playbackSpeed)
+                textSize = 12f
+                typeface = Typeface.DEFAULT_BOLD
+                gravity = Gravity.CENTER
+                setTextColor(if (dark) Color.WHITE else Color.rgb(38, 43, 52))
+                setPadding(dp(10), dp(8), dp(4), dp(8))
+                setOnClickListener { showPlaybackSpeedMenu(this) }
+                contentDescription = "播放速度"
+            }
+            addView(speedLabel, LinearLayout.LayoutParams(dp(54), dp(44)))
         }
 
     private fun createAudioPlayer(uri: Uri) {
@@ -166,6 +222,7 @@ class LocalPlaybackActivity : ComponentActivity() {
             player.setDataSource(this, uri)
             player.setOnPreparedListener {
                 isPrepared = true
+                applyPlaybackSpeed()
                 progressBar?.max = it.duration.coerceAtLeast(1)
                 durationText?.text = "00:00 / " + formatTime(it.duration)
                 playButton?.text = "播放"
@@ -174,6 +231,8 @@ class LocalPlaybackActivity : ComponentActivity() {
             player.setOnCompletionListener {
                 playButton?.text = "播放"
                 progressBar?.progress = 0
+                handler.removeCallbacks(progressUpdater)
+                abandonAudioFocus()
             }
             player.setOnErrorListener { _, _, _ ->
                 playButton?.text = "无法播放"
@@ -204,12 +263,79 @@ class LocalPlaybackActivity : ComponentActivity() {
             player.pause()
             playButton?.text = "继续播放"
             handler.removeCallbacks(progressUpdater)
+            abandonAudioFocus()
         } else {
-            player.start()
+            if (!requestAudioFocus()) {
+                android.widget.Toast.makeText(this, "当前无法获取音频焦点", android.widget.Toast.LENGTH_SHORT).show()
+                return
+            }
+            runCatching { player.start() }.onFailure {
+                android.widget.Toast.makeText(this, "音频暂时无法播放", android.widget.Toast.LENGTH_SHORT).show()
+                abandonAudioFocus()
+                return
+            }
+            applyPlaybackSpeed()
             playButton?.text = "暂停"
             handler.removeCallbacks(progressUpdater)
             handler.post(progressUpdater)
         }
+    }
+
+    private fun showPlaybackSpeedMenu(anchor: View) {
+        PopupMenu(this, anchor).apply {
+            PlaybackSpeedPolicy.SUPPORTED.forEach { speed ->
+                menu.add(PlaybackSpeedPolicy.label(speed)).setOnMenuItemClickListener {
+                    setPlaybackSpeed(speed)
+                    true
+                }
+            }
+            show()
+        }
+    }
+
+    private fun setPlaybackSpeed(speed: Float) {
+        playbackSpeed = speed
+        speedLabel?.text = PlaybackSpeedPolicy.label(speed)
+        applyPlaybackSpeed()
+    }
+
+    private fun applyPlaybackSpeed() {
+        if (!isPrepared && mediaPlayer != null) return
+        runCatching {
+            videoView?.setPlaybackParams(videoView?.playbackParams?.setSpeed(playbackSpeed) ?: return)
+        }
+        if (isPrepared) {
+            runCatching {
+                mediaPlayer?.setPlaybackParams(
+                    mediaPlayer?.playbackParams?.setSpeed(playbackSpeed) ?: return
+                )
+            }
+        }
+    }
+
+    private fun requestAudioFocus(): Boolean {
+        val manager = getSystemService(AudioManager::class.java) ?: return true
+        audioManager = manager
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setOnAudioFocusChangeListener(audioFocusListener, handler)
+            .setWillPauseWhenDucked(true)
+            .build()
+        audioFocusRequest = request
+        return manager.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+    }
+
+    private fun abandonAudioFocus() {
+        val manager = audioManager ?: return
+        val request = audioFocusRequest ?: return
+        runCatching { manager.abandonAudioFocusRequest(request) }
+        audioFocusRequest = null
+        resumeAfterTransientFocusLoss = false
     }
 
     private fun rounded(color: Int, radius: Int): android.graphics.drawable.Drawable =
@@ -246,6 +372,7 @@ class LocalPlaybackActivity : ComponentActivity() {
     override fun onDestroy() {
         handler.removeCallbacks(progressUpdater)
         videoView?.stopPlayback()
+        abandonAudioFocus()
         mediaPlayer?.release()
         mediaPlayer = null
         super.onDestroy()
