@@ -488,15 +488,17 @@ internal object SegmentedHttpDownloader {
         return BiliHttpException(status, "$operation [$host]", detail)
     }
 
-    private fun openConnection(url: String, cookie: String?, referer: String): HttpURLConnection {
+    private fun openConnection(
+        url: String,
+        cookie: String?,
+        @Suppress("UNUSED_PARAMETER") referer: String
+    ): HttpURLConnection {
         return (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
             readTimeout = 45_000
             instanceFollowRedirects = true
             // Use the same browser headers and guest-cookie fallback as BVD.
             // BVD's DOWNLOAD_HEADERS use the mobile site as both Origin and Referer.
-            @Suppress("UNUSED_VARIABLE")
-            val requestReferer = referer
             BiliCdnRequestPolicy.configure(this, cookie)
         }
     }
