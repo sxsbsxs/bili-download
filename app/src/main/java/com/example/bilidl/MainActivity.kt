@@ -4014,6 +4014,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private fun showLogin() {
         cookieErrTv.text = ""
         loginPage.visibility = View.VISIBLE
+        loginPage.bringToFront()
         selectLoginSeg(0)
     }
 
