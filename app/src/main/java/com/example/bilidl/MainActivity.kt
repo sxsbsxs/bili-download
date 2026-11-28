@@ -35,7 +35,6 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.FileProvider
-import com.sxsbsxs.bilivdl.ui.OnboardingDialogFragment
 import java.io.File
 import android.content.ClipboardManager
 import android.content.ClipData
@@ -3313,23 +3312,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             }
         }
 
-        if (
-            savedInstanceState == null &&
-            !prefs.getBoolean(OnboardingDialogFragment.KEY_COMPLETED, false)
-        ) {
-            rootFrame.post {
-                if (
-                    !isFinishing &&
-                    !isDestroyed &&
-                    supportFragmentManager.findFragmentByTag(OnboardingDialogFragment.TAG) == null
-                ) {
-                    OnboardingDialogFragment().show(
-                        supportFragmentManager,
-                        OnboardingDialogFragment.TAG
-                    )
-                }
-            }
-        }
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -3383,13 +3365,14 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             1 -> com.sxsbsxs.bilivdl.ui.R.id.nav_downloads
             else -> com.sxsbsxs.bilivdl.ui.R.id.nav_profile
         }
+
+        // Check the menu item directly. Setting BottomNavigationView.selectedItemId here
+        // dispatches OnItemSelectedListener again and recursively re-enters selectTab().
         val navigation = mainContainer.findViewById<BottomNavigationView>(
             com.sxsbsxs.bilivdl.ui.R.id.bottom_navigation
         )
-        if (navigation.selectedItemId != targetId) {
-            navigation.selectedItemId = targetId
-            return true
-        }
+        navigation.menu.findItem(targetId).isChecked = true
+
         val tag = when (i) {
             0 -> "bilivdl-home"
             1 -> "bilivdl-downloads"
