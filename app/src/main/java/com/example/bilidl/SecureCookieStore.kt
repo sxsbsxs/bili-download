@@ -11,7 +11,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Encrypts the user's SESSDATA with an AES key held by Android Keystore.
+ * Encrypts the full Bilibili cookie header with an AES key held by Android Keystore.
  * The raw cookie is never written to a plaintext preference or log.
  */
 object SecureCookieStore {
@@ -58,7 +58,7 @@ object SecureCookieStore {
     /** Returns the SESSDATA value from either a raw value or a Cookie header. */
     fun normalizeCookie(rawCookie: String): String {
         val trimmed = rawCookie.trim()
-        val match = Regex("""(?:^|;\\s*)SESSDATA=([^;]+)""").find(trimmed)
+        val match = Regex("""(?:^|;\s*)SESSDATA=([^;]+)""").find(trimmed)
         return match?.groupValues?.get(1) ?: if ('=' !in trimmed) trimmed else ""
     }
 
@@ -85,7 +85,7 @@ object SecureCookieStore {
             if (name.isBlank() ||
                 ignoredAttributes.any { it.equals(name, ignoreCase = true) } ||
                 !name.matches(Regex("[A-Za-z0-9_]+")) ||
-                value.any { it == '\\r' || it == '\\n' }
+                value.any { it == '\r' || it == '\n' }
             ) continue
             pairs[name] = value
         }
