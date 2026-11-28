@@ -10,6 +10,7 @@ interface BiliVdlUiHost {
     fun openVideo(video: BiliVdlVideo)
     fun openUserSpace(mid: Long)
     fun openDanmakuSettings()
+    fun chooseDownloadDirectory()
     fun navigateToDiscover()
     fun loadDownloadTasks(callback: (List<BiliVdlDownloadTask>) -> Unit)
     fun pauseDownload(taskId: String)
