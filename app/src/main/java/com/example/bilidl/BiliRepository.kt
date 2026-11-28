@@ -715,17 +715,23 @@ class BiliRepository(
 
     private fun downloadCover(url: String?): Bitmap? {
         if (url.isNullOrBlank()) return null
-        return try {
-            val connection = URL(url).openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 15_000
-            connection.setRequestProperty("User-Agent", userAgent)
-            connection.setRequestProperty("Referer", "https://www.bilibili.com/")
-            connection.inputStream.use { BitmapFactory.decodeStream(it) }
-        } finally {
-            connection.disconnect()
+        val secureUrl = when {
+            url.startsWith("//") -> "https:$url"
+            url.startsWith("http://", ignoreCase = true) -> "https://" + url.substringAfter("://")
+            else -> url
         }
+        return try {
+            val connection = URL(secureUrl).openConnection() as HttpURLConnection
+            try {
+                connection.connectTimeout = 10_000
+                connection.readTimeout = 15_000
+                connection.instanceFollowRedirects = true
+                connection.setRequestProperty("User-Agent", userAgent)
+                connection.setRequestProperty("Referer", "https://www.bilibili.com/")
+                connection.inputStream.use { BitmapFactory.decodeStream(it) }
+            } finally {
+                connection.disconnect()
+            }
         } catch (_: Exception) {
             null
         }
