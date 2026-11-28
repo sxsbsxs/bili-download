@@ -140,6 +140,7 @@ class BiliWebLoginActivity : ComponentActivity() {
         if (completed || !BiliWebLoginPolicy.isCallbackUrl(url)) return completed
 
         val manager = CookieManager.getInstance()
+        manager.flush()
         val cookieHeader = BiliWebLoginPolicy.mergeCookieHeaders(
             listOf(
                 manager.getCookie("https://bilibili.com"),
