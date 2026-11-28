@@ -2875,7 +2875,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 videoSpinner.setSelection(
                     options.videoChoices.indexOfFirst {
                         it.id == preferred.videoStreamChoice?.id &&
-                            it.codecs == preferred.videoStreamChoice?.codecs
+                            (preferred.videoStreamChoice?.let(it::sameCodecAs) == true)
                     }.coerceAtLeast(0)
                 )
                 body.addView(videoSpinner, LinearLayout.LayoutParams(match, dp(48)))
@@ -2890,7 +2890,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 audioSpinner.setSelection(
                     options.audioChoices.indexOfFirst {
                         it.id == preferred.audioStreamChoice?.id &&
-                            it.codecs == preferred.audioStreamChoice?.codecs
+                            (preferred.audioStreamChoice?.let(it::sameCodecAs) == true)
                     }.coerceAtLeast(0)
                 )
                 body.addView(audioSpinner, LinearLayout.LayoutParams(match, dp(48)))

@@ -67,7 +67,8 @@ data class BiliStreamChoice(
     val bandwidth: Long,
     val width: Int = 0,
     val height: Int = 0,
-    val frameRate: String = ""
+    val frameRate: String = "",
+    val codecId: Long = 0L
 ) {
     val label: String
         get() {
@@ -99,8 +100,13 @@ data class BiliStreamChoice(
         else -> codecs.substringBefore('.').lowercase(Locale.ROOT)
     }
 
+    fun sameCodecAs(other: BiliStreamChoice): Boolean =
+        if (codecId > 0L && other.codecId > 0L) codecId == other.codecId
+        else codecFamily() == other.codecFamily()
+
     fun toStorage(): String = JSONObject()
         .put("id", id)
+        .put("codecId", codecId)
         .put("codecs", codecs)
         .put("bandwidth", bandwidth)
         .put("width", width)
@@ -114,6 +120,7 @@ data class BiliStreamChoice(
             val json = JSONObject(raw)
             BiliStreamChoice(
                 id = json.optInt("id"),
+                codecId = json.optLong("codecId"),
                 codecs = json.optString("codecs"),
                 bandwidth = json.optLong("bandwidth"),
                 width = json.optInt("width"),
@@ -561,6 +568,7 @@ class BiliRepository(
                 codecs = item.optString("codecs"),
                 bandwidth = item.optLong("bandwidth"),
                 width = item.optInt("width"),
+                codecId = item.optLong("codecid"),
                 height = item.optInt("height"),
                 frameRate = item.optString("frameRate")
             )
@@ -573,7 +581,8 @@ class BiliRepository(
             BiliStreamChoice(
                 id = item.optInt("id"),
                 codecs = codecs,
-                bandwidth = item.optLong("bandwidth")
+                bandwidth = item.optLong("bandwidth"),
+                codecId = item.optLong("codecid")
             )
         }.distinctBy { Triple(it.id, it.codecs, it.bandwidth) }
             .sortedByDescending { it.bandwidth }
@@ -615,8 +624,9 @@ class BiliRepository(
                         BiliStreamChoice(
                             id = it.optInt("id"),
                             codecs = it.optString("codecs"),
-                            bandwidth = it.optLong("bandwidth")
-                        ).codecFamily() == videoChoice.codecFamily()
+                            bandwidth = it.optLong("bandwidth"),
+                            codecId = it.optLong("codecid")
+                        ).sameCodecAs(videoChoice)
                 } ?: throw IOException("所选视频流已变化，请重新打开下载选项并选择规格")
             }
             val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
@@ -633,8 +643,9 @@ class BiliRepository(
                         BiliStreamChoice(
                             id = it.optInt("id"),
                             codecs = it.optString("codecs"),
-                            bandwidth = it.optLong("bandwidth")
-                        ).codecFamily() == audioChoice.codecFamily()
+                            bandwidth = it.optLong("bandwidth"),
+                            codecId = it.optLong("codecid")
+                        ).sameCodecAs(audioChoice)
                 } ?: throw IOException("所选音频流已变化，请重新打开下载选项并选择规格")
             }
             if (includeAudio && audioCandidates.isNotEmpty() && compatibleAudio.isEmpty()) {

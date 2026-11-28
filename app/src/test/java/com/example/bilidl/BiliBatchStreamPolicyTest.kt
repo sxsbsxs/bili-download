@@ -5,8 +5,23 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class BiliBatchStreamPolicyTest {
-    private fun stream(id: Int, codec: String, bandwidth: Long = 1_000L) =
-        BiliStreamChoice(id = id, codecs = codec, bandwidth = bandwidth)
+    private fun stream(
+        id: Int,
+        codec: String,
+        bandwidth: Long = 1_000L,
+        codecId: Long = when {
+            codec.startsWith("avc", true) -> 7L
+            codec.startsWith("hev", true) || codec.startsWith("hvc", true) -> 12L
+            codec.startsWith("av01", true) -> 13L
+            codec.contains("mp4a", true) -> 0L
+            else -> 0L
+        }
+    ) = BiliStreamChoice(
+        id = id,
+        codecs = codec,
+        bandwidth = bandwidth,
+        codecId = codecId
+    )
 
     @Test
     fun exactMatchRequiresSameRepresentationIdAndCodec() {
@@ -19,6 +34,18 @@ class BiliBatchStreamPolicyTest {
             )
         )
         assertEquals(2_000_000L, chosen?.bandwidth)
+    }
+
+    @Test
+    fun exactCodecIdTakesPrecedenceOverDifferentCodecStringProfiles() {
+        val chosen = BiliBatchStreamPolicy.selectExact(
+            stream(80, "avc1.640028", codecId = 7L),
+            listOf(
+                stream(80, "avc1.640029", codecId = 7L),
+                stream(80, "hev1.1.6.L120.90", codecId = 12L)
+            )
+        )
+        assertEquals("avc1.640029", chosen?.codecs)
     }
 
     @Test

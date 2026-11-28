@@ -13,7 +13,7 @@ internal object BiliBatchStreamPolicy {
     ): BiliStreamChoice? {
         if (preferred == null) return null
         return available.firstOrNull {
-            it.id == preferred.id && it.codecs == preferred.codecs
+            it.id == preferred.id && it.sameCodecAs(preferred)
         }
     }
 
@@ -22,14 +22,12 @@ internal object BiliBatchStreamPolicy {
         available: List<BiliStreamChoice>
     ): BiliStreamChoice? {
         if (preferred == null || available.isEmpty()) return null
-        val preferredFamily = preferred.codecFamily()
-
         available.firstOrNull {
-            it.id == preferred.id && it.codecFamily() == preferredFamily
+            it.id == preferred.id && it.sameCodecAs(preferred)
         }?.let { return it }
 
         available.asSequence()
-            .filter { it.codecFamily() == preferredFamily && it.id <= preferred.id }
+            .filter { it.sameCodecAs(preferred) && it.id <= preferred.id }
             .maxWithOrNull(compareBy<BiliStreamChoice> { it.id }.thenBy { it.bandwidth })
             ?.let { return it }
 
