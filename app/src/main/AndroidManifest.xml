@@ -19,6 +19,9 @@
             android:foregroundServiceType="dataSync"
             tools:node="merge" />
         <activity
+            android:name=".BiliWebLoginActivity"
+            android:exported="false" />
+        <activity
             android:name=".MainActivity"
             android:configChanges="keyboardHidden|orientation|screenSize"
             android:exported="true">
