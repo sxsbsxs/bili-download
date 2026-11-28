@@ -411,6 +411,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private fun showVideoDetail(video: BiliVideo, searchItem: BiliSearchVideo?) {
         say("", sub)
         parsedVideo = video
+        detailDanmakuVisible = prefs.getBoolean("danmaku_display_enabled", true)
         selectedQualityId = preferredQualityId(video.qualities)
         detailSearchItem = searchItem
         commentsRequestToken++
@@ -494,7 +495,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         val avatar = content.findViewById<ImageView>(
             com.sxsbsxs.bilivdl.ui.R.id.owner_avatar
         )
+        val ownerName = content.findViewById<TextView>(com.sxsbsxs.bilivdl.ui.R.id.owner_name)
+        val openOwnerSpace = View.OnClickListener { openUserSpacePage(video.ownerMid) }
+        ownerName.setOnClickListener(openOwnerSpace)
+        ownerName.isClickable = video.ownerMid > 0L
         val avatarUrl = video.ownerAvatarUrl.orEmpty()
+        avatar.setOnClickListener(openOwnerSpace)
+        avatar.isClickable = video.ownerMid > 0L
         if (avatarUrl.isNotBlank()) {
             Glide.with(this)
                 .load(avatarUrl)
@@ -643,6 +650,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         updateDanmakuButton()
         danmakuButton.setOnClickListener {
             detailDanmakuVisible = !detailDanmakuVisible
+            prefs.edit().putBoolean("danmaku_display_enabled", detailDanmakuVisible).apply()
             detailDanmakuOverlay?.danmakuEnabled = detailDanmakuVisible
             updateDanmakuButton()
         }
@@ -753,6 +761,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             onLike = { uiComment ->
                 detailComments.firstOrNull { it.id == uiComment.id }?.let { comment ->
                     parsedVideo?.let { currentVideo -> performCommentLike(currentVideo, comment) }
+                }
+            },
+            onUserProfile = { uiComment -> openUserSpacePage(uiComment.userMid) },
+            onReport = { uiComment ->
+                detailComments.firstOrNull { it.id == uiComment.id }?.let { comment ->
+                    parsedVideo?.let { currentVideo -> showCommentReportDialog(currentVideo, comment) }
                 }
             }
         )
@@ -1093,7 +1107,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
 
     private fun showDanmakuDisplaySettings() {
-        val overlay = detailDanmakuOverlay ?: return
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(20), dp(8), dp(20), dp(4))
@@ -1151,10 +1164,12 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 setTextColor(ink)
                 isChecked = prefs.getBoolean(key, true)
             }
+        val enabled = settingCheck("danmaku_display_enabled", "启用弹幕")
         val rolling = settingCheck("danmaku_show_scrolling", "滚动弹幕")
         val top = settingCheck("danmaku_show_top", "顶部弹幕")
         val bottom = settingCheck("danmaku_show_bottom", "底部弹幕")
         val advanced = settingCheck("danmaku_show_advanced", "高级动画弹幕")
+        content.addView(enabled)
         content.addView(rolling)
         content.addView(top)
         content.addView(bottom)
@@ -1169,12 +1184,15 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     .putFloat("danmaku_font_scale", 0.5f + fontSlider.progress / 100f)
                     .putFloat("danmaku_opacity", opacitySlider.progress / 100f)
                     .putFloat("danmaku_speed", 0.1f + speedSlider.progress / 10f)
+                    .putBoolean("danmaku_display_enabled", enabled.isChecked)
                     .putBoolean("danmaku_show_scrolling", rolling.isChecked)
                     .putBoolean("danmaku_show_top", top.isChecked)
                     .putBoolean("danmaku_show_bottom", bottom.isChecked)
                     .putBoolean("danmaku_show_advanced", advanced.isChecked)
                     .apply()
-                applyDanmakuDisplaySettings(overlay)
+                detailDanmakuVisible = enabled.isChecked
+                detailDanmakuOverlay?.danmakuEnabled = detailDanmakuVisible
+                detailDanmakuOverlay?.let(::applyDanmakuDisplaySettings)
                 toast("弹幕显示设置已应用")
             }
             .show()
@@ -1455,7 +1473,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                 text = comment.message,
                 likes = comment.likeCount,
                 replyCount = comment.replyCount,
-                liked = comment.likedByMe
+                liked = comment.likedByMe,
+                avatarUrl = comment.avatarUrl,
+                userMid = comment.userMid
             )
         }
         detailCommentsAdapter?.submit(mapped)
@@ -3638,7 +3658,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         duration = item.duration,
                         bvid = item.bvid,
                         aid = item.aid,
-                        description = item.description
+                        description = item.description,
+                        authorMid = item.authorMid,
+                        authorAvatarUrl = item.authorAvatarUrl
                     )
                 }
             }
@@ -3665,7 +3687,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                             duration = formatDuration(video.durationSeconds),
                             bvid = video.bvid.orEmpty(),
                             aid = video.aid,
-                            description = video.description
+                            description = video.description,
+                            authorMid = video.ownerMid,
+                            authorAvatarUrl = video.ownerAvatarUrl
                         )
                     )
                 } else {
@@ -3678,7 +3702,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                             duration = item.duration,
                             bvid = item.bvid,
                             aid = item.aid,
-                            description = item.description
+                            description = item.description,
+                            authorMid = item.authorMid,
+                            authorAvatarUrl = item.authorAvatarUrl
                         )
                     }
                 }
@@ -3690,6 +3716,14 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     override fun openVideo(video: BiliVdlVideo) {
         val identity = video.bvid.takeIf { it.isNotBlank() } ?: ("av" + video.aid)
         onParseClicked("https://www.bilibili.com/video/" + identity)
+    }
+
+    override fun openUserSpace(mid: Long) {
+        openUserSpacePage(mid)
+    }
+
+    override fun openDanmakuSettings() {
+        showDanmakuDisplaySettings()
     }
 
     override fun navigateToDiscover() {
@@ -3789,7 +3823,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     status = if (profile.vip) "账号已连接 · 大会员" else "账号已连接",
                     loggedIn = true,
                     avatarUrl = profile.avatarUrl,
-                    signature = profile.signature
+                    signature = profile.signature,
+                    mid = profile.mid
                 )
             }.getOrElse { error ->
                 SecureCookieStore.clear(this)
@@ -3858,6 +3893,14 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     override fun checkForUpdates() {
         checkLatestGitHubRelease()
+    }
+
+    private fun openUserSpacePage(mid: Long) {
+        if (mid <= 0L) {
+            toast("B站没有返回这个用户的 UID")
+            return
+        }
+        openExternalPage("https://space.bilibili.com/$mid")
     }
 
     private fun openExternalPage(url: String) {
