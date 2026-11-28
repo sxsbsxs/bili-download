@@ -1113,6 +1113,9 @@ class MainActivity : ComponentActivity() {
         refreshAccountUi()
         hideLogin()
         toast("登录成功，欢迎 $name")
+        if (::homeFeedList.isInitialized && homeFeedType == BiliHomeFeedType.RECOMMEND) {
+            loadHomeFeed(reset = true)
+        }
     }
 
     fun loginFailed(message: String) = runOnUiThread {
@@ -1124,6 +1127,7 @@ class MainActivity : ComponentActivity() {
     fun logoutDone() = runOnUiThread {
         loggedIn = false; userName = ""; userAvatar = null; userVip = false
         refreshAccountUi()
+        if (::homeFeedList.isInitialized) loadHomeFeed(reset = true)
         toast("已退出登录")
     }
 
@@ -1903,6 +1907,9 @@ class MainActivity : ComponentActivity() {
             textSize = 12f
             setTextColor(sub)
             setPadding(dp(4), dp(8), dp(4), dp(8))
+            setOnClickListener {
+                if (homeFeedType == BiliHomeFeedType.RECOMMEND && !loggedIn) showLogin()
+            }
         }
         feedCard.addView(homeFeedStatus)
 
