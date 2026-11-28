@@ -3289,7 +3289,8 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         rootFrame.addView(loginPage, FrameLayout.LayoutParams(match, match))
         setContentView(rootFrame)
 
-        bottomNavigation.selectedItemId = com.sxsbsxs.bilivdl.ui.R.id.nav_home
+        // Initialize the first fragment through the same non-recursive path as later tab taps.
+        selectTab(0)
         refreshAccountUi()
         restoreDownloadTasks()
         restoreRoomTasks()
