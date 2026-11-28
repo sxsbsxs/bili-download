@@ -59,6 +59,10 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.5")
     implementation("com.google.zxing:core:3.5.3")
 
+    // Native in-app playback for Bilibili DASH audio/video streams.
+    implementation("androidx.media3:media3-exoplayer:1.11.1")
+    implementation("androidx.media3:media3-ui:1.11.1")
+
     testImplementation("junit:junit:4.13.2")
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("androidx.room:room-testing:2.8.4")
