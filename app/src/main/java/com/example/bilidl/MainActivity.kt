@@ -1123,7 +1123,9 @@ class MainActivity : ComponentActivity() {
         refreshAccountUi()
         hideLogin()
         toast("登录成功，欢迎 $name")
-        if (::homeFeedList.isInitialized && homeFeedType == BiliHomeFeedType.RECOMMEND) {
+        if (::homeFeedList.isInitialized && homeFeedExpanded &&
+            homeFeedType == BiliHomeFeedType.RECOMMEND
+        ) {
             loadHomeFeed(reset = true)
         }
     }
@@ -1137,7 +1139,7 @@ class MainActivity : ComponentActivity() {
     fun logoutDone() = runOnUiThread {
         loggedIn = false; userName = ""; userAvatar = null; userVip = false
         refreshAccountUi()
-        if (::homeFeedList.isInitialized) loadHomeFeed(reset = true)
+        if (::homeFeedList.isInitialized && homeFeedExpanded) loadHomeFeed(reset = true)
         toast("已退出登录")
     }
 
@@ -1196,6 +1198,9 @@ class MainActivity : ComponentActivity() {
     // 首页推荐 / 热门
     private lateinit var homeFeedList: LinearLayout
     private lateinit var homeFeedStatus: TextView
+    private lateinit var homeFeedContent: LinearLayout
+    private lateinit var homeFeedToggle: TextView
+    private var homeFeedExpanded = false
     private lateinit var homeFeedMore: TextView
     private lateinit var homeFeedRecommendTab: TextView
     private lateinit var homeFeedPopularTab: TextView
@@ -1490,7 +1495,6 @@ class MainActivity : ComponentActivity() {
         val savedTree = settingsViewModel.getString(KEY_DOWNLOAD_TREE_URI)
         setDownloadPathText(if (savedTree.isBlank()) "Download/BiliDl" else downloadFolderLabel(Uri.parse(savedTree)))
         loginViewModel.restoreSession()
-        loadHomeFeed(reset = true)
     }
 
     private fun handleIncomingShare(incoming: Intent?) {
@@ -1965,7 +1969,7 @@ class MainActivity : ComponentActivity() {
         col.addView(resultCard, sideMargins(12))
 
         val feedCard = card().apply {
-            setPadding(dp(14), dp(14), dp(14), dp(12))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
         }
         val feedHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1973,26 +1977,48 @@ class MainActivity : ComponentActivity() {
         }
         feedHeader.addView(TextView(this).apply {
             text = "发现视频"
-            textSize = 17f
+            textSize = 15f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(ink)
         }, LinearLayout.LayoutParams(0, wrap, 1f))
-        feedHeader.addView(chip("站内搜索", false).apply {
+        homeFeedToggle = chip("展开", false).apply {
+            setOnClickListener {
+                homeFeedExpanded = !homeFeedExpanded
+                homeFeedContent.visibility = if (homeFeedExpanded) View.VISIBLE else View.GONE
+                text = if (homeFeedExpanded) "收起" else "展开"
+                if (homeFeedExpanded && homeFeedItems.isEmpty() && !homeFeedLoading) {
+                    loadHomeFeed(reset = true)
+                }
+            }
+        }
+        feedHeader.addView(homeFeedToggle, LinearLayout.LayoutParams(wrap, dp(36)))
+        feedCard.addView(feedHeader, LinearLayout.LayoutParams(match, dp(40)))
+
+        homeFeedContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val feedActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, dp(6))
+        }
+        feedActions.addView(chip("站内搜索", false).apply {
             setOnClickListener {
                 searchLauncher.launch(Intent(this@MainActivity, SearchActivity::class.java))
             }
         }, LinearLayout.LayoutParams(wrap, dp(36)))
-        feedHeader.addView(chip("刷新", false).apply {
+        feedActions.addView(chip("刷新", false).apply {
             setOnClickListener { loadHomeFeed(reset = true) }
         }, LinearLayout.LayoutParams(wrap, dp(36)).apply {
             leftMargin = dp(6)
         })
-        feedCard.addView(feedHeader, LinearLayout.LayoutParams(match, dp(40)))
+        homeFeedContent.addView(feedActions, LinearLayout.LayoutParams(match, wrap))
 
         val feedTabRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(7), 0, dp(8))
+            setPadding(0, dp(2), 0, dp(8))
         }
         homeFeedRecommendTab = TextView(this).apply {
             text = "推荐"
@@ -2010,10 +2036,10 @@ class MainActivity : ComponentActivity() {
         }
         feedTabRow.addView(homeFeedRecommendTab)
         feedTabRow.addView(homeFeedPopularTab)
-        feedCard.addView(feedTabRow)
+        homeFeedContent.addView(feedTabRow)
 
         homeFeedStatus = TextView(this).apply {
-            text = "正在加载 B站首页…"
+            text = "展开后加载 B 站发现内容"
             textSize = 12f
             setTextColor(sub)
             setPadding(dp(4), dp(8), dp(4), dp(8))
@@ -2021,12 +2047,12 @@ class MainActivity : ComponentActivity() {
                 if (homeFeedType == BiliHomeFeedType.RECOMMEND && !loggedIn) showLogin()
             }
         }
-        feedCard.addView(homeFeedStatus)
+        homeFeedContent.addView(homeFeedStatus)
 
         homeFeedList = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
         }
-        feedCard.addView(homeFeedList, LinearLayout.LayoutParams(match, wrap))
+        homeFeedContent.addView(homeFeedList, LinearLayout.LayoutParams(match, wrap))
 
         homeFeedMore = TextView(this).apply {
             text = "加载更多"
@@ -2038,10 +2064,11 @@ class MainActivity : ComponentActivity() {
             visibility = View.GONE
             setOnClickListener { loadHomeFeed(reset = false) }
         }
-        feedCard.addView(homeFeedMore, LinearLayout.LayoutParams(match, dp(42)).apply {
+        homeFeedContent.addView(homeFeedMore, LinearLayout.LayoutParams(match, dp(42)).apply {
             topMargin = dp(8)
         })
         refreshHomeFeedTabs()
+        feedCard.addView(homeFeedContent, LinearLayout.LayoutParams(match, wrap))
         col.addView(feedCard, sideMargins(12))
 
         pasteBtn.setOnClickListener {
