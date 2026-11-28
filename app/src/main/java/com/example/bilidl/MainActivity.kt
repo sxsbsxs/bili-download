@@ -221,6 +221,7 @@ class MainActivity : ComponentActivity() {
         selectTab(0)
         homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
         resultCard.visibility = View.GONE
+        input.isEnabled = false
         setBusy(parseBtn, true)
         setParseLoading(true)
         parseBtn.text = "正在准备批量任务…"
@@ -300,6 +301,7 @@ class MainActivity : ComponentActivity() {
 
             runOnUiThread {
                 setBusy(parseBtn, false)
+                input.isEnabled = true
                 setParseLoading(false)
                 parseBtn.text = "解析视频"
                 if (mismatchMode == BatchQualityMismatchMode.ASK && mismatches.isNotEmpty()) {
@@ -1915,11 +1917,13 @@ class MainActivity : ComponentActivity() {
         parseStatusRow.addView(parseProgress, LinearLayout.LayoutParams(dp(16), dp(16)))
         statusTv = TextView(this).apply {
             textSize = 13f
-            gravity = Gravity.CENTER_VERTICAL
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            maxLines = 3
+            ellipsize = TextUtils.TruncateAt.END
             setPadding(dp(8), 0, dp(4), 0)
             setLineSpacing(0f, 1.15f)
         }
-        parseStatusRow.addView(statusTv, LinearLayout.LayoutParams(wrap, wrap))
+        parseStatusRow.addView(statusTv, LinearLayout.LayoutParams(0, wrap, 1f))
         col.addView(parseStatusRow, LinearLayout.LayoutParams(match, wrap).apply {
             topMargin = dp(8)
             leftMargin = dp(20)
@@ -2162,6 +2166,7 @@ class MainActivity : ComponentActivity() {
                     return@setOnClickListener
                 }
                 resultCard.visibility = View.GONE
+                input.isEnabled = false
                 setBusy(parseBtn, true)
                 setParseLoading(true)
                 parseBtn.text = "正在准备批量任务…"
