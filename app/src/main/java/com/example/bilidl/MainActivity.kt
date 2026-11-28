@@ -3247,7 +3247,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         prefs = getSharedPreferences("ui", Context.MODE_PRIVATE)
         window.statusBarColor = Color.WHITE
         window.navigationBarColor = Color.WHITE
-        @Suppress("DEPRECATION")
         window.decorView.systemUiVisibility =
             View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
 
