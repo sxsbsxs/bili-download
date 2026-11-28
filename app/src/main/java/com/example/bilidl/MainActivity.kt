@@ -2208,32 +2208,25 @@ class MainActivity : ComponentActivity() {
     private fun buildDownloads(): View {
         val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
 
-        val hdr = FrameLayout(this)
-        hdr.addView(header("下载管理", "管理当前下载与已保存的视频", 18), FrameLayout.LayoutParams(match, wrap))
-        clearTv = TextView(this).apply {
-            text = "清空已完成"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(pink)
-            setPadding(dp(12), dp(7), dp(12), dp(7))
-            background = shape(Color.WHITE, 12, Color.parseColor("#E5E8ED"))
+        val hdr = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(22), dp(14), dp(16), dp(10))
+        }
+        val titleBlock = header("下载管理", "管理当前下载与已保存的视频", 0).apply {
+            setPadding(0, 0, dp(8), 0)
+        }
+        hdr.addView(titleBlock, LinearLayout.LayoutParams(0, wrap, 1f))
+        batchTv = chip("批量选择", false).apply {
+            setOnClickListener { setBatchMode(!batchMode) }
+        }
+        hdr.addView(batchTv, LinearLayout.LayoutParams(wrap, dp(36)))
+        clearTv = chip("清空已完成", false).apply {
             visibility = View.GONE
             setOnClickListener { confirmClear() }
         }
-        hdr.addView(clearTv, FrameLayout.LayoutParams(wrap, wrap, Gravity.TOP or Gravity.END).apply {
-            topMargin = dp(28); rightMargin = dp(20)
-        })
-        batchTv = TextView(this).apply {
-            text = "批量选择"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(pink)
-            setPadding(dp(12), dp(7), dp(12), dp(7))
-            background = shape(Color.WHITE, 12, Color.parseColor("#E5E8ED"))
-            setOnClickListener { setBatchMode(!batchMode) }
-        }
-        hdr.addView(batchTv, FrameLayout.LayoutParams(wrap, wrap, Gravity.TOP or Gravity.END).apply {
-            topMargin = dp(28); rightMargin = dp(112)
+        hdr.addView(clearTv, LinearLayout.LayoutParams(wrap, dp(36)).apply {
+            leftMargin = dp(6)
         })
         page.addView(hdr, match, wrap)
 
