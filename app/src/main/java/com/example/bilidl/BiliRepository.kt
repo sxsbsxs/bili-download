@@ -20,6 +20,21 @@ import java.net.URLEncoder
 import java.security.MessageDigest
 import java.util.Locale
 
+/**
+ * Turn Bilibili API codes into actionable messages without mislabelling risk
+ * control as an authentication failure.
+ */
+internal fun formatBiliApiError(code: Int, message: String, fallback: String): String {
+    val detail = message.ifBlank { "未知错误" }
+    return when (code) {
+        -352 -> "$fallback：B站风控校验失败（-352）。这不等同于未登录，也不能保证重新登录就能解除；请稍后重试并避免连续提交。原始提示：$detail"
+        -101 -> "$fallback：B站账号未登录（-101），请点击账号区域登录后重试。原始提示：$detail"
+        -111 -> "$fallback：B站 CSRF 校验失败（-111），请重新扫码授权后重试。原始提示：$detail"
+        -509 -> "$fallback：B站请求过于频繁（-509），请稍后再试。原始提示：$detail"
+        else -> "$fallback：$detail（$code）"
+    }
+}
+
 data class BiliQuality(val id: Int, val label: String)
 
 data class BiliPage(
@@ -179,7 +194,9 @@ data class BiliSearchVideo(
     val commentCount: Long,
     val publishTime: Long,
     val description: String,
-    val tags: List<String>
+    val tags: List<String>,
+    val authorMid: Long = 0L,
+    val authorAvatarUrl: String? = null
 )
 
 data class BiliComment(
@@ -190,7 +207,8 @@ data class BiliComment(
     val likeCount: Long,
     val replyCount: Long,
     val createTime: Long,
-    val likedByMe: Boolean
+    val likedByMe: Boolean,
+    val userMid: Long = 0L
 )
 
 data class BiliFavoriteFolder(
@@ -365,6 +383,16 @@ class BiliRepository(
                 else -> null
             }
             val owner = item.optJSONObject("owner")
+            val rawOwnerFace = owner?.optString("face")?.takeIf { it.isNotBlank() }
+                ?: item.optString("face").takeIf { it.isNotBlank() }
+            val ownerFace = when {
+                rawOwnerFace.isNullOrBlank() -> null
+                rawOwnerFace.startsWith("//") -> "https:$rawOwnerFace"
+                rawOwnerFace.startsWith("http://", true) ->
+                    "https://" + rawOwnerFace.substringAfter("://")
+                rawOwnerFace.startsWith("https://", true) -> rawOwnerFace
+                else -> null
+            }
             val stat = item.optJSONObject("stat")
             val tagText = item.optString("tag")
             BiliSearchVideo(
@@ -385,7 +413,10 @@ class BiliRepository(
                 description = cleanSearchText(
                     item.optString("description").ifBlank { item.optString("desc") }
                 ),
-                tags = tagText.split(",").map { cleanSearchText(it) }.filter { it.isNotBlank() }.take(8)
+                tags = tagText.split(",").map { cleanSearchText(it) }.filter { it.isNotBlank() }.take(8),
+                authorMid = owner?.optLong("mid")?.takeIf { it > 0L }
+                    ?: item.optLong("mid").takeIf { it > 0L } ?: 0L,
+                authorAvatarUrl = ownerFace
             )
         }.distinctBy { it.bvid }.take(50)
     }
@@ -973,7 +1004,8 @@ class BiliRepository(
                 likeCount = item.optLong("like"),
                 replyCount = item.optLong("rcount"),
                 createTime = item.optLong("ctime"),
-                likedByMe = item.optInt("action") == 1
+                likedByMe = item.optInt("action") == 1,
+                userMid = member?.optLong("mid") ?: 0L
             )
         }
         val total = data.optJSONObject("page")?.optLong("count") ?: comments.size.toLong()
@@ -1039,7 +1071,8 @@ class BiliRepository(
                 likeCount = item.optLong("like"),
                 replyCount = item.optLong("rcount"),
                 createTime = item.optLong("ctime"),
-                likedByMe = item.optInt("action") == 1
+                likedByMe = item.optInt("action") == 1,
+                userMid = member?.optLong("mid") ?: 0L
             )
         }
         val total = data.optJSONObject("page")?.optLong("count") ?: comments.size.toLong()
@@ -1065,6 +1098,41 @@ class BiliRepository(
             )
         )
         ensureMutationSuccess(root, "评论互动失败")
+    }
+
+    /**
+     * Report a comment or reply using Bilibili's official reply/report endpoint.
+     * Reason 0 is the free-text "other" category and requires a description.
+     */
+    fun reportVideoComment(
+        aid: Long,
+        rpid: Long,
+        reason: Int,
+        content: String = ""
+    ) {
+        require(aid > 0L) { "视频 AV 号无效" }
+        require(rpid > 0L) { "评论 ID 无效" }
+        require(reason in 0..17) { "请选择有效的举报原因" }
+        val detail = content.trim()
+        if (reason == 0 && detail.isBlank()) {
+            throw IOException("请选择其他原因时，请填写举报说明")
+        }
+        if (detail.length > 200) throw IOException("举报说明不能超过 200 个字符")
+        val csrf = requireCsrf()
+        val form = linkedMapOf(
+            "oid" to aid.toString(),
+            "type" to "1",
+            "rpid" to rpid.toString(),
+            "reason" to reason.toString(),
+            "csrf" to csrf,
+            "csrf_token" to csrf
+        )
+        if (reason == 0) form["content"] = detail
+        val response = requestFormJson(
+            "https://api.bilibili.com/x/v2/reply/report",
+            form
+        )
+        ensureMutationSuccess(response, "评论举报失败")
     }
 
     fun getRelatedVideos(aid: Long): List<BiliSearchVideo> {
@@ -1095,7 +1163,7 @@ class BiliRepository(
         val code = root.optInt("code", -1)
         if (code != 0) {
             val message = root.optString("message").ifBlank { fallback }
-            throw IOException(fallback + "：" + message + "（" + code + "）")
+            throw IOException(formatBiliApiError(code, message, fallback))
         }
     }
 
@@ -1409,7 +1477,7 @@ class BiliRepository(
         val code = root.optInt("code", 0)
         if (code != 0) {
             val message = root.optString("message").ifBlank { "未知错误" }
-            throw IOException("B站接口错误 " + code + "：" + message)
+            throw IOException(formatBiliApiError(code, message, "B站接口错误"))
         }
         return root.optJSONObject(key) ?: throw IOException("B站返回内容不完整")
     }
