@@ -38,7 +38,16 @@ data class BiliVideo(
     val coverUrl: String?,
     val cover: Bitmap?,
     val qualities: List<BiliQuality>,
-    val pages: List<BiliPage> = emptyList()
+    val pages: List<BiliPage> = emptyList(),
+    val description: String = "",
+    val viewCount: Long = 0L,
+    val danmakuCount: Long = 0L,
+    val likeCount: Long = 0L,
+    val coinCount: Long = 0L,
+    val favoriteCount: Long = 0L,
+    val shareCount: Long = 0L,
+    val commentCount: Long = 0L,
+    val publishTime: Long = 0L
 )
 
 data class BiliPlaySource(
@@ -48,6 +57,23 @@ data class BiliPlaySource(
     val format: String,
     val videoMime: String,
     val audioMime: String
+)
+
+data class BiliSearchVideo(
+    val bvid: String,
+    val aid: Long,
+    val title: String,
+    val author: String,
+    val coverUrl: String?,
+    val duration: String,
+    val viewCount: Long,
+    val danmakuCount: Long,
+    val likeCount: Long,
+    val favoriteCount: Long,
+    val commentCount: Long,
+    val publishTime: Long,
+    val description: String,
+    val tags: List<String>
 )
 
 class BiliRepository(
@@ -69,6 +95,126 @@ class BiliRepository(
         val vip = data.optInt("vipStatus", 0) == 1
         return name to vip
     }
+
+    /**
+     * Search public Bilibili video results. WBI is preferred; older and aggregate
+     * endpoints are fallbacks so basic search still works when one route is gated.
+     */
+    fun searchVideos(keyword: String, page: Int = 1, order: String = "totalrank"): List<BiliSearchVideo> {
+        val query = keyword.trim()
+        if (query.isEmpty()) throw IOException("请输入搜索关键词")
+        if (query.length > 100) throw IOException("搜索关键词不能超过 100 个字符")
+        val pageNumber = page.coerceAtLeast(1)
+        val parameters = linkedMapOf(
+            "search_type" to "video",
+            "keyword" to query,
+            "page" to pageNumber.toString(),
+            "order" to order,
+            "duration" to "0",
+            "tids" to "0",
+            "page_size" to "20",
+            "web_location" to "1430650"
+        )
+
+        val wbiResults = runCatching {
+            val root = requestJson(
+                "https://api.bilibili.com/x/web-interface/wbi/search/type?" + signWbi(parameters)
+            )
+            parseVideoSearchResults(root)
+        }.getOrNull()
+        if (!wbiResults.isNullOrEmpty()) return wbiResults
+
+        val legacyResults = runCatching {
+            val queryString = parameters.entries.joinToString("&") {
+                encode(it.key) + "=" + encode(it.value)
+            }
+            parseVideoSearchResults(
+                requestJson("https://api.bilibili.com/x/web-interface/search/type?$queryString")
+            )
+        }.getOrNull()
+        if (!legacyResults.isNullOrEmpty()) return legacyResults
+
+        val aggregateParameters = "keyword=" + encode(query) +
+            "&page=" + pageNumber + "&pagesize=20"
+        val aggregate = requestJson(
+            "https://api.bilibili.com/x/web-interface/search/all/v2?$aggregateParameters"
+        )
+        val results = parseVideoSearchResults(aggregate)
+        if (results.isEmpty()) throw IOException("没有找到相关视频，请更换关键词后重试")
+        return results
+    }
+
+    private fun parseVideoSearchResults(root: JSONObject): List<BiliSearchVideo> {
+        val data = checkedData(root)
+        val groups = data.optJSONArray("result") ?: return emptyList()
+        val directVideos = ArrayList<JSONObject>()
+        for (index in 0 until groups.length()) {
+            val group = groups.optJSONObject(index) ?: continue
+            if (group.optString("result_type") == "video") {
+                val nested = group.optJSONArray("data") ?: continue
+                for (nestedIndex in 0 until nested.length()) {
+                    nested.optJSONObject(nestedIndex)?.let(directVideos::add)
+                }
+            } else if (
+                group.optString("type") == "video" ||
+                group.has("bvid") ||
+                group.has("aid") && group.has("pic")
+            ) {
+                directVideos.add(group)
+            }
+        }
+        return directVideos.mapNotNull { item ->
+            val bvid = item.optString("bvid").trim()
+            val aid = item.optLong("aid", item.optLong("id"))
+            if (bvid.isBlank() && aid <= 0L) return@mapNotNull null
+            val rawCover = item.optString("pic").takeIf { it.isNotBlank() }
+            val cover = when {
+                rawCover == null -> null
+                rawCover.startsWith("//") -> "https:$rawCover"
+                rawCover.startsWith("http://", true) || rawCover.startsWith("https://", true) -> rawCover
+                else -> null
+            }
+            val tagText = item.optString("tag")
+            BiliSearchVideo(
+                bvid = bvid.ifBlank { "av$aid" },
+                aid = aid,
+                title = cleanSearchText(item.optString("title")).ifBlank { "B站视频" },
+                author = cleanSearchText(item.optString("author")).ifBlank { "未知 UP 主" },
+                coverUrl = cover,
+                duration = item.optString("duration"),
+                viewCount = searchCount(item.opt("play")),
+                danmakuCount = searchCount(item.opt("video_review")),
+                likeCount = searchCount(item.opt("like")),
+                favoriteCount = searchCount(item.opt("favorites")),
+                commentCount = searchCount(item.opt("review")),
+                publishTime = item.optLong("pubdate"),
+                description = cleanSearchText(item.optString("description")),
+                tags = tagText.split(",").map { cleanSearchText(it) }.filter { it.isNotBlank() }.take(8)
+            )
+        }.distinctBy { it.bvid }.take(20)
+    }
+
+    private fun cleanSearchText(value: String): String {
+        return android.text.Html.fromHtml(value, android.text.Html.FROM_HTML_MODE_LEGACY)
+            .toString()
+            .replace(Regex("\\\\s+"), " ")
+            .trim()
+    }
+
+    private fun searchCount(value: Any?): Long {
+        if (value is Number) return value.toLong().coerceAtLeast(0L)
+        val raw = value?.toString()?.replace(",", "")?.trim().orEmpty()
+        if (raw.isBlank()) return 0L
+        val multiplier = when {
+            raw.endsWith("亿") -> 100_000_000.0
+            raw.endsWith("万") -> 10_000.0
+            else -> 1.0
+        }
+        val number = raw.removeSuffix("亿").removeSuffix("万").toDoubleOrNull() ?: return 0L
+        return (number * multiplier).toLong().coerceAtLeast(0L)
+    }
+
+    fun loadCoverImage(url: String?): Bitmap? = downloadCover(url)
 
     fun inspect(rawInput: String): BiliVideo {
         val normalized = BiliLinkParser.normalize(rawInput)
@@ -133,11 +279,21 @@ class BiliRepository(
         val owner = data.optJSONObject("owner")?.optString("name").orEmpty().ifBlank { "未知 UP 主" }
         val duration = page?.optInt("duration") ?: data.optInt("duration")
         val coverUrl = data.optString("pic").takeIf { it.startsWith("http") }
+        val stat = data.optJSONObject("stat")
         val play = getPlayInfo(actualBvid, aid, cid, 0)
         val qualities = parseQualities(play)
         return BiliVideo(
             actualBvid, aid, cid, pageIndex + 1, title, owner, duration,
-            coverUrl, null, qualities, availablePages
+            coverUrl, null, qualities, availablePages,
+            description = data.optString("desc"),
+            viewCount = stat?.optLong("view") ?: 0L,
+            danmakuCount = stat?.optLong("danmaku") ?: 0L,
+            likeCount = stat?.optLong("like") ?: 0L,
+            coinCount = stat?.optLong("coin") ?: 0L,
+            favoriteCount = stat?.optLong("favorite") ?: 0L,
+            shareCount = stat?.optLong("share") ?: 0L,
+            commentCount = stat?.optLong("reply") ?: 0L,
+            publishTime = data.optLong("pubdate")
         )
     }
 
