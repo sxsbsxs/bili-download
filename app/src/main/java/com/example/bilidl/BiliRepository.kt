@@ -3,6 +3,8 @@ package com.example.bilidl
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import com.example.bilidl.common.content.BiliDanmaku
+import com.example.bilidl.common.content.BiliDanmakuProtoParser
 import com.example.bilidl.common.content.BiliSubtitleCue
 import com.example.bilidl.common.content.BiliSubtitleTrack
 import org.json.JSONArray
@@ -54,7 +56,9 @@ data class BiliVideo(
     val ownerMid: Long = 0L,
     val userLiked: Boolean = false,
     val userCoin: Int = 0,
-    val userFavorited: Boolean = false
+    val userFavorited: Boolean = false,
+    val ownerAvatarUrl: String? = null,
+    val tags: List<String> = emptyList()
 )
 
 data class BiliPlaySource(
@@ -108,7 +112,8 @@ data class BiliComment(
 data class BiliFavoriteFolder(
     val id: Long,
     val title: String,
-    val mediaCount: Long
+    val mediaCount: Long,
+    val favState: Boolean = false
 )
 
 data class BiliCommentPage(
@@ -371,7 +376,10 @@ class BiliRepository(
             ownerMid = data.optJSONObject("owner")?.optLong("mid") ?: 0L,
             userLiked = data.optJSONObject("req_user")?.optInt("like") == 1,
             userCoin = data.optJSONObject("req_user")?.optInt("coin") ?: 0,
-            userFavorited = data.optJSONObject("req_user")?.optInt("favorite") == 1
+            userFavorited = data.optJSONObject("req_user")?.optInt("favorite") == 1,
+            ownerAvatarUrl = data.optJSONObject("owner")?.optString("face")
+                ?.takeIf { it.startsWith("http") },
+            tags = getVideoTags(aid, actualBvid)
         )
     }
 
@@ -532,6 +540,47 @@ class BiliRepository(
     /**
      * B站 XML 弹幕源。时间戳按播放器进度同步渲染。
      */
+    /**
+     * Load six-minute protobuf danmaku segments using Bilibili's modern web player API.
+     * A failed later segment does not discard valid segments that were already received.
+     */
+    fun getVideoDanmaku(video: BiliVideo): List<BiliDanmaku> {
+        require(video.cid > 0L) { "视频 CID 无效" }
+        val segmentCount = ((video.durationSeconds.coerceAtLeast(1) + 359) / 360)
+            .coerceIn(1, 120)
+        val result = ArrayList<BiliDanmaku>()
+        var firstError: Exception? = null
+        for (segmentIndex in 1..segmentCount) {
+            try {
+                val bytes = getDanmakuSegment(video.cid, segmentIndex)
+                result += BiliDanmakuProtoParser.parse(bytes)
+            } catch (error: Exception) {
+                if (segmentIndex == 1) firstError = error
+            }
+        }
+        if (result.isEmpty() && firstError != null) {
+            throw IOException("读取弹幕失败：" + (firstError.message ?: "B站弹幕接口不可用"))
+        }
+        return result.sortedBy { it.progressMs }
+    }
+
+    private fun getVideoTags(aid: Long, bvid: String?): List<String> {
+        val query = if (!bvid.isNullOrBlank()) {
+            "bvid=" + encode(bvid)
+        } else {
+            "aid=" + aid
+        }
+        return runCatching {
+            val root = requestJson("https://api.bilibili.com/x/tag/archive/tags?$query")
+            if (root.optInt("code", -1) != 0) return@runCatching emptyList()
+            val items = root.optJSONArray("data") ?: JSONArray()
+            (0 until items.length()).mapNotNull { index ->
+                items.optJSONObject(index)?.optString("tag_name")
+                    ?.trim()?.takeIf { it.isNotBlank() }
+            }.distinct().take(20)
+        }.getOrDefault(emptyList())
+    }
+
     fun getDanmakuXml(cid: Long): String {
         require(cid > 0L) { "视频 CID 无效" }
         return requestText("https://comment.bilibili.com/" + cid + ".xml")
@@ -572,7 +621,7 @@ class BiliRepository(
     fun setVideoLike(aid: Long, liked: Boolean) {
         val csrf = requireCsrf()
         val root = requestFormJson(
-            "https://api.bilibili.com/x/v2/view/like",
+            "https://api.bilibili.com/x/web-interface/archive/like",
             mapOf(
                 "aid" to aid.toString(),
                 "like" to if (liked) "1" else "2",
@@ -587,7 +636,7 @@ class BiliRepository(
     fun tripleLike(aid: Long) {
         val csrf = requireCsrf()
         val root = requestFormJson(
-            "https://api.bilibili.com/x/v2/view/like/triple",
+            "https://api.bilibili.com/x/web-interface/archive/like/triple",
             mapOf("aid" to aid.toString(), "csrf" to csrf, "csrf_token" to csrf)
         )
         ensureMutationSuccess(root, "一键三连失败")
@@ -596,7 +645,7 @@ class BiliRepository(
     fun addVideoCoin(aid: Long, count: Int = 1, alsoLike: Boolean = false) {
         val csrf = requireCsrf()
         val root = requestFormJson(
-            "https://api.bilibili.com/x/v2/view/coin/add",
+            "https://api.bilibili.com/x/web-interface/coin/add",
             mapOf(
                 "aid" to aid.toString(),
                 "multiply" to count.coerceIn(1, 2).toString(),
@@ -622,26 +671,37 @@ class BiliRepository(
             BiliFavoriteFolder(
                 id = id,
                 title = item.optString("title").ifBlank { "收藏夹 " + id },
-                mediaCount = item.optLong("media_count")
+                mediaCount = item.optLong("media_count"),
+                favState = item.optInt("fav_state") == 1
             )
         }
     }
 
     fun addVideoToFavorite(aid: Long, folderId: Long) {
-        require(folderId > 0L) { "收藏夹无效" }
+        updateVideoFavoriteFolders(aid, listOf(folderId), emptyList())
+    }
+
+    fun updateVideoFavoriteFolders(
+        aid: Long,
+        addFolderIds: List<Long>,
+        removeFolderIds: List<Long>
+    ) {
+        require(addFolderIds.all { it > 0L } && removeFolderIds.all { it > 0L }) {
+            "收藏夹 ID 无效"
+        }
         val csrf = requireCsrf()
         val root = requestFormJson(
             "https://api.bilibili.com/medialist/gateway/coll/resource/deal",
             mapOf(
                 "rid" to aid.toString(),
                 "type" to "2",
-                "add_media_ids" to folderId.toString(),
-                "del_media_ids" to "",
+                "add_media_ids" to addFolderIds.distinct().joinToString(","),
+                "del_media_ids" to removeFolderIds.distinct().joinToString(","),
                 "csrf" to csrf,
                 "csrf_token" to csrf
             )
         )
-        ensureMutationSuccess(root, "收藏失败")
+        ensureMutationSuccess(root, "收藏夹更新失败")
     }
 
     fun getVideoComments(aid: Long, page: Int = 1, pageSize: Int = 20, sort: Int = 2): BiliCommentPage {
