@@ -15,7 +15,7 @@ import kotlinx.coroutines.flow.Flow
  * The repository is intentionally independent from Activity/Worker classes so
  * download queue, retry, history, and resource screens can share one source of truth.
  */
-class BiliDownloadTaskRepository private constructor(
+class BiliDownloadTaskRepository internal constructor(
     private val database: BiliDownloadDatabase
 ) {
     private val tasks = database.downloadTaskDao()
