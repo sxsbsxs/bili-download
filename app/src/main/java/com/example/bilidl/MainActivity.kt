@@ -2426,6 +2426,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         setBusy(cookieBtn, false); cookieBtn.text = "登录"; cookieInput.setText("")
         refreshAccountUi()
         hideLogin()
+        (supportFragmentManager.findFragmentByTag("bilivdl-profile") as? ProfileFragment)?.refreshAccount()
         toast("登录成功，欢迎 $name")
     }
 
@@ -2438,6 +2439,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     fun logoutDone() = runOnUiThread {
         loggedIn = false; userName = ""; userAvatar = null; userVip = false
         refreshAccountUi()
+        (supportFragmentManager.findFragmentByTag("bilivdl-profile") as? ProfileFragment)?.refreshAccount()
         toast("已退出登录")
     }
 
