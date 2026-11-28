@@ -529,6 +529,15 @@ class MainActivity : ComponentActivity() {
                 append("CID ")
                 append(video.cid)
             }
+            if (video.ownerMid > 0L) {
+                if (isNotEmpty()) append("  ·  ")
+                append("UP主 UID ")
+                append(video.ownerMid)
+            }
+            if (video.copyright > 0) {
+                if (isNotEmpty()) append("  ·  ")
+                append(if (video.copyright == 1) "自制" else "转载")
+            }
         }
         if (identityText.isNotBlank()) {
             info.addView(TextView(this).apply {
@@ -537,6 +546,43 @@ class MainActivity : ComponentActivity() {
                 setTextColor(sub)
                 setPadding(0, dp(5), 0, 0)
             }, LinearLayout.LayoutParams(match, wrap))
+        }
+
+        if (video.pages.size > 1) {
+            info.addView(TextView(this).apply {
+                text = "视频分P · " + video.pages.size + " P"
+                textSize = 13f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(ink)
+                setPadding(0, dp(13), 0, dp(6))
+            }, LinearLayout.LayoutParams(match, wrap))
+            val pageScroller = HorizontalScrollView(this).apply {
+                isHorizontalScrollBarEnabled = false
+            }
+            val pageRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+            }
+            video.pages.forEach { videoPage ->
+                val selected = videoPage.cid == video.cid
+                val label = "P" + videoPage.pageNumber + "  " +
+                    videoPage.part.ifBlank { "第 " + videoPage.pageNumber + " P" }
+                pageRow.addView(chip(label, selected).apply {
+                    setOnClickListener {
+                        if (videoPage.cid != video.cid) {
+                            val nextVideo = video.copy(
+                                cid = videoPage.cid,
+                                page = videoPage.pageNumber,
+                                durationSeconds = videoPage.durationSeconds
+                            )
+                            showVideoDetail(nextVideo, searchItem)
+                        }
+                    }
+                }, LinearLayout.LayoutParams(wrap, dp(40)).apply {
+                    rightMargin = dp(8)
+                })
+            }
+            pageScroller.addView(pageRow, HorizontalScrollView.LayoutParams(wrap, wrap))
+            info.addView(pageScroller, LinearLayout.LayoutParams(match, wrap))
         }
 
         val views = if (video.viewCount > 0L) video.viewCount else searchItem?.viewCount ?: 0L
@@ -1129,11 +1175,15 @@ class MainActivity : ComponentActivity() {
                         parsedVideo?.let { currentVideo -> performCommentLike(currentVideo, comment) }
                     }
                 })
-                actions.addView(TextView(this).apply {
-                    text = if (comment.replyCount > 0L) "  " + formatCount(comment.replyCount) + " 条回复" else ""
-                    textSize = 10f
-                    setTextColor(sub)
-                    setPadding(dp(8), 0, 0, 0)
+                actions.addView(chip(
+                    if (comment.replyCount > 0L) formatCount(comment.replyCount) + " 条回复" else "回复",
+                    false
+                ).apply {
+                    setOnClickListener {
+                        parsedVideo?.let { currentVideo ->
+                            showCommentReplyDialog(currentVideo, comment)
+                        }
+                    }
                 })
                 item.addView(actions)
                 detailCommentsContainer.addView(item, LinearLayout.LayoutParams(match, wrap))
@@ -1154,6 +1204,205 @@ class MainActivity : ComponentActivity() {
                 else if (commentsHasMore) loadVideoComments(parsedVideo ?: return@setOnClickListener, false)
             }
         }
+    }
+
+    private fun showCommentReplyDialog(video: BiliVideo, rootComment: BiliComment) {
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+        }
+        body.addView(TextView(this).apply {
+            text = rootComment.userName + "  ·  " + formatPublishDate(rootComment.createTime)
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(sub)
+        })
+        body.addView(TextView(this).apply {
+            text = rootComment.message
+            textSize = 14f
+            setTextColor(ink)
+            setPadding(0, dp(6), 0, dp(12))
+        })
+        val repliesContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        val scroll = ScrollView(this).apply {
+            isFillViewport = false
+            isVerticalScrollBarEnabled = true
+            addView(repliesContainer, ScrollView.LayoutParams(match, wrap))
+        }
+        body.addView(scroll, LinearLayout.LayoutParams(match, dp(280)))
+
+        val more = TextView(this).apply {
+            text = "加载回复"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(pink)
+            setPadding(0, dp(10), 0, dp(8))
+        }
+        body.addView(more)
+
+        val editor = EditText(this).apply {
+            hint = "回复这条评论…"
+            textSize = 13f
+            setTextColor(ink)
+            setHintTextColor(sub)
+            minLines = 1
+            maxLines = 3
+            background = shape(field, 12)
+            setPadding(dp(12), dp(9), dp(12), dp(9))
+        }
+        body.addView(editor, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(6)
+        })
+        var targetParentId = rootComment.id
+        var currentPage = 1
+        var hasMore = true
+        var loading = false
+        val replyItems = ArrayList<BiliComment>()
+        lateinit var dialog: AlertDialog
+
+        fun render() {
+            repliesContainer.removeAllViews()
+            if (replyItems.isEmpty()) {
+                repliesContainer.addView(TextView(this).apply {
+                    text = if (loading) "正在加载回复…" else "暂无回复"
+                    textSize = 12f
+                    setTextColor(sub)
+                    setPadding(0, dp(10), 0, dp(10))
+                })
+            } else {
+                replyItems.forEachIndexed { index, reply ->
+                    if (index > 0) repliesContainer.addView(View(this).apply {
+                        setBackgroundColor(field)
+                    }, LinearLayout.LayoutParams(match, dp(1)).apply {
+                        topMargin = dp(7)
+                        bottomMargin = dp(7)
+                    })
+                    val row = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                    }
+                    row.addView(TextView(this).apply {
+                        text = reply.userName + "  ·  " + formatPublishDate(reply.createTime)
+                        textSize = 11f
+                        typeface = Typeface.DEFAULT_BOLD
+                        setTextColor(ink)
+                    })
+                    row.addView(TextView(this).apply {
+                        text = reply.message
+                        textSize = 13f
+                        setTextColor(ink)
+                        setPadding(0, dp(4), 0, dp(4))
+                    })
+                    row.addView(chip("回复", false).apply {
+                        setOnClickListener {
+                            targetParentId = reply.id
+                            editor.hint = "回复 " + reply.userName
+                            editor.requestFocus()
+                        }
+                    })
+                    repliesContainer.addView(row, LinearLayout.LayoutParams(match, wrap))
+                }
+            }
+            more.visibility = if (hasMore || loading || replyItems.isEmpty()) View.VISIBLE else View.GONE
+            more.text = when {
+                loading -> "正在加载回复…"
+                hasMore -> "加载更多回复"
+                replyItems.isEmpty() -> "加载失败，点此重试"
+                else -> "已经到底了"
+            }
+        }
+
+        lateinit var loadReplies: (Boolean) -> Unit
+        loadReplies = { reset ->
+            if (loading && !reset) {
+                Unit
+            } else if (!reset && !hasMore) {
+                Unit
+            } else {
+                if (reset) {
+                    currentPage = 1
+                    hasMore = true
+                    replyItems.clear()
+                }
+                loading = true
+                render()
+                val requestedPage = currentPage
+                backgroundExecutor.execute {
+                    try {
+                        val result = repositoryWithSavedCookie().getVideoCommentReplies(
+                            video.aid, rootComment.id, requestedPage
+                        )
+                        runOnUiThread {
+                            if (dialog.isShowing && parsedVideo?.aid == video.aid) {
+                                loading = false
+                                val known = replyItems.mapTo(HashSet()) { it.id }
+                                result.comments.filter { known.add(it.id) }.forEach(replyItems::add)
+                                currentPage = result.nextPage
+                                hasMore = result.hasMore
+                                render()
+                            }
+                        }
+                    } catch (error: Exception) {
+                        runOnUiThread {
+                            loading = false
+                            hasMore = true
+                            render()
+                            more.text = "加载失败，点击重试"
+                            if (replyItems.isEmpty()) toast(error.message ?: "回复加载失败")
+                        }
+                    }
+                }
+            }
+        }
+        more.setOnClickListener { loadReplies(false) }
+
+        val send = chip("发送回复", true)
+        body.addView(send, LinearLayout.LayoutParams(match, dp(42)).apply {
+            topMargin = dp(8)
+        })
+        dialog = AlertDialog.Builder(this)
+            .setTitle("评论回复")
+            .setView(body)
+            .setNegativeButton("关闭", null)
+            .create()
+        send.setOnClickListener {
+            if (!requireInteractionLogin()) return@setOnClickListener
+            val message = editor.text?.toString()?.trim().orEmpty()
+            if (message.isBlank()) {
+                editor.error = "请输入回复内容"
+                return@setOnClickListener
+            }
+            setBusy(send, true)
+            backgroundExecutor.execute {
+                try {
+                    repositoryWithSavedCookie().sendVideoComment(
+                        aid = video.aid,
+                        message = message,
+                        rootId = rootComment.id,
+                        parentId = targetParentId
+                    )
+                    runOnUiThread {
+                        setBusy(send, false)
+                        editor.setText("")
+                        targetParentId = rootComment.id
+                        editor.hint = "回复这条评论…"
+                        toast("回复发送成功")
+                        loadReplies(true)
+                    }
+                } catch (error: Exception) {
+                    runOnUiThread {
+                        setBusy(send, false)
+                        toast(error.message ?: "回复发送失败")
+                    }
+                }
+            }
+        }
+        dialog.setOnShowListener {
+            dialog.window?.setLayout((resources.displayMetrics.widthPixels * 0.92f).toInt(), wrap)
+        }
+        dialog.show()
+        loadReplies(true)
     }
 
     private fun performCommentLike(video: BiliVideo, comment: BiliComment) {
