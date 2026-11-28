@@ -636,6 +636,33 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             loadVideoComments(video, true)
         }
 
+        // BiliMiao-style separation: keep the player anchored while details and replies
+        // switch independently, rather than stacking every interaction into one long page.
+        val detailInfoSection = content.findViewById<View>(
+            com.sxsbsxs.bilivdl.ui.R.id.detail_info_section
+        )
+        val commentsSection = content.findViewById<View>(
+            com.sxsbsxs.bilivdl.ui.R.id.detail_comments_section
+        )
+        val detailsTab = content.findViewById<TextView>(
+            com.sxsbsxs.bilivdl.ui.R.id.tab_details
+        )
+        val commentsTab = content.findViewById<TextView>(
+            com.sxsbsxs.bilivdl.ui.R.id.tab_comments
+        )
+        fun selectDetailTab(showComments: Boolean) {
+            detailInfoSection.visibility = if (showComments) View.GONE else View.VISIBLE
+            commentsSection.visibility = if (showComments) View.VISIBLE else View.GONE
+            detailsTab.setTextColor(if (showComments) sub else ink)
+            commentsTab.setTextColor(if (showComments) ink else sub)
+            detailsTab.typeface = if (showComments) Typeface.DEFAULT else Typeface.DEFAULT_BOLD
+            commentsTab.typeface = if (showComments) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            if (showComments) loadVideoComments(video, true)
+        }
+        detailsTab.setOnClickListener { selectDetailTab(false) }
+        commentsTab.setOnClickListener { selectDetailTab(true) }
+        selectDetailTab(false)
+
         val playerScroll = content as? androidx.core.widget.NestedScrollView
         playerScroll?.setOnScrollChangeListener(
             androidx.core.widget.NestedScrollView.OnScrollChangeListener { scroll, _, y, _, _ ->
