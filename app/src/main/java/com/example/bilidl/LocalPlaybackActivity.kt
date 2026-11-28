@@ -300,16 +300,12 @@ class LocalPlaybackActivity : ComponentActivity() {
     }
 
     private fun applyPlaybackSpeed() {
-        if (!isPrepared && mediaPlayer != null) return
-        runCatching {
-            videoView?.setPlaybackParams(videoView?.playbackParams?.setSpeed(playbackSpeed) ?: return)
+        videoView?.let { video ->
+            runCatching { video.setPlaybackParams(video.playbackParams.setSpeed(playbackSpeed)) }
         }
-        if (isPrepared) {
-            runCatching {
-                mediaPlayer?.setPlaybackParams(
-                    mediaPlayer?.playbackParams?.setSpeed(playbackSpeed) ?: return
-                )
-            }
+        val audio = mediaPlayer
+        if (isPrepared && audio != null) {
+            runCatching { audio.setPlaybackParams(audio.playbackParams.setSpeed(playbackSpeed)) }
         }
     }
 
