@@ -46,10 +46,23 @@ internal object BiliDownloadSourceSelector {
         val results = urls.distinct().map { url ->
             async(Dispatchers.IO) { probe(url, sessionCookie) }
         }.awaitAll()
-        val available = results.filter { it.bytes > 0 }
-            .sortedByDescending { it.bytes.toDouble() / it.elapsedNanos.coerceAtLeast(1L) }
-            .map { it.url }
-        (available + fallback + urls).distinct()
+        val sampleRates = results
+            .filter { it.bytes > 0 }
+            .associate { it.url to (it.bytes.toDouble() / it.elapsedNanos.coerceAtLeast(1L)) }
+        orderBySampleRates(urls, sampleRates, fallback)
+    }
+
+    /** Pure ranking stage, kept separate so throughput ordering is deterministic to test. */
+    internal fun orderBySampleRates(
+        urls: List<String>,
+        sampleRates: Map<String, Double>,
+        fallback: List<String> = emptyList()
+    ): List<String> {
+        val available = sampleRates.entries
+            .filter { it.key in urls && it.value > 0.0 && it.value.isFinite() }
+            .sortedByDescending { it.value }
+            .map { it.key }
+        return (available + fallback + urls).distinct()
     }
 
     private suspend fun probe(url: String, sessionCookie: String?): Sample {
