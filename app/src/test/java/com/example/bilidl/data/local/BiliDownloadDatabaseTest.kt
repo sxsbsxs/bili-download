@@ -8,6 +8,7 @@ import com.example.bilidl.data.local.entity.DownloadResourceType
 import com.example.bilidl.data.local.entity.DownloadTaskEntity
 import com.example.bilidl.data.local.entity.DownloadTaskEventEntity
 import com.example.bilidl.data.local.entity.DownloadTaskStatus
+import com.example.bilidl.data.repository.BiliDownloadTaskRepository
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -132,6 +133,20 @@ class BiliDownloadDatabaseTest {
         assertEquals(42, stored?.progress)
         assertEquals("视频流", stored?.stage)
         assertEquals(1, database.downloadTaskDao().countByStatus(DownloadTaskStatus.RUNNING))
+    }
+
+    @Test
+    fun startingANewAttemptResetsStaleProgressBeforeRestoringRangeCheckpoint() = runBlocking {
+        val taskId = "task-resume-progress"
+        database.downloadTaskDao().upsert(
+            task(taskId, status = DownloadTaskStatus.QUEUED).copy(progress = 72)
+        )
+
+        BiliDownloadTaskRepository(database).markRunning(taskId)
+
+        val stored = database.downloadTaskDao().getById(taskId)
+        assertEquals(DownloadTaskStatus.RUNNING, stored?.status)
+        assertEquals(0, stored?.progress)
     }
 
     @Test
