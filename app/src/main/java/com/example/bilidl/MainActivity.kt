@@ -2102,9 +2102,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             .put("audioStreamChoice", spec.audioStreamChoice?.toStorage() ?: "")
             .put("downloadDanmaku", spec.downloadDanmaku)
             .put("downloadSubtitles", spec.downloadSubtitles)
-            .put("downloadCover", spec.downloadCover)
-            .put("videoStreamChoice", spec.videoStreamChoice?.toStorage() ?: "")
-            .put("audioStreamChoice", spec.audioStreamChoice?.toStorage() ?: "")
+.put("downloadCover", spec.downloadCover)
         taskPrefs.edit().putString(id, value.toString()).apply()
 
         // Keep SharedPreferences readable for upgrades, while Room becomes the
@@ -2612,11 +2610,62 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             .setItems(labels) { _, which ->
                 onParseClicked(pageUrl(video, pages[which]))
             }
+            .setPositiveButton("批量选择下载") { _, _ ->
+                showBatchPageSelection(video, pages)
+            }
             .setNeutralButton("下载全部 " + pages.size + " P") { _, _ ->
                 downloadAllPages(video, pages)
             }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    /** Multi-select parts and enqueue one real WorkManager task per selected part. */
+    private fun showBatchPageSelection(video: BiliVideo, pages: List<BiliPage>) {
+        if (pages.isEmpty()) return
+        val labels = pages.map { page ->
+            "P" + page.pageNumber + " · " + page.part + " · " + formatDuration(page.durationSeconds)
+        }.toTypedArray()
+        val checked = BooleanArray(pages.size)
+        lateinit var dialog: AlertDialog
+
+        dialog = AlertDialog.Builder(this)
+            .setTitle("批量下载分P（0/" + pages.size + "）")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+                val count = checked.count { it }
+                dialog.setTitle("批量下载分P（" + count + "/" + pages.size + "）")
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.isEnabled = count > 0
+            }
+            .setNegativeButton("取消", null)
+            .setNeutralButton("全选", null)
+            .setPositiveButton("下载选中", null)
+            .create()
+
+        dialog.setOnShowListener {
+            val downloadButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+            downloadButton.isEnabled = false
+            downloadButton.setOnClickListener {
+                val selected = pages.filterIndexed { index, _ -> checked[index] }
+                if (selected.isEmpty()) {
+                    toast("请至少选择一个分P")
+                    return@setOnClickListener
+                }
+                dialog.dismiss()
+                downloadAllPages(video, selected)
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                val selectAll = checked.any { !it }
+                for (index in checked.indices) {
+                    checked[index] = selectAll
+                    dialog.listView.setItemChecked(index, selectAll)
+                }
+                val count = checked.count { it }
+                dialog.setTitle("批量下载分P（" + count + "/" + pages.size + "）")
+                downloadButton.isEnabled = count > 0
+            }
+        }
+        dialog.show()
     }
 
     private fun downloadAllPages(video: BiliVideo, pages: List<BiliPage>) {
