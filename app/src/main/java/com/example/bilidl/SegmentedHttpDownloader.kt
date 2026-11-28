@@ -108,10 +108,14 @@ internal object SegmentedHttpDownloader {
                 throw BiliHttpException(status, "CDN 探测")
             }
             val contentRange = connection.getHeaderField("Content-Range").orEmpty()
-            val total = Regex("""bytes\s+\d+-\d+/(\d+)""", RegexOption.IGNORE_CASE)
-                .find(contentRange)?.groupValues?.getOrNull(1)?.toLongOrNull()
-                ?: throw IOException("CDN 未提供有效的 Content-Range")
-            if (total <= 0L) throw IOException("CDN 返回了无效文件大小")
+            val match = Regex("""bytes\\s+(\\d+)-(\\d+)/(\\d+)""", RegexOption.IGNORE_CASE)
+                .find(contentRange) ?: throw IOException("CDN 未提供有效的 Content-Range")
+            val start = match.groupValues[1].toLong()
+            val end = match.groupValues[2].toLong()
+            val total = match.groupValues[3].toLong()
+            if (start != 0L || end != 0L || total <= 0L) {
+                throw IOException("CDN 探测返回了不匹配的字节范围")
+            }
             connection.inputStream.use { input ->
                 if (input.read() < 0) throw IOException("CDN 返回了空数据")
             }
@@ -419,8 +423,16 @@ internal object SegmentedHttpDownloader {
                 throw BiliHttpException(status, "完整文件下载请求")
             }
             val total = connection.contentLengthLong
-            var copied = 0L
             target.parentFile?.mkdirs()
+            if (total > 0L) {
+                val availableBytes = target.parentFile?.usableSpace ?: 0L
+                if (!DownloadTransportPolicy.hasEnoughSpace(availableBytes, total)) {
+                    throw IOException(
+                        "存储空间不足：该文件约 " + BiliDownloadEngine.formatSize(total)
+                    )
+                }
+            }
+            var copied = 0L
             connection.inputStream.use { input ->
                 FileOutputStream(target, false).buffered().use { output ->
                     val buffer = ByteArray(BUFFER_SIZE)
