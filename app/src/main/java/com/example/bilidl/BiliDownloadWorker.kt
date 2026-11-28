@@ -72,6 +72,8 @@ class BiliDownloadWorker(
                 taskRepository.markQueued(taskId, "任务已重新加入队列", countAttempt = true)
             }
             taskRepository.markRunning(taskId)
+            setProgress(workDataOf(KEY_PROGRESS to 0, KEY_DETAIL to "正在准备下载"))
+            setForeground(foregroundInfo(0, "正在准备下载"))
 
             val video = BiliVideo(
                 bvid = bvid,
