@@ -683,9 +683,7 @@ object BiliDownloadEngine {
         File(file.absolutePath + ".meta").delete()
     }
 
-    companion object {
-        private const val KEY_DOWNLOAD_TREE_URI = "download_tree_uri"
-    }
+    private const val KEY_DOWNLOAD_TREE_URI = "download_tree_uri"
 
     private fun Long?.orZero(): Long = this ?: 0L
 
