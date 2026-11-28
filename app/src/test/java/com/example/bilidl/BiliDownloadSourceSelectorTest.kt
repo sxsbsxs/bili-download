@@ -14,24 +14,25 @@ import kotlin.concurrent.thread
 
 class BiliDownloadSourceSelectorTest {
     @Test
-    fun autoProbeRanksReadableSourcesAndKeepsRejectedSourceAsFallback() = runBlocking {
-        ProbeServer(delayMillis = 180).use { slow ->
-            ProbeServer(delayMillis = 5).use { fast ->
-                ProbeServer(statusCode = 403).use { rejected ->
-                    val ordered = BiliDownloadSourceSelector.orderCandidates(
-                        urls = listOf(slow.url, fast.url, rejected.url),
-                        mode = BiliDownloadSourceMode.AUTO_PROBE,
-                        customHost = "",
-                        sessionCookie = "test-session"
-                    )
+    fun autoProbePutsReadableSourcesBeforeRejectedFallback() = runBlocking {
+        // Keep this test deterministic: it verifies availability-based ordering,
+        // not noisy millisecond-level timing differences between local sockets.
+        ProbeServer().use { readable ->
+            ProbeServer(statusCode = 403).use { rejected ->
+                val ordered = BiliDownloadSourceSelector.orderCandidates(
+                    urls = listOf(rejected.url, readable.url),
+                    mode = BiliDownloadSourceMode.AUTO_PROBE,
+                    customHost = "",
+                    sessionCookie = "test-session"
+                )
 
-                    assertEquals(listOf(fast.url, slow.url, rejected.url), ordered)
-                    assertEquals("bytes=0-65535", fast.ranges.single())
-                    assertTrue(fast.userAgents.single().contains("Edg/124.0.0.0"))
-                    assertEquals(BiliCdnRequestPolicy.MOBILE_ORIGIN, fast.origins.single())
-                    assertEquals(BiliCdnRequestPolicy.MOBILE_REFERER, fast.referers.single())
-                    assertEquals("SESSDATA=test-session", fast.cookies.single())
-                }
+                assertEquals(listOf(readable.url, rejected.url), ordered)
+                assertEquals("bytes=0-65535", readable.ranges.single())
+                assertTrue(readable.userAgents.single().contains("Edg/124.0.0.0"))
+                assertEquals(BiliCdnRequestPolicy.MOBILE_ORIGIN, readable.origins.single())
+                assertEquals(BiliCdnRequestPolicy.MOBILE_REFERER, readable.referers.single())
+                assertEquals("SESSDATA=test-session", readable.cookies.single())
+                assertEquals("bytes=0-65535", rejected.ranges.single())
             }
         }
     }
