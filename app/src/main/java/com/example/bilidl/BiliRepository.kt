@@ -1048,8 +1048,9 @@ class BiliRepository(
         val data = root.optJSONObject("data") ?: return false
         val dash = data.optJSONObject("dash")
         val hasDashVideo = (dash?.optJSONArray("video")?.length() ?: 0) > 0
+        val hasDashAudio = (dash?.optJSONArray("audio")?.length() ?: 0) > 0
         val hasDurl = (data.optJSONArray("durl")?.length() ?: 0) > 0
-        return hasDashVideo || hasDurl
+        return (hasDashVideo && hasDashAudio) || hasDurl
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
