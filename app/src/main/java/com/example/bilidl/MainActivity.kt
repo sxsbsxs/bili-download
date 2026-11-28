@@ -2223,9 +2223,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
 
     private fun onClearCacheClicked() {
-        java.io.File(cacheDir, "bilidl").deleteRecursively()
-        java.io.File(filesDir, "bilidl_transfers").deleteRecursively()
-        toast("临时下载缓存已清理")
+        // bilidl_transfers contains resumable task chunks/checkpoints. Never erase it
+        // from a generic cache action, otherwise paused downloads can no longer resume.
+        val cleared = java.io.File(cacheDir, "bilidl").deleteRecursively()
+        toast(
+            if (cleared) "临时缓存已清理，下载任务和续传断点已保留"
+            else "没有可清理的临时缓存，下载任务和续传断点已保留"
+        )
     }
 
     private fun formatDuration(seconds: Int): String {
