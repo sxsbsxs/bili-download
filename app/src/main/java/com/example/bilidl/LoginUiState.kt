@@ -4,8 +4,7 @@ import android.graphics.Bitmap
 
 enum class LoginFailureSource {
     QR_CODE,
-    COOKIE,
-    WEBVIEW
+    COOKIE
 }
 
 /** One-way UI state for local Bilibili account authorization. */
