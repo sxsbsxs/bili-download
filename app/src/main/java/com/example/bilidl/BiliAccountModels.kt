@@ -63,3 +63,23 @@ internal object BiliHistoryCursorPolicy {
         return "max=${value.max}&view_at=${value.viewAt}&business=${business}&ps=20&type=archive"
     }
 }
+
+internal object BiliSubmissionQueryPolicy {
+    fun buildParameters(
+        mid: Long,
+        page: Int,
+        order: BiliSubmissionOrder,
+        tid: Long,
+        keyword: String
+    ): LinkedHashMap<String, String> {
+        return linkedMapOf(
+            "mid" to mid.toString(),
+            "order" to order.apiValue,
+            "pn" to page.toString(),
+            "ps" to "20"
+        ).apply {
+            if (tid > 0L) put("tid", tid.toString())
+            keyword.trim().takeIf { it.isNotEmpty() }?.let { put("keyword", it) }
+        }
+    }
+}

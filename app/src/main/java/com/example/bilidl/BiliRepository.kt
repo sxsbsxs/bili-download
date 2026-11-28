@@ -289,14 +289,13 @@ class BiliRepository(
         return when (section) {
             BiliAccountSection.SUBMISSIONS -> {
                 // Match BVD's space search: sort, partition, keyword and page are WBI-signed.
-                val parameters = linkedMapOf(
-                    "mid" to mid.toString(),
-                    "order" to submissionOrder.apiValue,
-                    "pn" to page.toString(),
-                    "ps" to "20"
+                val parameters = BiliSubmissionQueryPolicy.buildParameters(
+                    mid = mid,
+                    page = page,
+                    order = submissionOrder,
+                    tid = submissionTid,
+                    keyword = submissionKeyword
                 )
-                if (submissionTid > 0L) parameters["tid"] = submissionTid.toString()
-                if (submissionKeyword.isNotBlank()) parameters["keyword"] = submissionKeyword.trim()
                 val query = signWbi(parameters)
                 val data = checkedData(
                     requestJson("https://api.bilibili.com/x/space/wbi/arc/search?$query")
