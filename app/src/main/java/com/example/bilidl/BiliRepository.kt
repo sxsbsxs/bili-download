@@ -440,9 +440,9 @@ class BiliRepository(
             )
             val videoItem = videoCandidates[selectedIndex]
             val audioCandidates = (0 until audios.length()).mapNotNull { audios.optJSONObject(it) }
-            val audioItem = audioCandidates.firstOrNull {
-                it.optString("codecs").contains("mp4a", ignoreCase = true)
-            }
+            val audioItem = audioCandidates
+                .filter { it.optString("codecs").contains("mp4a", ignoreCase = true) }
+                .maxByOrNull { it.optLong("bandwidth") }
             if (audioCandidates.isNotEmpty() && audioItem == null) {
                 val codecs = audioCandidates.map { it.optString("codecs").ifBlank { "未知编码" } }
                     .distinct()
