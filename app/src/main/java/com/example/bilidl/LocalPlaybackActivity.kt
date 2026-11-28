@@ -451,7 +451,19 @@ class LocalPlaybackActivity : ComponentActivity() {
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         val player = mediaPlayer
-        if (isVideoMode && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && player?.isPlaying == true) {
+        val enabled = getSharedPreferences("ui", MODE_PRIVATE)
+            .getBoolean("picture_in_picture", true)
+        val supported = packageManager.hasSystemFeature(
+            android.content.pm.PackageManager.FEATURE_PICTURE_IN_PICTURE
+        )
+        if (
+            PictureInPicturePolicy.shouldEnter(
+                enabled = enabled,
+                systemSupported = supported,
+                isVideo = isVideoMode,
+                isPlaying = player?.isPlaying == true
+            ) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+        ) {
             runCatching {
                 enterPictureInPictureMode(
                     PictureInPictureParams.Builder().setAspectRatio(pipAspectRatio).build()

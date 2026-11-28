@@ -2410,6 +2410,18 @@ class MainActivity : ComponentActivity() {
             ), sideMargins(20)
         )
 
+        col.addView(
+            group(
+                "播放器",
+                switchRow(
+                    "自动画中画",
+                    "picture_in_picture",
+                    true,
+                    "播放视频时离开应用，自动缩小为悬浮小窗（需系统支持）"
+                )
+            ), sideMargins(20)
+        )
+
         // 通用
         col.addView(
             group(
