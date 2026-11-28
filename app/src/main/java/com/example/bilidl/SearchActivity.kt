@@ -31,6 +31,9 @@ class SearchActivity : ComponentActivity() {
     private lateinit var resultList: LinearLayout
     private lateinit var loadMoreButton: TextView
     private lateinit var categoryButtons: List<TextView>
+    private lateinit var selectionFooter: LinearLayout
+    private lateinit var selectionCountText: TextView
+    private val selectedUrls = LinkedHashSet<String>()
 
     private var category = BiliSearchCategory.VIDEO
     private var page = 1
@@ -119,6 +122,7 @@ class SearchActivity : ComponentActivity() {
                 setOnClickListener {
                     if (category != value) {
                         category = value
+                        clearSelection()
                         styleCategoryButtons()
                         if (keywordInput.text.toString().isNotBlank()) startSearch(clear = true)
                     }
@@ -149,6 +153,25 @@ class SearchActivity : ComponentActivity() {
         }
         scroll.addView(resultList, android.view.ViewGroup.LayoutParams(-1, -2))
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        selectionFooter = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            background = rounded(Color.WHITE, 12, Color.rgb(231, 234, 239))
+            visibility = android.view.View.GONE
+        }
+        selectionCountText = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.rgb(76, 85, 99))
+        }
+        selectionFooter.addView(selectionCountText, LinearLayout.LayoutParams(0, -2, 1f))
+        selectionFooter.addView(actionButton("批量下载", true).apply {
+            setOnClickListener { submitBatchSelection() }
+        }, LinearLayout.LayoutParams(dp(108), dp(40)))
+        root.addView(selectionFooter, LinearLayout.LayoutParams(-1, dp(56)).apply {
+            leftMargin = dp(16); rightMargin = dp(16); bottomMargin = dp(8)
+        })
 
         loadMoreButton = actionButton("加载更多", false).apply {
             visibility = android.view.View.GONE
@@ -235,9 +258,18 @@ class SearchActivity : ComponentActivity() {
             setPadding(dp(10), dp(10), dp(10), dp(10))
             isClickable = true
             isFocusable = true
+            tag = item.url
             setOnClickListener {
-                setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SELECTED_URL, item.url))
-                finish()
+                if (selectedUrls.isNotEmpty()) {
+                    toggleSelection(item.url)
+                } else {
+                    setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SELECTED_URL, item.url))
+                    finish()
+                }
+            }
+            setOnLongClickListener {
+                toggleSelection(item.url)
+                true
             }
         }
 
@@ -282,6 +314,14 @@ class SearchActivity : ComponentActivity() {
             })
         }
         row.addView(info, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(TextView(this).apply {
+            text = if (item.url in selectedUrls) "✓" else "○"
+            textSize = 17f
+            gravity = Gravity.CENTER
+            setTextColor(if (item.url in selectedUrls) Color.WHITE else Color.rgb(218, 69, 113))
+            background = if (item.url in selectedUrls) rounded(Color.rgb(226, 69, 117), 16, null) else null
+            tag = "selection"
+        }, LinearLayout.LayoutParams(dp(28), dp(34)))
         resultList.addView(row, LinearLayout.LayoutParams(-1, -2).apply {
             bottomMargin = dp(8)
         })
@@ -296,6 +336,51 @@ class SearchActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun toggleSelection(url: String) {
+        val updated = BatchSelectionPolicy.toggle(selectedUrls.toList(), url)
+        if (updated == null) {
+            android.widget.Toast.makeText(this, "一次最多选择 50 项", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        selectedUrls.clear()
+        selectedUrls.addAll(updated)
+        updateSelectionUi()
+    }
+
+    private fun clearSelection() {
+        selectedUrls.clear()
+        updateSelectionUi()
+    }
+
+    private fun updateSelectionUi() {
+        if (!::selectionFooter.isInitialized) return
+        selectionFooter.visibility = if (selectedUrls.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+        selectionCountText.text = "已选 " + selectedUrls.size + " / 50 项"
+        for (index in 0 until resultList.childCount) {
+            val row = resultList.getChildAt(index) as? LinearLayout ?: continue
+            val url = row.tag as? String ?: continue
+            val indicator = row.getChildAt(row.childCount - 1) as? TextView ?: continue
+            val selected = url in selectedUrls
+            indicator.text = if (selected) "✓" else "○"
+            indicator.setTextColor(if (selected) Color.WHITE else Color.rgb(218, 69, 113))
+            indicator.background = if (selected) rounded(Color.rgb(226, 69, 117), 16, null) else null
+            row.background = rounded(
+                if (selected) Color.rgb(255, 246, 249) else Color.WHITE,
+                14,
+                if (selected) Color.rgb(255, 204, 220) else Color.rgb(232, 235, 240)
+            )
+        }
+    }
+
+    private fun submitBatchSelection() {
+        if (selectedUrls.isEmpty()) return
+        setResult(
+            Activity.RESULT_OK,
+            Intent().putStringArrayListExtra(EXTRA_SELECTED_URLS, ArrayList(selectedUrls))
+        )
+        finish()
     }
 
     private fun actionButton(label: String, primary: Boolean): TextView =
@@ -331,6 +416,7 @@ class SearchActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_SELECTED_URL = "com.example.bilidl.extra.SEARCH_RESULT_URL"
+        const val EXTRA_SELECTED_URLS = "com.example.bilidl.extra.SEARCH_RESULT_URLS"
         private const val PAGE_SIZE_HINT = 20
     }
 }

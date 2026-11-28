@@ -97,8 +97,11 @@ class MainActivity : ComponentActivity() {
     private val searchLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
+        val selectedUrls = result.data?.getStringArrayListExtra(SearchActivity.EXTRA_SELECTED_URLS).orEmpty()
         val selectedUrl = result.data?.getStringExtra(SearchActivity.EXTRA_SELECTED_URL)
-        if (result.resultCode == Activity.RESULT_OK && !selectedUrl.isNullOrBlank()) {
+        if (result.resultCode == Activity.RESULT_OK && selectedUrls.isNotEmpty()) {
+            startBatchFromSelection(selectedUrls)
+        } else if (result.resultCode == Activity.RESULT_OK && !selectedUrl.isNullOrBlank()) {
             input.setText(selectedUrl)
             input.setSelection(input.text.length)
             mainViewModel.parse(selectedUrl)
@@ -108,11 +111,13 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
         if (result.resultCode == Activity.RESULT_OK) {
+            val selectedUrls = result.data?.getStringArrayListExtra(AccountCenterActivity.EXTRA_SELECTED_URLS).orEmpty()
+            val selectedUrl = result.data?.getStringExtra(AccountCenterActivity.EXTRA_SELECTED_URL)
             when {
                 result.data?.getBooleanExtra(AccountCenterActivity.EXTRA_LOGOUT, false) == true ->
                     onLogoutClicked()
-                !result.data?.getStringExtra(AccountCenterActivity.EXTRA_SELECTED_URL).isNullOrBlank() -> {
-                    val selectedUrl = result.data?.getStringExtra(AccountCenterActivity.EXTRA_SELECTED_URL).orEmpty()
+                selectedUrls.isNotEmpty() -> startBatchFromSelection(selectedUrls)
+                !selectedUrl.isNullOrBlank() -> {
                     input.setText(selectedUrl)
                     input.setSelection(input.text.length)
                     mainViewModel.parse(selectedUrl)
@@ -132,7 +137,7 @@ class MainActivity : ComponentActivity() {
         const val ST_PAUSED = DownloadTaskStatus.PAUSED
         const val ST_FAILED = DownloadTaskStatus.FAILED
         const val ST_DONE = DownloadTaskStatus.COMPLETED
-        private const val MAX_BATCH_LINKS = 50
+        private const val MAX_BATCH_LINKS = BatchSelectionPolicy.MAX_ITEMS
         private const val KEY_DOWNLOAD_TREE_URI = "download_tree_uri"
     }
 
@@ -183,6 +188,20 @@ class MainActivity : ComponentActivity() {
 
     private fun onParseClicked(text: String) {
         mainViewModel.parse(text)
+    }
+
+    private fun startBatchFromSelection(rawTargets: Collection<String>) {
+        val targets = BatchSelectionPolicy.normalize(rawTargets)
+        if (targets.isEmpty()) {
+            toast("没有可添加的有效链接")
+            return
+        }
+        selectTab(0)
+        resultCard.visibility = View.GONE
+        setBusy(parseBtn, true)
+        parseBtn.text = "正在准备批量任务…"
+        say("已选择 " + targets.size + " 项，正在逐条解析；失败项不会影响其他任务", sub)
+        downloadBatchLinks(targets)
     }
 
     /** Resolve links independently so one bad URL cannot block the batch. */

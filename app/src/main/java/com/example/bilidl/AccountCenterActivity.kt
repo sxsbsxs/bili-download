@@ -35,6 +35,9 @@ class AccountCenterActivity : ComponentActivity() {
     private lateinit var submissionKeywordInput: EditText
     private lateinit var submissionPartitionButton: TextView
     private lateinit var submissionOrderButtons: List<TextView>
+    private lateinit var selectionFooter: LinearLayout
+    private lateinit var selectionCountText: TextView
+    private val selectedUrls = LinkedHashSet<String>()
 
     private var profile: BiliAccountProfile? = null
     private var section = BiliAccountSection.WATCH_LATER
@@ -142,6 +145,7 @@ class AccountCenterActivity : ComponentActivity() {
                         favoriteFolderId = 0L
                         favoriteFolderTitle = ""
                         historyCursor = null
+                        clearSelection()
                         page = 1
                         updateSubmissionControlsVisibility()
                         styleSectionButtons()
@@ -242,6 +246,7 @@ class AccountCenterActivity : ComponentActivity() {
             setOnClickListener {
                 favoriteFolderId = 0L
                 favoriteFolderTitle = ""
+                clearSelection()
                 page = 1
                 loadContent(reset = true)
             }
@@ -263,6 +268,25 @@ class AccountCenterActivity : ComponentActivity() {
         }
         scroll.addView(contentList, android.view.ViewGroup.LayoutParams(-1, -2))
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        selectionFooter = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            background = rounded(Color.WHITE, 12, Color.rgb(231, 234, 239))
+            visibility = android.view.View.GONE
+        }
+        selectionCountText = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.rgb(76, 85, 99))
+        }
+        selectionFooter.addView(selectionCountText, LinearLayout.LayoutParams(0, -2, 1f))
+        selectionFooter.addView(actionButton("批量下载", false).apply {
+            setOnClickListener { submitBatchSelection() }
+        }, LinearLayout.LayoutParams(dp(108), dp(40)))
+        root.addView(selectionFooter, LinearLayout.LayoutParams(-1, dp(56)).apply {
+            leftMargin = dp(16); rightMargin = dp(16); bottomMargin = dp(8)
+        })
 
         loadMoreButton = actionButton("加载更多", false).apply {
             visibility = android.view.View.GONE
@@ -484,9 +508,18 @@ class AccountCenterActivity : ComponentActivity() {
             setPadding(dp(10), dp(10), dp(10), dp(10))
             isClickable = true
             isFocusable = true
+            tag = item.url
             setOnClickListener {
-                setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SELECTED_URL, item.url))
-                finish()
+                if (selectedUrls.isNotEmpty()) {
+                    toggleSelection(item.url)
+                } else {
+                    setResult(Activity.RESULT_OK, Intent().putExtra(EXTRA_SELECTED_URL, item.url))
+                    finish()
+                }
+            }
+            setOnLongClickListener {
+                toggleSelection(item.url)
+                true
             }
         }
         val cover = ImageView(this).apply {
@@ -526,6 +559,14 @@ class AccountCenterActivity : ComponentActivity() {
             })
         }
         row.addView(copy, LinearLayout.LayoutParams(0, -2, 1f))
+        row.addView(TextView(this).apply {
+            text = if (item.url in selectedUrls) "✓" else "○"
+            textSize = 17f
+            gravity = Gravity.CENTER
+            setTextColor(if (item.url in selectedUrls) Color.WHITE else Color.rgb(218, 69, 113))
+            background = if (item.url in selectedUrls) rounded(Color.rgb(226, 69, 117), 16, null) else null
+            tag = "selection"
+        }, LinearLayout.LayoutParams(dp(28), dp(34)))
         contentList.addView(row, LinearLayout.LayoutParams(-1, -2).apply {
             bottomMargin = dp(8)
         })
@@ -542,6 +583,51 @@ class AccountCenterActivity : ComponentActivity() {
                 if (view.tag == tag && !isFinishing && !isDestroyed) view.setImageBitmap(bitmap)
             }
         }
+    }
+
+    private fun toggleSelection(url: String) {
+        val updated = BatchSelectionPolicy.toggle(selectedUrls.toList(), url)
+        if (updated == null) {
+            android.widget.Toast.makeText(this, "一次最多选择 50 项", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        selectedUrls.clear()
+        selectedUrls.addAll(updated)
+        updateSelectionUi()
+    }
+
+    private fun clearSelection() {
+        selectedUrls.clear()
+        updateSelectionUi()
+    }
+
+    private fun updateSelectionUi() {
+        if (!::selectionFooter.isInitialized) return
+        selectionFooter.visibility = if (selectedUrls.isEmpty()) android.view.View.GONE else android.view.View.VISIBLE
+        selectionCountText.text = "已选 " + selectedUrls.size + " / 50 项"
+        for (index in 0 until contentList.childCount) {
+            val row = contentList.getChildAt(index) as? LinearLayout ?: continue
+            val url = row.tag as? String ?: continue
+            val indicator = row.getChildAt(row.childCount - 1) as? TextView ?: continue
+            val selected = url in selectedUrls
+            indicator.text = if (selected) "✓" else "○"
+            indicator.setTextColor(if (selected) Color.WHITE else Color.rgb(218, 69, 113))
+            indicator.background = if (selected) rounded(Color.rgb(226, 69, 117), 16, null) else null
+            row.background = rounded(
+                if (selected) Color.rgb(255, 246, 249) else Color.WHITE,
+                13,
+                if (selected) Color.rgb(255, 204, 220) else Color.rgb(231, 234, 239)
+            )
+        }
+    }
+
+    private fun submitBatchSelection() {
+        if (selectedUrls.isEmpty()) return
+        setResult(
+            Activity.RESULT_OK,
+            Intent().putStringArrayListExtra(EXTRA_SELECTED_URLS, ArrayList(selectedUrls))
+        )
+        finish()
     }
 
     private fun styleSectionButtons() {
@@ -603,6 +689,7 @@ class AccountCenterActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_SELECTED_URL = "com.example.bilidl.extra.ACCOUNT_CONTENT_URL"
+        const val EXTRA_SELECTED_URLS = "com.example.bilidl.extra.ACCOUNT_CONTENT_URLS"
         const val EXTRA_LOGOUT = "com.example.bilidl.extra.ACCOUNT_LOGOUT"
     }
 }
