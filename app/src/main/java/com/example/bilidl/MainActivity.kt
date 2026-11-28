@@ -317,6 +317,11 @@ class MainActivity : ComponentActivity() {
                     BiliDownloadWorker.KEY_PAGE to spec.video.page,
                     BiliDownloadWorker.KEY_DURATION to spec.video.durationSeconds,
                     BiliDownloadWorker.KEY_TITLE to spec.video.title,
+                    BiliDownloadWorker.KEY_PART_NAME to (
+                        spec.video.pages.firstOrNull { it.pageNumber == spec.video.page }?.part
+                            ?.takeIf { it.isNotBlank() }
+                            ?: if (spec.video.page > 1) "P" + spec.video.page else ""
+                    ),
                     BiliDownloadWorker.KEY_QUALITY to spec.qualityId,
                     BiliDownloadWorker.KEY_AUDIO_ONLY to spec.audioOnly,
                     BiliDownloadWorker.KEY_DOWNLOAD_DANMAKU to spec.downloadDanmaku,
@@ -2200,6 +2205,54 @@ class MainActivity : ComponentActivity() {
             ), sideMargins(20)
         )
 
+        val videoTemplateTv = valueText(
+            settingsViewModel.getString(
+                BiliDownloadFileNamePolicy.KEY_VIDEO_TEMPLATE,
+                BiliDownloadFileNamePolicy.DEFAULT_VIDEO_TEMPLATE
+            )
+        )
+        val audioTemplateTv = valueText(
+            settingsViewModel.getString(
+                BiliDownloadFileNamePolicy.KEY_AUDIO_TEMPLATE,
+                BiliDownloadFileNamePolicy.DEFAULT_AUDIO_TEMPLATE
+            )
+        )
+        val mixedTemplateTv = valueText(
+            settingsViewModel.getString(
+                BiliDownloadFileNamePolicy.KEY_MIXED_TEMPLATE,
+                BiliDownloadFileNamePolicy.DEFAULT_MIXED_TEMPLATE
+            )
+        )
+        col.addView(
+            group(
+                "文件命名",
+                settingRow("视频文件", "用于视频内容及弹幕/字幕文件，可使用 {VideoName}、{PartName}", videoTemplateTv) {
+                    showFileNameTemplateDialog(
+                        "视频文件命名模板",
+                        BiliDownloadFileNamePolicy.KEY_VIDEO_TEMPLATE,
+                        BiliDownloadFileNamePolicy.DEFAULT_VIDEO_TEMPLATE,
+                        videoTemplateTv
+                    )
+                },
+                settingRow("仅音频", "用于单独保存的 M4A 音频", audioTemplateTv) {
+                    showFileNameTemplateDialog(
+                        "音频文件命名模板",
+                        BiliDownloadFileNamePolicy.KEY_AUDIO_TEMPLATE,
+                        BiliDownloadFileNamePolicy.DEFAULT_AUDIO_TEMPLATE,
+                        audioTemplateTv
+                    )
+                },
+                settingRow("音视频合并", "用于视频与音频合并后的 MP4", mixedTemplateTv) {
+                    showFileNameTemplateDialog(
+                        "音视频文件命名模板",
+                        BiliDownloadFileNamePolicy.KEY_MIXED_TEMPLATE,
+                        BiliDownloadFileNamePolicy.DEFAULT_MIXED_TEMPLATE,
+                        mixedTemplateTv
+                    )
+                }
+            ), sideMargins(20)
+        )
+
         // 下载源：沿用 BVD 的内嵌策略单选布局。
         col.addView(buildDownloadSourceSettingsCard(), sideMargins(20))
 
@@ -2246,6 +2299,40 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(24), 0, dp(32))
         }, match, wrap)
         return scroll
+    }
+
+    private fun showFileNameTemplateDialog(
+        title: String,
+        key: String,
+        defaultTemplate: String,
+        valueView: TextView
+    ) {
+        val editor = EditText(this).apply {
+            isSingleLine = true
+            setText(settingsViewModel.getString(key, defaultTemplate))
+            setSelection(text.length)
+            hint = defaultTemplate
+        }
+        val editorContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(4), dp(24), dp(4))
+            addView(editor, LinearLayout.LayoutParams(match, dp(48)))
+        }
+        AlertDialog.Builder(this)
+            .setTitle(title)
+            .setMessage("支持变量：{VideoName}（视频标题）、{PartName}（分 P 标题）。非法文件名字符会自动替换。")
+            .setView(editorContainer)
+            .setPositiveButton("保存") { _, _ ->
+                val template = editor.text?.toString().orEmpty().trim()
+                settingsViewModel.setString(key, template)
+                valueView.text = (template.ifBlank { defaultTemplate }) + "  ›"
+            }
+            .setNeutralButton("恢复默认") { _, _ ->
+                settingsViewModel.setString(key, defaultTemplate)
+                valueView.text = defaultTemplate + "  ›"
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun buildDownloadSourceSettingsCard(): View {

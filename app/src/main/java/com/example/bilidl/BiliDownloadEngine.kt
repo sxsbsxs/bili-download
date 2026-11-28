@@ -106,7 +106,11 @@ object BiliDownloadEngine {
                     val saved = publishFile(
                         context,
                         audioOutputTemp,
-                        video.title,
+                        buildOutputBaseName(
+                            context, video,
+                            BiliDownloadFileNamePolicy.KEY_AUDIO_TEMPLATE,
+                            BiliDownloadFileNamePolicy.DEFAULT_AUDIO_TEMPLATE
+                        ),
                         "m4a",
                         "audio/mp4"
                     )
@@ -185,7 +189,17 @@ object BiliDownloadEngine {
                         deleteTransferArtifact(videoTemp)
                         deleteTransferArtifact(audioTemp)
                     }
-                    val saved = publishFile(context, finalTemp, video.title, "mp4", "video/mp4")
+                    val saved = publishFile(
+                        context,
+                        finalTemp,
+                        buildOutputBaseName(
+                            context, video,
+                            BiliDownloadFileNamePolicy.KEY_MIXED_TEMPLATE,
+                            BiliDownloadFileNamePolicy.DEFAULT_MIXED_TEMPLATE
+                        ),
+                        "mp4",
+                        "video/mp4"
+                    )
                     val sidecars = exportSidecars(
                         context = context,
                         workDir = workDir,
@@ -303,7 +317,17 @@ object BiliDownloadEngine {
 
                 val ext = if (isFlv) "flv" else "mp4"
                 val mime = if (ext == "flv") "video/x-flv" else "video/mp4"
-                val saved = publishFile(context, directTemp, video.title, ext, mime)
+                val saved = publishFile(
+                    context,
+                    directTemp,
+                    buildOutputBaseName(
+                        context, video,
+                        BiliDownloadFileNamePolicy.KEY_MIXED_TEMPLATE,
+                        BiliDownloadFileNamePolicy.DEFAULT_MIXED_TEMPLATE
+                    ),
+                    ext,
+                    mime
+                )
                 val sidecars = exportSidecars(
                     context = context,
                     workDir = workDir,
@@ -391,7 +415,11 @@ object BiliDownloadEngine {
                         val published = publishFile(
                             context,
                             temp,
-                            video.title + "_弹幕",
+                            buildOutputBaseName(
+                                context, video,
+                                BiliDownloadFileNamePolicy.KEY_VIDEO_TEMPLATE,
+                                BiliDownloadFileNamePolicy.DEFAULT_VIDEO_TEMPLATE
+                            ) + "_弹幕",
                             "xml",
                             "application/xml"
                         )
@@ -437,7 +465,11 @@ object BiliDownloadEngine {
                                 val temp = File(workDir, "${prefix}_subtitle_$index.srt")
                                 try {
                                     temp.writeText(BiliContentExporter.subtitlesToSrt(cues), Charsets.UTF_8)
-                                    val baseName = video.title + "_" + track.languageName
+                                    val baseName = buildOutputBaseName(
+                                        context, video,
+                                        BiliDownloadFileNamePolicy.KEY_VIDEO_TEMPLATE,
+                                        BiliDownloadFileNamePolicy.DEFAULT_VIDEO_TEMPLATE
+                                    ) + "_" + track.languageName
                                     val published = publishFile(
                                         context,
                                         temp,
@@ -588,6 +620,25 @@ object BiliDownloadEngine {
         return "https://www.bilibili.com/video/$identity?p=${video.page.coerceAtLeast(1)}"
     }
 
+    private fun buildOutputBaseName(
+        context: Context,
+        video: BiliVideo,
+        preferenceKey: String,
+        defaultTemplate: String
+    ): String {
+        val template = context.getSharedPreferences("ui", Context.MODE_PRIVATE)
+            .getString(preferenceKey, defaultTemplate)
+        val partName = video.pages.firstOrNull { it.pageNumber == video.page }?.part
+            ?.takeIf { it.isNotBlank() }
+            ?: if (video.page > 1) "P" + video.page else ""
+        return BiliDownloadFileNamePolicy.render(
+            template = template,
+            defaultTemplate = defaultTemplate,
+            videoName = video.title,
+            partName = partName
+        )
+    }
+
     private fun publishFile(
         context: Context,
         source: File,
@@ -604,11 +655,7 @@ object BiliDownloadEngine {
         if (!selectedTree.isNullOrBlank()) {
             return publishIntoSelectedTree(context, Uri.parse(selectedTree), source, title, extension, mimeType)
         }
-        val safeTitle = title
-            .replace(Regex("""[\\/:*?"<>|]"""), "_")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
-            .take(80)
+        val safeTitle = BiliDownloadFileNamePolicy.sanitizeBaseName(title)
             .ifBlank { "BiliDl video" }
         val displayName = safeTitle + "." + extension
         val values = ContentValues().apply {
@@ -646,11 +693,7 @@ object BiliDownloadEngine {
         extension: String,
         mimeType: String
     ): SavedDownload {
-        val safeTitle = title
-            .replace(Regex("""[\\/:*?"<>|]"""), "_")
-            .replace(Regex("""\s+"""), " ")
-            .trim()
-            .take(80)
+        val safeTitle = BiliDownloadFileNamePolicy.sanitizeBaseName(title)
             .ifBlank { "BiliDl video" }
         val displayName = "$safeTitle.$extension"
         val resolver = context.contentResolver

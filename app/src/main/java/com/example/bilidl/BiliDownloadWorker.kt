@@ -43,6 +43,7 @@ class BiliDownloadWorker(
             val downloadSubtitles = inputData.getBoolean(KEY_DOWNLOAD_SUBTITLES, false)
             val durationSeconds = inputData.getInt(KEY_DURATION, 0)
             val page = inputData.getInt(KEY_PAGE, 1)
+            val partName = inputData.getString(KEY_PART_NAME).orEmpty()
             val transferId = inputData.getString(KEY_TASK_ID).orEmpty()
             val concurrency = inputData.getInt(KEY_CONCURRENT, 2)
             if (taskId.isBlank()) {
@@ -87,7 +88,15 @@ class BiliDownloadWorker(
                 durationSeconds = durationSeconds,
                 coverUrl = null,
                 cover = null,
-                qualities = emptyList()
+                qualities = emptyList(),
+                pages = listOf(
+                    BiliPage(
+                        pageNumber = page,
+                        cid = cid,
+                        part = partName,
+                        durationSeconds = durationSeconds
+                    )
+                )
             )
             val progressPolicy = DownloadProgressPolicy()
             val saved = coroutineScope {
@@ -267,6 +276,7 @@ class BiliDownloadWorker(
         const val KEY_DOWNLOAD_SUBTITLES = "download_subtitles"
         const val KEY_DURATION = "duration_seconds"
         const val KEY_PAGE = "page_number"
+        const val KEY_PART_NAME = "part_name"
         const val KEY_CONTENT_FILES = "content_files"
         const val KEY_CONTENT_WARNINGS = "content_warnings"
         const val KEY_CONCURRENT = "concurrent"
