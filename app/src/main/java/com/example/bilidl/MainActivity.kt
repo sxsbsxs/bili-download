@@ -151,6 +151,8 @@ class MainActivity : ComponentActivity() {
                     VideoParseState.Loading -> {
                         setBusy(parseBtn, true)
                         parseBtn.text = "正在解析…"
+                        say("正在解析 B 站视频信息…", sub)
+                        homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
                     }
                     is VideoParseState.Success -> {
                         val video = state.video
@@ -178,11 +180,15 @@ class MainActivity : ComponentActivity() {
                                 formatDuration(video.durationSeconds) + qualityHint + pageHint
                         )
                         homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
+                        homeScroll.post {
+                            homeScroll.smoothScrollTo(0, (resultCard.top - dp(12)).coerceAtLeast(0))
+                        }
                     }
                     is VideoParseState.Error -> {
                         setBusy(parseBtn, false)
                         parseBtn.text = "解析视频"
                         showError(state.message)
+                        homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
                     }
                 }
             }
@@ -200,6 +206,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         selectTab(0)
+        homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
         resultCard.visibility = View.GONE
         setBusy(parseBtn, true)
         parseBtn.text = "正在准备批量任务…"
@@ -1201,6 +1208,7 @@ class MainActivity : ComponentActivity() {
     private val homeFeedImageExecutor = Executors.newFixedThreadPool(3)
 
     // 首页
+    private lateinit var homeScroll: ScrollView
     private lateinit var input: EditText
     private lateinit var parseBtn: Button
     private lateinit var resultCard: LinearLayout
@@ -1782,6 +1790,7 @@ class MainActivity : ComponentActivity() {
             isVerticalScrollBarEnabled = false
             clipToPadding = false
         }
+        homeScroll = scroll
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(col, match, wrap)
 
@@ -1842,13 +1851,6 @@ class MainActivity : ComponentActivity() {
         inputActions.addView(helper, LinearLayout.LayoutParams(0, wrap, 1f))
         val pasteBtn = chip("粘贴", false)
         inputActions.addView(pasteBtn, LinearLayout.LayoutParams(wrap, dp(38)))
-        val siteSearchBtn = chip("站内搜索", false)
-        siteSearchBtn.setOnClickListener {
-            searchLauncher.launch(Intent(this, SearchActivity::class.java))
-        }
-        inputActions.addView(siteSearchBtn, LinearLayout.LayoutParams(wrap, dp(38)).apply {
-            leftMargin = dp(6)
-        })
         inputCard.addView(inputActions, LinearLayout.LayoutParams(match, wrap).apply {
             topMargin = dp(10)
         })
@@ -1859,83 +1861,19 @@ class MainActivity : ComponentActivity() {
         })
         col.addView(inputCard, sideMargins(4))
 
-        val feedCard = card().apply {
-            setPadding(dp(14), dp(14), dp(14), dp(12))
-        }
-        val feedHeader = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        feedHeader.addView(TextView(this).apply {
-            text = "B站首页"
-            textSize = 17f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(ink)
-        }, LinearLayout.LayoutParams(0, wrap, 1f))
-        feedHeader.addView(TextView(this).apply {
-            text = "刷新"
-            textSize = 12f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(pink)
-            setPadding(dp(12), dp(7), dp(4), dp(7))
-            setOnClickListener { loadHomeFeed(reset = true) }
-        })
-        feedCard.addView(feedHeader, LinearLayout.LayoutParams(match, dp(34)))
-
-        val feedTabRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(7), 0, dp(8))
-        }
-        homeFeedRecommendTab = TextView(this).apply {
-            text = "推荐"
+        statusTv = TextView(this).apply {
             textSize = 13f
             gravity = Gravity.CENTER
-            setPadding(dp(18), dp(8), dp(18), dp(8))
-            setOnClickListener { switchHomeFeed(BiliHomeFeedType.RECOMMEND) }
-        }
-        homeFeedPopularTab = TextView(this).apply {
-            text = "热门"
-            textSize = 13f
-            gravity = Gravity.CENTER
-            setPadding(dp(18), dp(8), dp(18), dp(8))
-            setOnClickListener { switchHomeFeed(BiliHomeFeedType.POPULAR) }
-        }
-        feedTabRow.addView(homeFeedRecommendTab)
-        feedTabRow.addView(homeFeedPopularTab)
-        feedCard.addView(feedTabRow)
-
-        homeFeedStatus = TextView(this).apply {
-            text = "正在加载 B站首页…"
-            textSize = 12f
-            setTextColor(sub)
-            setPadding(dp(4), dp(8), dp(4), dp(8))
-            setOnClickListener {
-                if (homeFeedType == BiliHomeFeedType.RECOMMEND && !loggedIn) showLogin()
-            }
-        }
-        feedCard.addView(homeFeedStatus)
-
-        homeFeedList = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-        }
-        feedCard.addView(homeFeedList, LinearLayout.LayoutParams(match, wrap))
-
-        homeFeedMore = TextView(this).apply {
-            text = "加载更多"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            gravity = Gravity.CENTER
-            setTextColor(pink)
-            background = shape(field, 12)
             visibility = View.GONE
-            setOnClickListener { loadHomeFeed(reset = false) }
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setLineSpacing(0f, 1.15f)
         }
-        feedCard.addView(homeFeedMore, LinearLayout.LayoutParams(match, dp(42)).apply {
+        col.addView(statusTv, LinearLayout.LayoutParams(match, wrap).apply {
             topMargin = dp(8)
+            leftMargin = dp(20)
+            rightMargin = dp(20)
+            bottomMargin = dp(28)
         })
-        refreshHomeFeedTabs()
-        col.addView(feedCard, sideMargins(12))
 
         resultCard = card().apply { visibility = View.GONE }
         val previewRow = LinearLayout(this).apply {
@@ -2026,19 +1964,93 @@ class MainActivity : ComponentActivity() {
         })
         col.addView(resultCard, sideMargins(12))
 
-        statusTv = TextView(this).apply {
+        val feedCard = card().apply {
+            setPadding(dp(14), dp(14), dp(14), dp(12))
+        }
+        val feedHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        feedHeader.addView(TextView(this).apply {
+            text = "发现视频"
+            textSize = 17f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }, LinearLayout.LayoutParams(0, wrap, 1f))
+        feedHeader.addView(TextView(this).apply {
+            text = "站内搜索"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(pink)
+            setPadding(dp(8), dp(7), dp(8), dp(7))
+            setOnClickListener {
+                searchLauncher.launch(Intent(this@MainActivity, SearchActivity::class.java))
+            }
+        })
+        feedHeader.addView(TextView(this).apply {
+            text = "刷新"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(pink)
+            setPadding(dp(12), dp(7), dp(4), dp(7))
+            setOnClickListener { loadHomeFeed(reset = true) }
+        })
+        feedCard.addView(feedHeader, LinearLayout.LayoutParams(match, dp(34)))
+
+        val feedTabRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(7), 0, dp(8))
+        }
+        homeFeedRecommendTab = TextView(this).apply {
+            text = "推荐"
             textSize = 13f
             gravity = Gravity.CENTER
-            visibility = View.GONE
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            setLineSpacing(0f, 1.15f)
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+            setOnClickListener { switchHomeFeed(BiliHomeFeedType.RECOMMEND) }
         }
-        col.addView(statusTv, LinearLayout.LayoutParams(match, wrap).apply {
+        homeFeedPopularTab = TextView(this).apply {
+            text = "热门"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+            setOnClickListener { switchHomeFeed(BiliHomeFeedType.POPULAR) }
+        }
+        feedTabRow.addView(homeFeedRecommendTab)
+        feedTabRow.addView(homeFeedPopularTab)
+        feedCard.addView(feedTabRow)
+
+        homeFeedStatus = TextView(this).apply {
+            text = "正在加载 B站首页…"
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+            setOnClickListener {
+                if (homeFeedType == BiliHomeFeedType.RECOMMEND && !loggedIn) showLogin()
+            }
+        }
+        feedCard.addView(homeFeedStatus)
+
+        homeFeedList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        feedCard.addView(homeFeedList, LinearLayout.LayoutParams(match, wrap))
+
+        homeFeedMore = TextView(this).apply {
+            text = "加载更多"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(pink)
+            background = shape(field, 12)
+            visibility = View.GONE
+            setOnClickListener { loadHomeFeed(reset = false) }
+        }
+        feedCard.addView(homeFeedMore, LinearLayout.LayoutParams(match, dp(42)).apply {
             topMargin = dp(8)
-            leftMargin = dp(20)
-            rightMargin = dp(20)
-            bottomMargin = dp(28)
         })
+        refreshHomeFeedTabs()
+        col.addView(feedCard, sideMargins(12))
 
         pasteBtn.setOnClickListener {
             val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -2086,6 +2098,7 @@ class MainActivity : ComponentActivity() {
                 setBusy(parseBtn, true)
                 parseBtn.text = "正在准备批量任务…"
                 say("正在逐条解析，失败项不会影响其他任务", sub)
+                homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
                 downloadBatchLinks(batchTargets)
                 return@setOnClickListener
             }
@@ -2101,7 +2114,7 @@ class MainActivity : ComponentActivity() {
             parseBtn.text = "正在解析…"
             // Keep the last successful result on screen while the new URL is loading.
             // Success replaces it; failure is reported by the normal parse error state.
-            say("", sub)
+            say("正在解析 B 站视频信息…", sub)
             onParseClicked(target)
         }
         return scroll
