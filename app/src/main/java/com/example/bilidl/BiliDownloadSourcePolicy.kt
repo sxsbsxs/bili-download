@@ -25,7 +25,12 @@ internal object BiliDownloadSourcePolicy {
             !parsed.rawPath.isNullOrBlank() || parsed.rawQuery != null || parsed.rawFragment != null ||
             parsed.rawUserInfo != null
         ) return null
-        return parsed.host.lowercase()
+        val host = parsed.host.lowercase()
+        // The media downloader may attach SESSDATA. Never send it to an arbitrary host.
+        val isBilibiliCdn = host.endsWith(".bilivideo.com") ||
+            host.endsWith(".akamaized.net")
+        if (!isBilibiliCdn) return null
+        return host
     }
 
     fun rewriteHost(url: String, host: String): String? {
