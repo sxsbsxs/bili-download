@@ -1,6 +1,15 @@
 package com.example.bilidl
 
-import androidx.activity.ComponentActivity
+import androidx.fragment.app.FragmentActivity
+import com.google.android.material.bottomnavigation.BottomNavigationView
+import com.sxsbsxs.bilivdl.ui.BiliVdlAccount
+import com.sxsbsxs.bilivdl.ui.BiliVdlDownloadTask
+import com.sxsbsxs.bilivdl.ui.BiliVdlUiHost
+import com.sxsbsxs.bilivdl.ui.BiliVdlVideo
+import com.sxsbsxs.bilivdl.ui.HomeFragment
+import com.sxsbsxs.bilivdl.ui.DownloadsFragment
+import com.sxsbsxs.bilivdl.ui.ProfileFragment
+import com.sxsbsxs.bilivdl.ui.DiscoverFragment
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -76,7 +85,7 @@ import kotlinx.coroutines.runBlocking
  *          变化时会回调 onSettingChanged(key, value)
  */
 @OptIn(UnstableApi::class)
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
@@ -2862,42 +2871,249 @@ class MainActivity : ComponentActivity() {
         return null
     }
 
+    override fun loadPopular(page: Int, callback: (Result<List<BiliVdlVideo>>) -> Unit) {
+        backgroundExecutor.execute {
+            val result = runCatching {
+                repositoryWithSavedCookie().getPopularVideos(page, 20).map { item ->
+                    BiliVdlVideo(
+                        title = item.title,
+                        cover = item.coverUrl.orEmpty(),
+                        author = item.author,
+                        play = formatUiCount(item.viewCount),
+                        duration = item.duration,
+                        bvid = item.bvid,
+                        aid = item.aid,
+                        description = item.description
+                    )
+                }
+            }
+            runOnUiThread { callback(result) }
+        }
+    }
+
+    override fun searchVideos(
+        query: String,
+        page: Int,
+        callback: (Result<List<BiliVdlVideo>>) -> Unit
+    ) {
+        backgroundExecutor.execute {
+            val result = runCatching {
+                val normalized = normalizeBiliInput(query)
+                if (normalized != null) {
+                    val video = repositoryWithSavedCookie().inspect(normalized)
+                    listOf(
+                        BiliVdlVideo(
+                            title = video.title,
+                            cover = video.coverUrl.orEmpty(),
+                            author = video.uploader,
+                            play = formatUiCount(video.viewCount),
+                            duration = formatDuration(video.durationSeconds),
+                            bvid = video.bvid.orEmpty(),
+                            aid = video.aid,
+                            description = video.description
+                        )
+                    )
+                } else {
+                    repositoryWithSavedCookie().searchVideos(query, page, "totalrank").map { item ->
+                        BiliVdlVideo(
+                            title = item.title,
+                            cover = item.coverUrl.orEmpty(),
+                            author = item.author,
+                            play = formatUiCount(item.viewCount),
+                            duration = item.duration,
+                            bvid = item.bvid,
+                            aid = item.aid,
+                            description = item.description
+                        )
+                    }
+                }
+            }
+            runOnUiThread { callback(result) }
+        }
+    }
+
+    override fun openVideo(video: BiliVdlVideo) {
+        val identity = video.bvid.takeIf { it.isNotBlank() } ?: ("av" + video.aid)
+        onParseClicked("https://www.bilibili.com/video/" + identity)
+    }
+
+    override fun navigateToDiscover() {
+        supportFragmentManager.beginTransaction()
+            .setReorderingAllowed(true)
+            .replace(
+                com.sxsbsxs.bilivdl.ui.R.id.fragment_container,
+                DiscoverFragment()
+            )
+            .addToBackStack("bilivdl-discover")
+            .commit()
+    }
+
+    override fun loadDownloadTasks(callback: (List<BiliVdlDownloadTask>) -> Unit) {
+        val tasks = items.values.map { item ->
+            val state = when (item.state) {
+                ST_DOWNLOADING -> "downloading"
+                ST_DONE -> "completed"
+                ST_FAILED -> "failed"
+                ST_PAUSED -> "paused"
+                else -> "queued"
+            }
+            val spec = downloadSpecs[item.id]
+            val quality = spec?.video?.qualities?.firstOrNull { it.id == spec.qualityId }?.label
+                ?: spec?.qualityId?.let { "画质 " + it }
+                ?: "自动"
+            BiliVdlDownloadTask(
+                id = item.id,
+                title = item.title,
+                quality = quality,
+                status = state,
+                progress = item.progress,
+                detail = item.info.ifBlank { item.sizeText }
+            )
+        }
+        runOnUiThread { callback(tasks) }
+    }
+
+    override fun pauseDownload(taskId: String) {
+        onPauseClicked(taskId)
+    }
+
+    override fun resumeDownload(taskId: String) {
+        onResumeClicked(taskId)
+    }
+
+    override fun cancelDownload(taskId: String) {
+        onPauseClicked(taskId)
+    }
+
+    override fun deleteDownload(taskId: String, deleteSavedFile: Boolean) {
+        removeDownload(taskId)
+        onDeleteClicked(taskId, deleteSavedFile)
+    }
+
+    override fun clearCompletedDownloads() {
+        val ids = items.values.filter { it.state == ST_DONE }.map { it.id }
+        ids.forEach { id ->
+            removeDownload(id)
+            onDeleteClicked(id, false)
+        }
+    }
+
+    override fun retryFailedDownloads() {
+        items.values.filter { it.state == ST_FAILED || it.state == ST_PAUSED }
+            .map { it.id }
+            .forEach(::onResumeClicked)
+    }
+
+    override fun clearDownloadHistory() {
+        val ids = items.values.filter { it.state == ST_DONE || it.state == ST_FAILED }
+            .map { it.id }
+        ids.forEach { id ->
+            removeDownload(id)
+            onDeleteClicked(id, false)
+        }
+    }
+
+    override fun loadAccount(callback: (BiliVdlAccount) -> Unit) {
+        val cookie = SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+        if (cookie.isNullOrBlank()) {
+            callback(BiliVdlAccount("未登录", "尚未连接 B 站账号", false))
+            return
+        }
+        backgroundExecutor.execute {
+            val account = runCatching {
+                val (name, vip) = BiliRepository().verifyCookie(cookie)
+                loggedIn = true
+                userName = name
+                userVip = vip
+                BiliVdlAccount(name, if (vip) "账号已连接 · 大会员" else "账号已连接", true)
+            }.getOrElse { error ->
+                SecureCookieStore.clear(this)
+                loggedIn = false
+                BiliVdlAccount("未登录", error.message ?: "登录状态已失效", false)
+            }
+            runOnUiThread { callback(account) }
+        }
+    }
+
+    override fun requestLogin() {
+        showLogin()
+    }
+
+    override fun requestLogout() {
+        onLogoutClicked()
+    }
+
+    private fun formatUiCount(value: Long): String = when {
+        value >= 100_000_000L -> String.format(java.util.Locale.US, "%.1f亿", value / 100_000_000.0)
+        value >= 10_000L -> String.format(java.util.Locale.US, "%.1f万", value / 10_000.0)
+        else -> value.toString()
+    }
+
     // ---------------- 生命周期 ----------------
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("ui", Context.MODE_PRIVATE)
-        window.statusBarColor = bg
-        window.navigationBarColor = Color.WHITE
-        window.decorView.systemUiVisibility =
-            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+        window.statusBarColor = Color.parseColor("#101014")
+        window.navigationBarColor = Color.parseColor("#101014")
+        window.decorView.systemUiVisibility = 0
 
+        // The UI shell and its resources are imported from the user's BiliVdl project.
         rootFrame = FrameLayout(this)
-        mainContainer = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val content = FrameLayout(this)
-        pages = listOf(buildHome(), buildDownloads(), buildSettings())
-        pages.forEach { content.addView(it, FrameLayout.LayoutParams(match, match)) }
-        mainContainer.addView(content, LinearLayout.LayoutParams(match, 0, 1f))
-        mainContainer.addView(buildNavBar(), LinearLayout.LayoutParams(match, dp(62)))
+        mainContainer = layoutInflater.inflate(
+            com.sxsbsxs.bilivdl.ui.R.layout.activity_main,
+            rootFrame,
+            false
+        ) as LinearLayout
         rootFrame.addView(mainContainer, FrameLayout.LayoutParams(match, match))
+
+        // Retain small invisible compatibility widgets for legacy download/detail
+        // helpers; the visible home/search/download/profile screens belong to bilivdl-ui.
+        input = EditText(this)
+        parseBtn = Button(this)
+        statusTv = TextView(this)
+        resultCard = LinearLayout(this)
+        coverIv = ImageView(this)
+        titleTv = TextView(this)
+        upTv = TextView(this)
+        metaTv = TextView(this)
+        homeQualityTv = TextView(this)
+        dlBtn = Button(this)
+
+        val bottomNavigation = mainContainer.findViewById<BottomNavigationView>(
+            com.sxsbsxs.bilivdl.ui.R.id.bottom_navigation
+        )
+        bottomNavigation.setOnItemSelectedListener { item ->
+            when (item.itemId) {
+                com.sxsbsxs.bilivdl.ui.R.id.nav_home -> selectTab(0)
+                com.sxsbsxs.bilivdl.ui.R.id.nav_downloads -> selectTab(1)
+                com.sxsbsxs.bilivdl.ui.R.id.nav_profile -> selectTab(2)
+                else -> false
+            }
+        }
 
         loginPage = buildLogin()
         loginPage.visibility = View.GONE
         rootFrame.addView(loginPage, FrameLayout.LayoutParams(match, match))
-
         setContentView(rootFrame)
-        selectTab(0)
-        loadHomeFeed(true)
+
+        bottomNavigation.selectedItemId = com.sxsbsxs.bilivdl.ui.R.id.nav_home
         refreshAccountUi()
-        refreshDownloadList()
         restoreDownloadTasks()
         restoreRoomTasks()
         setDownloadPathText("Download/BiliDl")
+
         backgroundExecutor.execute {
             val cookie = SecureCookieStore.load(this)
             if (!cookie.isNullOrBlank()) {
                 try {
                     val (name, vip) = BiliRepository().verifyCookie(cookie)
-                    runOnUiThread { if (!isFinishing) loginSuccess(name, null, vip) }
+                    runOnUiThread {
+                        if (!isFinishing) {
+                            loggedIn = true
+                            userName = name
+                            userVip = vip
+                        }
+                    }
                 } catch (_: Exception) {
                     SecureCookieStore.clear(this)
                 }
@@ -2910,6 +3126,7 @@ class MainActivity : ComponentActivity() {
         when {
             loginPage.visibility == View.VISIBLE -> hideLogin()
             detailPage != null -> closeVideoDetail()
+            supportFragmentManager.backStackEntryCount > 0 -> supportFragmentManager.popBackStack()
             else -> super.onBackPressed()
         }
     }
@@ -2949,14 +3166,33 @@ class MainActivity : ComponentActivity() {
         return navBar
     }
 
-    private fun selectTab(i: Int) {
-        pages.forEachIndexed { idx, p -> p.visibility = if (idx == i) View.VISIBLE else View.GONE }
-        for (k in 0 until 3) {
-            val on = k == i
-            tabIcon[k].alpha = if (on) 1f else 0.4f
-            tabText[k].setTextColor(if (on) pink else sub)
-            tabText[k].typeface = if (on) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+    private fun selectTab(i: Int): Boolean {
+        val fragment = when (i) {
+            0 -> HomeFragment()
+            1 -> DownloadsFragment()
+            else -> ProfileFragment()
         }
+        val tag = when (i) {
+            0 -> "bilivdl-home"
+            1 -> "bilivdl-downloads"
+            else -> "bilivdl-profile"
+        }
+        if (supportFragmentManager.findFragmentByTag(tag) == null) {
+            supportFragmentManager.beginTransaction()
+                .setReorderingAllowed(true)
+                .replace(com.sxsbsxs.bilivdl.ui.R.id.fragment_container, fragment, tag)
+                .commit()
+        } else {
+            supportFragmentManager.beginTransaction()
+                .setReorderingAllowed(true)
+                .replace(
+                    com.sxsbsxs.bilivdl.ui.R.id.fragment_container,
+                    supportFragmentManager.findFragmentByTag(tag)!!,
+                    tag
+                )
+                .commit()
+        }
+        return true
     }
 
     // ================= 首页 =================
