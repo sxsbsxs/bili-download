@@ -387,6 +387,11 @@ class MainActivity : ComponentActivity() {
         selectedQualityId = preferredQualityId(video.qualities)
         detailSearchItem = searchItem
         commentsRequestToken++
+        commentsLoading = false
+        commentsPage = 1
+        commentsHasMore = false
+        commentsTotalCount = 0L
+        detailComments.clear()
         danmakuRequestToken++
         currentPlayer?.release()
         currentPlayer = null
@@ -1019,9 +1024,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadVideoComments(video: BiliVideo, reset: Boolean) {
-        if (commentsLoading) return
+        if (commentsLoading && !reset) return
         if (reset) {
             commentsRequestToken++
+            commentsLoading = false
             detailComments.clear()
             commentsPage = 1
             commentsHasMore = true
@@ -1277,7 +1283,13 @@ class MainActivity : ComponentActivity() {
                     val headers = HashMap<String, String>().apply {
                         put("Referer", "https://www.bilibili.com/")
                         put("Origin", "https://www.bilibili.com")
-                        if (!cookie.isNullOrBlank()) put("Cookie", "SESSDATA=" + cookie)
+                        if (!cookie.isNullOrBlank()) {
+                            put(
+                                "Cookie",
+                                if (cookie.contains(Regex("""(?:^|;\\s*)SESSDATA="""))) cookie
+                                else "SESSDATA=" + cookie
+                            )
+                        }
                     }
                     val dataSourceFactory = DefaultHttpDataSource.Factory()
                         .setUserAgent("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36")
@@ -1338,6 +1350,11 @@ class MainActivity : ComponentActivity() {
                                 Player.STATE_ENDED -> "播放结束"
                                 else -> statusView.text
                             }
+                            detailDanmakuOverlay?.invalidate()
+                        }
+
+                        override fun onIsPlayingChanged(isPlaying: Boolean) {
+                            detailDanmakuOverlay?.invalidate()
                         }
 
                         override fun onPlayerError(error: PlaybackException) {
@@ -3408,14 +3425,14 @@ class MainActivity : ComponentActivity() {
             setTextColor(ink)
         })
         cookiePanel.addView(TextView(this).apply {
-            text = "粘贴 B站 SESSDATA 进行本机授权。凭据使用 Android Keystore 加密保存，不会上传到本应用服务器；请勿分享给他人。"
+            text = "粘贴 B 站完整 Cookie（需包含 SESSDATA 和 bili_jct），才能使用点赞、投币、收藏、评论和弹幕互动。凭据使用 Android Keystore 加密保存，不会上传到本应用服务器；请勿分享给他人。"
             textSize = 12f
             setTextColor(sub)
             setLineSpacing(0f, 1.2f)
             setPadding(0, dp(6), 0, dp(12))
         })
         cookieInput = EditText(this).apply {
-            hint = "粘贴 SESSDATA 的值"
+            hint = "粘贴完整 Cookie，至少包含 SESSDATA 和 bili_jct"
             setHintTextColor(sub)
             setTextColor(ink)
             textSize = 14f
@@ -3430,7 +3447,7 @@ class MainActivity : ComponentActivity() {
         cookieBtn = pillButton("登录", true)
         cookieBtn.setOnClickListener {
             val v = cookieInput.text.toString().trim()
-            if (v.isEmpty()) { cookieErrTv.text = "请先粘贴 SESSDATA"; return@setOnClickListener }
+            if (v.isEmpty()) { cookieErrTv.text = "请先粘贴完整 Cookie"; return@setOnClickListener }
             cookieErrTv.text = ""
             setBusy(cookieBtn, true)
             cookieBtn.text = "登录中…"
