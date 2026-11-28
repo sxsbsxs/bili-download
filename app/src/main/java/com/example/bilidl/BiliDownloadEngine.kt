@@ -599,6 +599,11 @@ object BiliDownloadEngine {
             Environment.getExternalStorageDirectory(),
             source.length()
         )
+        val selectedTree = context.getSharedPreferences("ui", Context.MODE_PRIVATE)
+            .getString(KEY_DOWNLOAD_TREE_URI, null)
+        if (!selectedTree.isNullOrBlank()) {
+            return publishIntoSelectedTree(context, Uri.parse(selectedTree), source, title, extension, mimeType)
+        }
         val safeTitle = title
             .replace(Regex("""[\\/:*?"<>|]"""), "_")
             .replace(Regex("""\s+"""), " ")
@@ -633,10 +638,53 @@ object BiliDownloadEngine {
         }
     }
 
+    private fun publishIntoSelectedTree(
+        context: Context,
+        treeUri: Uri,
+        source: File,
+        title: String,
+        extension: String,
+        mimeType: String
+    ): SavedDownload {
+        val safeTitle = title
+            .replace(Regex("""[\\/:*?"<>|]"""), "_")
+            .replace(Regex("""\\s+"""), " ")
+            .trim()
+            .take(80)
+            .ifBlank { "BiliDl video" }
+        val displayName = "$safeTitle.$extension"
+        val resolver = context.contentResolver
+        val documentId = try {
+            android.provider.DocumentsContract.getTreeDocumentId(treeUri)
+        } catch (error: Exception) {
+            throw IOException("保存目录授权已失效，请重新选择下载位置", error)
+        }
+        val directoryUri = android.provider.DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+        val uri = android.provider.DocumentsContract.createDocument(
+            resolver,
+            directoryUri,
+            mimeType,
+            displayName
+        ) ?: throw IOException("无法在所选目录创建文件，请检查目录写入权限")
+        try {
+            resolver.openOutputStream(uri, "w")?.use { output ->
+                source.inputStream().buffered().use { input -> input.copyTo(output) }
+            } ?: throw IOException("无法写入所选下载目录")
+            return SavedDownload(uri, displayName, source.length(), mimeType)
+        } catch (error: Exception) {
+            resolver.delete(uri, null, null)
+            throw error
+        }
+    }
+
     private fun deleteTransferArtifact(file: File) {
         file.delete()
         File(file.absolutePath + ".ranges").delete()
         File(file.absolutePath + ".meta").delete()
+    }
+
+    companion object {
+        private const val KEY_DOWNLOAD_TREE_URI = "download_tree_uri"
     }
 
     private fun Long?.orZero(): Long = this ?: 0L

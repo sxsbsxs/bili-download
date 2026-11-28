@@ -74,6 +74,21 @@ class MainActivity : ComponentActivity() {
             refreshQr()
         }
     }
+    private val downloadFolderPicker = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val treeUri = result.data?.data
+        if (result.resultCode == Activity.RESULT_OK && treeUri != null) {
+            val readWriteFlags = result.data?.flags?.and(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            ) ?: (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            runCatching { contentResolver.takePersistableUriPermission(treeUri, readWriteFlags) }
+                .onFailure { toast("系统未授予目录持久访问权限，请重新选择") }
+            settingsViewModel.setString(KEY_DOWNLOAD_TREE_URI, treeUri.toString())
+            setDownloadPathText(downloadFolderLabel(treeUri))
+            toast("下载位置已更新")
+        }
+    }
     private val searchLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -113,6 +128,7 @@ class MainActivity : ComponentActivity() {
         const val ST_FAILED = DownloadTaskStatus.FAILED
         const val ST_DONE = DownloadTaskStatus.COMPLETED
         private const val MAX_BATCH_LINKS = 50
+        private const val KEY_DOWNLOAD_TREE_URI = "download_tree_uri"
     }
 
     // ===================== 真实业务接入 =====================
@@ -661,8 +677,25 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onChoosePathClicked() {
-        toast("视频保存位置：Download/BiliDl")
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
+            val current = settingsViewModel.getString(KEY_DOWNLOAD_TREE_URI)
+            if (current.isNotBlank() && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(current))
+            }
+        }
+        downloadFolderPicker.launch(intent)
     }
+
+    private fun downloadFolderLabel(uri: Uri): String =
+        runCatching {
+            val documentId = android.provider.DocumentsContract.getTreeDocumentId(uri)
+            documentId.substringAfter(':', documentId).ifBlank { "已选择文件夹" }
+        }.getOrDefault("已选择文件夹")
 
     private fun onClearCacheClicked() {
         java.io.File(cacheDir, "bilidl").deleteRecursively()
@@ -1226,7 +1259,8 @@ class MainActivity : ComponentActivity() {
         refreshDownloadList()
         restoreDownloadTasks()
         restoreRoomTasks()
-        setDownloadPathText("Download/BiliDl")
+        val savedTree = settingsViewModel.getString(KEY_DOWNLOAD_TREE_URI)
+        setDownloadPathText(if (savedTree.isBlank()) "Download/BiliDl" else downloadFolderLabel(Uri.parse(savedTree)))
         loginViewModel.restoreSession()
     }
 
@@ -2104,7 +2138,7 @@ class MainActivity : ComponentActivity() {
             pickOption("优先画质", "quality", qualityOptions, 0) { refreshQuality() }
         }
         pathTv = valueText("系统下载目录  ›")
-        val pathRow = settingRow("下载位置", "Download/BiliDl", pathTv) { onChoosePathClicked() }
+        val pathRow = settingRow("下载位置", "选择保存文件夹；默认 Download/BiliDl", pathTv) { onChoosePathClicked() }
         col.addView(
             group(
                 "下载",
