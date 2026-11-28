@@ -657,23 +657,13 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             commentsTab.setTextColor(if (showComments) ink else sub)
             detailsTab.typeface = if (showComments) Typeface.DEFAULT else Typeface.DEFAULT_BOLD
             commentsTab.typeface = if (showComments) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-            if (showComments) loadVideoComments(video, true)
+            if (showComments && detailComments.isEmpty() && !commentsLoading) {
+                loadVideoComments(video, true)
+            }
         }
         detailsTab.setOnClickListener { selectDetailTab(false) }
         commentsTab.setOnClickListener { selectDetailTab(true) }
         selectDetailTab(false)
-
-        val playerScroll = content as? androidx.core.widget.NestedScrollView
-        playerScroll?.setOnScrollChangeListener(
-            androidx.core.widget.NestedScrollView.OnScrollChangeListener { scroll, _, y, _, _ ->
-                val child = scroll.getChildAt(0) ?: return@OnScrollChangeListener
-                if (!commentsLoading && commentsHasMore &&
-                    y + scroll.height >= child.measuredHeight - dp(420)
-                ) {
-                    loadVideoComments(video, false)
-                }
-            }
-        )
 
         val commentsList = content.findViewById<RecyclerView>(
             com.sxsbsxs.bilivdl.ui.R.id.comments_list
@@ -1792,7 +1782,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         addSection("视频流 · 画质 / 编码 / 码率")
         val videoSpinner = android.widget.Spinner(this)
         val videoLabels = options.videoChoices.map { it.label }.ifEmpty {
-            listOf("B站当前只提供单流媒体")
+            listOf("单流媒体（MP4）")
         }
         videoSpinner.adapter = android.widget.ArrayAdapter(
             this,
@@ -1822,7 +1812,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             id = View.generateViewId()
             text = "视频 + 音频（MP4）"
             textSize = 14f
-            isEnabled = options.videoChoices.isNotEmpty()
+            isEnabled = options.videoChoices.isNotEmpty() || options.audioChoices.isEmpty()
         }
         val audioOption = android.widget.RadioButton(this).apply {
             id = View.generateViewId()

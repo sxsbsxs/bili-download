@@ -62,7 +62,6 @@ internal object SegmentedHttpDownloader {
     )
 
     private const val SOURCE_SAMPLE_BYTES = 64 * 1024
-    private const val SOURCE_SAMPLE_BYTES = 64 * 1024
     private const val SOURCE_PROBE_TIMEOUT_MS = 3_000
     private const val MAX_SOURCE_PROBES = 6
 
