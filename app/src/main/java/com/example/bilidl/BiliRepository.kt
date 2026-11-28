@@ -681,23 +681,70 @@ class BiliRepository(
         )
     }
 
-    fun sendVideoComment(aid: Long, message: String) {
+    fun sendVideoComment(
+        aid: Long,
+        message: String,
+        rootId: Long? = null,
+        parentId: Long? = null
+    ) {
         val text = message.trim()
         if (text.isBlank()) throw IOException("请输入评论内容")
         if (text.length > 1000) throw IOException("评论内容过长")
         val csrf = requireCsrf()
-        val root = requestFormJson(
-            "https://api.bilibili.com/x/v2/reply/add",
-            mapOf(
-                "type" to "1",
-                "oid" to aid.toString(),
-                "message" to text,
-                "plat" to "2",
-                "csrf" to csrf,
-                "csrf_token" to csrf
-            )
+        val form = linkedMapOf(
+            "type" to "1",
+            "oid" to aid.toString(),
+            "message" to text,
+            "plat" to "2",
+            "csrf" to csrf,
+            "csrf_token" to csrf
         )
+        rootId?.takeIf { it > 0L }?.let { form["root"] = it.toString() }
+        parentId?.takeIf { it > 0L }?.let { form["parent"] = it.toString() }
+        val root = requestFormJson("https://api.bilibili.com/x/v2/reply/add", form)
         ensureMutationSuccess(root, "评论发送失败")
+    }
+
+    fun getVideoCommentReplies(
+        aid: Long,
+        rootId: Long,
+        page: Int = 1,
+        pageSize: Int = 20
+    ): BiliCommentPage {
+        require(rootId > 0L) { "根评论 ID 无效" }
+        val currentPage = page.coerceAtLeast(1)
+        val size = pageSize.coerceIn(1, 50)
+        val root = requestJson(
+            "https://api.bilibili.com/x/v2/reply/main?oid=" + aid +
+                "&plat=2&root=" + rootId + "&sort=0&type=1&pn=" + currentPage + "&ps=" + size
+        )
+        val data = checkedData(root)
+        val replies = data.optJSONArray("replies") ?: JSONArray()
+        val comments = (0 until replies.length()).mapNotNull { index ->
+            val item = replies.optJSONObject(index) ?: return@mapNotNull null
+            val content = item.optJSONObject("content")
+            val member = item.optJSONObject("member")
+            val message = content?.optString("message").orEmpty().trim()
+            val id = item.optLong("rpid")
+            if (id <= 0L || message.isBlank()) return@mapNotNull null
+            BiliComment(
+                id = id,
+                userName = member?.optString("uname").orEmpty().ifBlank { "B站用户" },
+                avatarUrl = member?.optString("avatar")?.takeIf { it.startsWith("http") },
+                message = message,
+                likeCount = item.optLong("like"),
+                replyCount = item.optLong("rcount"),
+                createTime = item.optLong("ctime"),
+                likedByMe = item.optInt("action") == 1
+            )
+        }
+        val total = data.optJSONObject("page")?.optLong("count") ?: comments.size.toLong()
+        return BiliCommentPage(
+            comments = comments,
+            totalCount = total,
+            nextPage = currentPage + 1,
+            hasMore = currentPage * size < total && comments.isNotEmpty()
+        )
     }
 
     fun likeVideoComment(aid: Long, rpid: Long, liked: Boolean) {
