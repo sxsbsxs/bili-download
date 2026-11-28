@@ -83,6 +83,8 @@ internal object BiliDownloadSourceSelector {
                 }
             }
             if (expected != null && received.toLong() != expected) received = 0
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
         } catch (_: IOException) {
             received = 0
         } catch (_: Exception) {
