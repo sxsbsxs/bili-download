@@ -340,7 +340,7 @@ class BiliRepository(
                 BiliAccountLibraryPage(
                     items = parseAccountItems(rows, "观看历史"),
                     nextHistoryCursor = nextCursor,
-                    hasMore = rows.isNotEmpty() && nextCursor != null && nextCursor != historyCursor
+                    hasMore = rows.length() > 0 && nextCursor != null && nextCursor != historyCursor
                 )
             }
 

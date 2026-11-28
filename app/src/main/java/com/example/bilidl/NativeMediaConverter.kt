@@ -188,6 +188,8 @@ object NativeMediaConverter {
             }
 
             if (sampleCount == 0L) throw IOException("没有读取到有效媒体数据")
+            muxer.stop()
+            muxerStarted = false
             success = true
             onProgress(100)
             return NativeMediaConversionResult(bytesWritten, sampleCount, durationUs)
