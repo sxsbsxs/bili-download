@@ -947,18 +947,25 @@ class MainActivity : ComponentActivity() {
 
     private fun showCoinDialog(video: BiliVideo) {
         if (!requireInteractionLogin()) return
-        val options = arrayOf("投 1 个币", "投 2 个币")
+        val maxCoins = if (video.copyright == 2) 1 else 2
+        val options = if (maxCoins == 1) {
+            arrayOf("投 1 个币")
+        } else {
+            arrayOf("投 1 个币", "投 2 个币")
+        }
         AlertDialog.Builder(this)
             .setTitle("给 UP 主投币")
             .setItems(options) { _, index ->
+                val coins = index + 1
                 backgroundExecutor.execute {
                     try {
-                        repositoryWithSavedCookie().addVideoCoin(video.aid, index + 1)
+                        repositoryWithSavedCookie().addVideoCoin(video.aid, coins)
                         runOnUiThread {
                             if (parsedVideo?.aid == video.aid) {
-                                parsedVideo = video.copy(
-                                    coinCount = video.coinCount + index + 1,
-                                    userCoin = (video.userCoin + index + 1).coerceAtMost(2)
+                                val latest = parsedVideo ?: video
+                                parsedVideo = latest.copy(
+                                    coinCount = latest.coinCount + coins,
+                                    userCoin = (latest.userCoin + coins).coerceAtMost(2)
                                 )
                             }
                             toast("投币成功")
