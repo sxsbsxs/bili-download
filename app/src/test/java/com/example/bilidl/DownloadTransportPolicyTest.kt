@@ -20,7 +20,7 @@ class DownloadTransportPolicyTest {
     fun normalizesMultilineCookiePasteFromMobileBrowsers() {
         assertEquals(
             "SESSDATA=session; bili_jct=csrf; DedeUserID=42",
-            DownloadTransportPolicy.cookieHeader("SESSDATA=session\\r\\nbili_jct=csrf\\r\\nDedeUserID=42")
+            DownloadTransportPolicy.cookieHeader("SESSDATA=session\r\nbili_jct=csrf\r\nDedeUserID=42")
         )
     }
 
