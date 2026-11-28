@@ -364,6 +364,10 @@ class BiliRepository(
         val stat = data.optJSONObject("stat")
         val play = getPlayInfo(actualBvid, aid, cid, 0)
         val qualities = parseQualities(play)
+        val reqUser = data.optJSONObject("req_user")
+        val relationState = if (!cookieProvider().isNullOrBlank()) {
+            runCatching { getVideoRelationState(aid) }.getOrNull()
+        } else null
         return BiliVideo(
             actualBvid, aid, cid, pageIndex + 1, title, owner, duration,
             coverUrl, null, qualities, availablePages,
@@ -380,18 +384,9 @@ class BiliRepository(
             categoryId = data.optInt("tid"),
             copyright = data.optInt("copyright"),
             ownerMid = data.optJSONObject("owner")?.optLong("mid") ?: 0L,
-            userLiked = runCatching {
-                if (!cookieProvider().isNullOrBlank()) getVideoRelationState(aid).liked
-                else data.optJSONObject("req_user")?.optInt("like") == 1
-            }.getOrDefault(data.optJSONObject("req_user")?.optInt("like") == 1),
-            userCoin = runCatching {
-                if (!cookieProvider().isNullOrBlank()) getVideoRelationState(aid).coinCount
-                else data.optJSONObject("req_user")?.optInt("coin") ?: 0
-            }.getOrDefault(data.optJSONObject("req_user")?.optInt("coin") ?: 0),
-            userFavorited = runCatching {
-                if (!cookieProvider().isNullOrBlank()) getVideoRelationState(aid).favorited
-                else data.optJSONObject("req_user")?.optInt("favorite") == 1
-            }.getOrDefault(data.optJSONObject("req_user")?.optInt("favorite") == 1),
+            userLiked = relationState?.liked ?: (reqUser?.optInt("like") == 1),
+            userCoin = relationState?.coinCount ?: (reqUser?.optInt("coin") ?: 0),
+            userFavorited = relationState?.favorited ?: (reqUser?.optInt("favorite") == 1),
             ownerAvatarUrl = data.optJSONObject("owner")?.optString("face")
                 ?.takeIf { it.startsWith("http") },
             tags = getVideoTags(aid, actualBvid)
@@ -587,7 +582,7 @@ class BiliRepository(
         fun flag(name: String): Boolean = when (val value = data.opt(name)) {
             is Boolean -> value
             is Number -> value.toInt() != 0
-            else -> value?.toString() == "1" || value?.toString().equals("true", true)
+            else -> value?.toString() == "1" || value?.toString()?.equals("true", ignoreCase = true) == true
         }
         return BiliVideoRelationState(
             liked = flag("like"),
