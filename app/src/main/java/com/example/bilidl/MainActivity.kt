@@ -2107,7 +2107,7 @@ class MainActivity : ComponentActivity() {
         }
         AlertDialog.Builder(this)
             .setTitle("自定义 CDN Host")
-            .setMessage("只填写主机名，不要填写 https://、路径或查询参数。下载时会保留 B站返回的签名路径和参数。")
+            .setMessage("只允许 bilivideo.com 或 akamaized.net 的 B站 CDN 主机名，不要填写其他网站、https://、路径或查询参数。")
             .setView(input)
             .setNeutralButton("选择预设") { _, _ -> showDownloadSourcePresetPicker() }
             .setPositiveButton("保存") { _, _ -> saveDownloadSourceHost(input.text.toString()) }
