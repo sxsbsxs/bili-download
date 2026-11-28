@@ -70,6 +70,7 @@ object BiliDownloadEngine {
         val safeId = transferId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(80)
         val prefix = "task_" + safeId
         var completed = false
+        val publishedUris = linkedSetOf<Uri>()
         val finalTemp = File(workDir, prefix + ".mp4")
         val audioOutputTemp = File(workDir, prefix + "_audio.m4a")
         val videoTemp = File(workDir, prefix + "_video.m4s")
@@ -92,6 +93,7 @@ object BiliDownloadEngine {
                         "m4a",
                         "audio/mp4"
                     )
+                    publishedUris.add(saved.uri)
                     val sidecars = exportSidecars(
                         context = context,
                         workDir = workDir,
@@ -101,6 +103,7 @@ object BiliDownloadEngine {
                         downloadDanmaku = downloadDanmaku,
                         downloadSubtitles = downloadSubtitles,
                         isCancelled = isCancelled,
+                        onPublished = { publishedUris.add(it) },
                         progress = progress
                     )
                     progress(100, completionDetail("音频已保存", sidecars))
@@ -124,6 +127,7 @@ object BiliDownloadEngine {
                     progress(95, "正在封装 MP4")
                     muxToMp4(videoTemp, audioTemp.takeIf { it.exists() }, finalTemp)
                     val saved = publishFile(context, finalTemp, video.title, "mp4", "video/mp4")
+                    publishedUris.add(saved.uri)
                     val sidecars = exportSidecars(
                         context = context,
                         workDir = workDir,
@@ -133,6 +137,7 @@ object BiliDownloadEngine {
                         downloadDanmaku = downloadDanmaku,
                         downloadSubtitles = downloadSubtitles,
                         isCancelled = isCancelled,
+                        onPublished = { publishedUris.add(it) },
                         progress = progress
                     )
                     progress(100, completionDetail("下载完成", sidecars))
@@ -144,35 +149,73 @@ object BiliDownloadEngine {
                 )
                 }
             } else {
-                if (audioOnly) throw IOException("当前视频接口只返回完整视频流，暂不支持单独提取音频")
                 if (source.directUrls.size != 1) {
                     throw IOException("B站仅返回多段旧式 FLV 流；为避免生成损坏文件，本版暂不拼接此格式")
                 }
-                progress(2, "正在下载视频")
-                downloadStream(source.directUrls, directTemp, cookie, concurrency, isCancelled) { value ->
-                    progress(value, "视频流")
+                if (audioOnly && source.format.contains("flv", true)) {
+                    throw IOException("当前 B站返回的是旧式 FLV 分段流，设备无法可靠地无损提取音频")
                 }
-                val ext = if (source.format.contains("flv", true)) "flv" else "mp4"
-                val mime = if (ext == "flv") "video/x-flv" else "video/mp4"
-                val saved = publishFile(context, directTemp, video.title, ext, mime)
-                val sidecars = exportSidecars(
-                    context = context,
-                    workDir = workDir,
-                    prefix = prefix,
-                    repository = repository,
-                    video = video,
-                    downloadDanmaku = downloadDanmaku,
-                    downloadSubtitles = downloadSubtitles,
-                    isCancelled = isCancelled,
-                    progress = progress
-                )
-                progress(100, completionDetail("下载完成", sidecars))
-                completed = true
-                saved.copy(
-                    additionalFiles = sidecars.resources.map { it.displayName },
-                    additionalResources = sidecars.resources,
-                    warnings = sidecars.warnings
-                )
+
+                progress(2, if (audioOnly) "正在下载原始视频流以提取音频" else "正在下载视频")
+                downloadStream(source.directUrls, directTemp, cookie, concurrency, isCancelled) { value ->
+                    progress(value * 78 / 100, if (audioOnly) "原始媒体流" else "视频流")
+                }
+
+                if (audioOnly) {
+                    progress(84, "正在提取并封装 AAC 音频")
+                    muxAudioToM4a(directTemp, audioOutputTemp)
+                    val saved = publishFile(
+                        context,
+                        audioOutputTemp,
+                        video.title,
+                        "m4a",
+                        "audio/mp4"
+                    )
+                    publishedUris.add(saved.uri)
+                    val sidecars = exportSidecars(
+                        context = context,
+                        workDir = workDir,
+                        prefix = prefix,
+                        repository = repository,
+                        video = video,
+                        downloadDanmaku = downloadDanmaku,
+                        downloadSubtitles = downloadSubtitles,
+                        isCancelled = isCancelled,
+                        onPublished = { publishedUris.add(it) },
+                        progress = progress
+                    )
+                    progress(100, completionDetail("音频已保存", sidecars))
+                    completed = true
+                    saved.copy(
+                        additionalFiles = sidecars.resources.map { it.displayName },
+                        additionalResources = sidecars.resources,
+                        warnings = sidecars.warnings
+                    )
+                } else {
+                    val ext = if (source.format.contains("flv", true)) "flv" else "mp4"
+                    val mime = if (ext == "flv") "video/x-flv" else "video/mp4"
+                    val saved = publishFile(context, directTemp, video.title, ext, mime)
+                    publishedUris.add(saved.uri)
+                    val sidecars = exportSidecars(
+                        context = context,
+                        workDir = workDir,
+                        prefix = prefix,
+                        repository = repository,
+                        video = video,
+                        downloadDanmaku = downloadDanmaku,
+                        downloadSubtitles = downloadSubtitles,
+                        isCancelled = isCancelled,
+                        onPublished = { publishedUris.add(it) },
+                        progress = progress
+                    )
+                    progress(100, completionDetail("下载完成", sidecars))
+                    completed = true
+                    saved.copy(
+                        additionalFiles = sidecars.resources.map { it.displayName },
+                        additionalResources = sidecars.resources,
+                        warnings = sidecars.warnings
+                    )
+                }
             }
         } finally {
             audioOutputTemp.delete()
@@ -184,6 +227,14 @@ object BiliDownloadEngine {
                 listOf(videoTemp, audioTemp, directTemp).forEach { file ->
                     File(file.absolutePath + ".ranges").delete()
                     File(file.absolutePath + ".meta").delete()
+                }
+            } else {
+                // The main media is published before optional sidecars are fetched.
+                // If cancellation/error occurs before task completion, roll back every
+                // MediaStore row created by this attempt so a paused retry cannot leave
+                // apparently-complete orphan files in Downloads/BiliDl.
+                publishedUris.forEach { uri ->
+                    runCatching { context.contentResolver.delete(uri, null, null) }
                 }
             }
         }
@@ -198,6 +249,7 @@ object BiliDownloadEngine {
         downloadDanmaku: Boolean,
         downloadSubtitles: Boolean,
         isCancelled: () -> Boolean,
+        onPublished: (Uri) -> Unit,
         progress: (Int, String) -> Unit
     ): SidecarSummary {
         if (!downloadDanmaku && !downloadSubtitles) return SidecarSummary(emptyList(), emptyList())
@@ -247,6 +299,7 @@ object BiliDownloadEngine {
                             "xml",
                             "application/xml"
                         )
+                        onPublished(published.uri)
                         files += SavedResource(
                             uri = published.uri,
                             displayName = published.displayName,
@@ -297,6 +350,7 @@ object BiliDownloadEngine {
                                         "srt",
                                         "application/x-subrip"
                                     )
+                                    onPublished(published.uri)
                                     files += SavedResource(
                                         uri = published.uri,
                                         displayName = published.displayName,
@@ -580,14 +634,23 @@ object BiliDownloadEngine {
         val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
         val uri = resolver.insert(collection, values) ?: throw IOException("无法创建下载文件")
         try {
-            resolver.openOutputStream(uri, "w")?.use { output ->
-                source.inputStream().buffered().use { input -> input.copyTo(output) }
-            } ?: throw IOException("无法写入下载文件")
+            val expectedBytes = source.length()
+            if (expectedBytes <= 0L) throw IOException("待保存文件为空")
+            val output = resolver.openOutputStream(uri, "w")
+                ?: throw IOException("无法写入下载文件")
+            val copiedBytes = source.inputStream().buffered().use { input ->
+                output.use { destination -> input.copyTo(destination) }
+            }
+            if (copiedBytes != expectedBytes) {
+                throw IOException("保存文件时长度不匹配：$copiedBytes / $expectedBytes 字节")
+            }
             val complete = ContentValues().apply {
                 put(MediaStore.MediaColumns.IS_PENDING, 0)
             }
-            resolver.update(uri, complete, null, null)
-            return SavedDownload(uri, displayName, source.length(), mimeType)
+            if (resolver.update(uri, complete, null, null) <= 0) {
+                throw IOException("下载文件已写入，但无法完成 MediaStore 发布")
+            }
+            return SavedDownload(uri, displayName, copiedBytes, mimeType)
         } catch (error: Exception) {
             resolver.delete(uri, null, null)
             throw error
