@@ -2,9 +2,9 @@ name: Source checks
 
 on:
   push:
-    branches: [main, feature/anonymous-playurl-storage-http-tests, feature/multisegment-durl-flv-merge]
+    branches: [main, feature/anonymous-playurl-storage-http-tests, feature/multisegment-durl-flv-merge, fix/unauth-cover-icon-http403]
   pull_request:
-    branches: [main, refactor/nonblocking-download-progress]
+    branches: [main, refactor/nonblocking-download-progress, feature/multisegment-durl-flv-merge]
 
 permissions:
   contents: read

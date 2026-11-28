@@ -30,6 +30,16 @@ internal class RetryableDownloadException(
 ) : IOException(message, cause)
 
 internal object BiliDownloadRetryPolicy {
+    fun httpStatus(error: Throwable): Int? {
+        val visited = HashSet<Throwable>()
+        var current: Throwable? = error
+        while (current != null && visited.add(current)) {
+            if (current is BiliHttpException) return current.statusCode
+            current = current.cause
+        }
+        return null
+    }
+
     fun isRetryable(error: Throwable): Boolean {
         val visited = HashSet<Throwable>()
         var current: Throwable? = error

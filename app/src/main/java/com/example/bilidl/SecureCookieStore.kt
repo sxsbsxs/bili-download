@@ -11,7 +11,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Encrypts the user's SESSDATA with an AES key held by Android Keystore.
+ * Encrypts the full Bilibili cookie header with an AES key held by Android Keystore.
  * The raw cookie is never written to a plaintext preference or log.
  */
 object SecureCookieStore {
@@ -21,8 +21,8 @@ object SecureCookieStore {
     private const val VALUE = "cookie_value"
 
     fun save(context: Context, rawCookie: String) {
-        val value = normalizeCookie(rawCookie)
-        require(value.isNotBlank()) { "SESSDATA 不能为空" }
+        val value = normalizeCookieHeader(rawCookie)
+        require(normalizeCookie(value).isNotBlank()) { "SESSDATA 不能为空" }
 
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
@@ -55,11 +55,43 @@ object SecureCookieStore {
             .apply()
     }
 
+    /** Returns the SESSDATA value from either a raw value or a Cookie header. */
     fun normalizeCookie(rawCookie: String): String {
         val trimmed = rawCookie.trim()
         val match = Regex("""(?:^|;\s*)SESSDATA=([^;]+)""").find(trimmed)
-        return match?.groupValues?.get(1) ?: trimmed
+        return match?.groupValues?.get(1) ?: if ('=' !in trimmed) trimmed else ""
     }
+
+    /**
+     * Keeps the complete cookie header from the official Bilibili login page.
+     * Old app versions stored only a raw SESSDATA value; those values remain
+     * compatible and are upgraded to a one-cookie header when sent.
+     */
+    fun normalizeCookieHeader(rawCookie: String): String {
+        val trimmed = rawCookie.trim()
+        if (trimmed.isBlank()) return ""
+        if ('=' !in trimmed) return "SESSDATA=$trimmed"
+
+        val pairs = linkedMapOf<String, String>()
+        val ignoredAttributes = setOf(
+            "path", "domain", "expires", "max-age", "secure",
+            "httponly", "samesite", "priority"
+        )
+        for (token in trimmed.split(';')) {
+            val separator = token.indexOf('=')
+            if (separator <= 0) continue
+            val name = token.substring(0, separator).trim()
+            val value = token.substring(separator + 1).trim()
+            if (name.isBlank() ||
+                ignoredAttributes.any { it.equals(name, ignoreCase = true) } ||
+                !name.matches(Regex("[A-Za-z0-9_]+")) ||
+                value.any { it == '\r' || it == '\n' }
+            ) continue
+            pairs[name] = value
+        }
+        return pairs.entries.joinToString("; ") { (name, value) -> "$name=$value" }
+    }
+
 
     private fun getOrCreateKey(): SecretKey {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

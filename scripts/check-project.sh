@@ -3,6 +3,10 @@ set -euo pipefail
 
 required_files=(
   "app/src/main/java/com/example/bilidl/BiliRepository.kt"
+  "app/src/main/java/com/example/bilidl/BiliCoverUrlPolicy.kt"
+  "app/src/main/res/drawable/ic_launcher_foreground.xml"
+  "app/src/main/res/drawable/ic_video_placeholder.xml"
+  "app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml"
   "app/src/main/java/com/example/bilidl/BiliDownloadEngine.kt"
   "app/src/main/java/com/example/bilidl/common/content/BiliDanmakuProtoParser.kt"
   "app/src/main/cpp/mp4_inspector.cpp"

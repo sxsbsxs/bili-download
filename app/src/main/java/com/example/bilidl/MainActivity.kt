@@ -1,8 +1,10 @@
 package com.example.bilidl
 
 import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.lifecycle.lifecycleScope
+import android.app.Activity
 import android.app.AlertDialog
 import android.content.ClipboardManager
 import android.content.Context
@@ -62,6 +64,73 @@ class MainActivity : ComponentActivity() {
     private val downloadsViewModel: DownloadsViewModel by viewModels()
     private val loginViewModel: LoginViewModel by viewModels()
     private val settingsViewModel: SettingsViewModel by viewModels()
+    private val webLoginLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val cookieHeader = result.data?.getStringExtra(BiliWebLoginActivity.EXTRA_COOKIE_HEADER)
+        if (result.resultCode == Activity.RESULT_OK && !cookieHeader.isNullOrBlank()) {
+            onCookieLogin(cookieHeader)
+        } else if (loginPage.visibility == View.VISIBLE && activeLoginSegment == 0) {
+            refreshQr()
+        }
+    }
+    private val downloadFolderPicker = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val treeUri = result.data?.data
+        if (result.resultCode == Activity.RESULT_OK && treeUri != null) {
+            val readWriteFlags = result.data?.flags?.and(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            ) ?: (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+            val permissionSaved = runCatching {
+                contentResolver.takePersistableUriPermission(treeUri, readWriteFlags)
+            }.isSuccess
+            if (!permissionSaved) {
+                toast("无法保存此目录的访问权限，请选择其他文件夹")
+                return@registerForActivityResult
+            }
+            settingsViewModel.setString(KEY_DOWNLOAD_TREE_URI, treeUri.toString())
+            setDownloadPathText(downloadFolderLabel(treeUri))
+            toast("下载位置已更新")
+        }
+    }
+    private val searchLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val selectedUrls = result.data?.getStringArrayListExtra(SearchActivity.EXTRA_SELECTED_URLS).orEmpty()
+        val selectedUrl = result.data?.getStringExtra(SearchActivity.EXTRA_SELECTED_URL)
+        if (result.resultCode == Activity.RESULT_OK && selectedUrls.isNotEmpty()) {
+            startBatchFromSelection(selectedUrls)
+        } else if (result.resultCode == Activity.RESULT_OK && !selectedUrl.isNullOrBlank()) {
+            selectTab(0)
+            input.setText(selectedUrl)
+            input.setSelection(input.text.length)
+            mainViewModel.parse(selectedUrl)
+        }
+    }
+    private val accountCenterLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val selectedUrls = result.data?.getStringArrayListExtra(AccountCenterActivity.EXTRA_SELECTED_URLS).orEmpty()
+            val selectedUrl = result.data?.getStringExtra(AccountCenterActivity.EXTRA_SELECTED_URL)
+            when {
+                result.data?.getBooleanExtra(AccountCenterActivity.EXTRA_LOGOUT, false) == true ->
+                    onLogoutClicked()
+                selectedUrls.isNotEmpty() -> startBatchFromSelection(selectedUrls)
+                !selectedUrl.isNullOrBlank() -> {
+                    selectTab(0)
+                    input.setText(selectedUrl)
+                    input.setSelection(input.text.length)
+                    mainViewModel.parse(selectedUrl)
+                }
+            }
+        }
+    }
+    private var activeQrLoginUrl: String? = null
+    private var downloadSourceHostValue: TextView? = null
+    private val downloadSourceModeIndicators = mutableMapOf<Int, TextView>()
+    private var downloadSourceCustomContent: View? = null
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
@@ -70,6 +139,9 @@ class MainActivity : ComponentActivity() {
         const val ST_PAUSED = DownloadTaskStatus.PAUSED
         const val ST_FAILED = DownloadTaskStatus.FAILED
         const val ST_DONE = DownloadTaskStatus.COMPLETED
+        private const val MAX_BATCH_LINKS = BatchSelectionPolicy.MAX_ITEMS
+        private const val KEY_BATCH_QUALITY_MISMATCH = "batch_quality_mismatch"
+        private const val KEY_DOWNLOAD_TREE_URI = "download_tree_uri"
     }
 
     // ===================== 真实业务接入 =====================
@@ -77,43 +149,233 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             mainViewModel.parseState.collect { state ->
                 when (state) {
-                    VideoParseState.Idle -> Unit
+                    VideoParseState.Idle -> setParseLoading(false)
                     VideoParseState.Loading -> {
                         setBusy(parseBtn, true)
-                        parseBtn.text = "解析中…"
+                        input.isEnabled = false
+                        setParseLoading(true)
+                        parseBtn.text = "正在解析…"
+                        say("正在解析 B 站视频信息…", sub)
+                        homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
                     }
                     is VideoParseState.Success -> {
                         val video = state.video
                         setBusy(parseBtn, false)
-                        parseBtn.text = "解析 / 分析"
+                        input.isEnabled = true
+                        setParseLoading(false)
+                        parseBtn.text = "解析视频"
                         parsedVideo = video
                         selectedQualityId = preferredQualityId(video.qualities)
+                        val isEpisodeCollection = video.pages.any { it.isEpisode }
                         val pageHint = if (video.pages.size > 1) {
-                            " · 共 " + video.pages.size + " P，点击选择或全部下载"
+                            " · 共 " + video.pages.size +
+                                (if (isEpisodeCollection) " 集，点击选择或下载整季" else " P，点击选择或全部下载")
                         } else {
                             ""
+                        }
+                        val qualityHint = if (video.qualities.isEmpty()) {
+                            " · 画质将在下载时自动确认（无需先登录）"
+                        } else {
+                            " · " + video.qualities.size + " 种可用画质"
                         }
                         showVideo(
                             video.title,
                             video.uploader,
                             video.cover,
-                            "第 " + video.page + " P · " + formatDuration(video.durationSeconds) +
-                                " · " + video.qualities.size + " 种可用画质" + pageHint
+                            (if (isEpisodeCollection) "第 " + video.page + " 集 · " else "第 " + video.page + " P · ") +
+                                formatDuration(video.durationSeconds) + qualityHint + pageHint
                         )
                         homeQualityTv.text = qualityLabelForSelection(video) + "  ›"
+                        homeScroll.post {
+                            homeScroll.smoothScrollTo(0, (resultCard.top - dp(12)).coerceAtLeast(0))
+                        }
                     }
                     is VideoParseState.Error -> {
                         setBusy(parseBtn, false)
-                        parseBtn.text = "解析 / 分析"
+                        input.isEnabled = true
+                        setParseLoading(false)
+                        parseBtn.text = "解析视频"
                         showError(state.message)
+                        homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
                     }
                 }
             }
         }
     }
 
+    private fun setParseLoading(loading: Boolean) {
+        if (::parseProgress.isInitialized) {
+            parseProgress.visibility = if (loading) View.VISIBLE else View.GONE
+            parseProgress.isIndeterminate = loading
+        }
+    }
+
     private fun onParseClicked(text: String) {
         mainViewModel.parse(text)
+    }
+
+    private fun startBatchFromSelection(rawTargets: Collection<String>) {
+        val targets = BatchSelectionPolicy.normalize(rawTargets)
+        if (targets.isEmpty()) {
+            toast("没有可添加的有效链接")
+            return
+        }
+        selectTab(0)
+        homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
+        resultCard.visibility = View.GONE
+        input.isEnabled = false
+        setBusy(parseBtn, true)
+        setParseLoading(true)
+        parseBtn.text = "正在准备批量任务…"
+        say("已选择 " + targets.size + " 项，正在逐条解析；失败项不会影响其他任务", sub)
+        downloadBatchLinks(targets)
+    }
+
+    private data class BatchResolveOutcome(
+        val spec: DownloadSpec? = null,
+        val mismatchDescription: String? = null,
+        val error: String? = null
+    )
+
+    /** Resolve links independently so one bad URL cannot block the batch. */
+    private fun downloadBatchLinks(targets: List<String>) {
+        val audioOnly = settingsViewModel.getBoolean("audio_only", false)
+        val downloadDanmaku = settingsViewModel.getBoolean("danmaku", false)
+        val downloadSubtitles = settingsViewModel.getBoolean("subtitles", false)
+        val mismatchMode = BatchQualityMismatchMode.fromCode(
+            settingsViewModel.getInt(KEY_BATCH_QUALITY_MISMATCH, 0)
+        )
+        val requestedQuality = requestedQualityId()
+
+        backgroundExecutor.execute {
+            val futures = targets.map { target ->
+                batchExecutor.submit<BatchResolveOutcome> {
+                    try {
+                        val repository = BiliRepository {
+                            SecureCookieStore.load(applicationContext)
+                        }
+                        val video = repository.inspect(target)
+                        val assessment = BatchQualityMismatchPolicy.assess(
+                            mode = mismatchMode,
+                            requestedQualityId = requestedQuality,
+                            availableQualityIds = video.qualities.map { it.id }
+                        )
+                        val fallbackQuality = preferredQualityId(video.qualities)
+                        val wantedLabel = qualityLabelForId(requestedQuality)
+                        val actualLabel = video.qualities.firstOrNull {
+                            it.id == fallbackQuality
+                        }?.label ?: qualityLabelForId(fallbackQuality)
+
+                        if (assessment.shouldSkip) {
+                            BatchResolveOutcome(
+                                error = video.title + "：缺少目标画质 " + wantedLabel + "，已按设置跳过"
+                            )
+                        } else {
+                            BatchResolveOutcome(
+                                spec = DownloadSpec(
+                                    video = video,
+                                    qualityId = fallbackQuality,
+                                    audioOnly = audioOnly,
+                                    downloadDanmaku = downloadDanmaku,
+                                    downloadSubtitles = downloadSubtitles
+                                ),
+                                mismatchDescription = if (assessment.shouldAsk) {
+                                    video.title + "：" + wantedLabel + " 不可用，将使用 " + actualLabel
+                                } else null
+                            )
+                        }
+                    } catch (error: Exception) {
+                        BatchResolveOutcome(
+                            error = target.take(100) + "\n" +
+                                (error.message ?: "解析失败").take(120)
+                        )
+                    }
+                }
+            }
+            val outcomes = futures.map { future ->
+                runCatching { future.get() }.getOrElse { error ->
+                    BatchResolveOutcome(error = "批量解析任务异常：" + (error.message ?: "未知错误"))
+                }
+            }
+            val prepared = outcomes.mapNotNull { it.spec }
+            val failures = outcomes.mapNotNull { it.error }
+            val mismatches = outcomes.filter { it.mismatchDescription != null }
+
+            runOnUiThread {
+                setBusy(parseBtn, false)
+                input.isEnabled = true
+                setParseLoading(false)
+                parseBtn.text = "解析视频"
+                say("", sub)
+                if (mismatchMode == BatchQualityMismatchMode.ASK && mismatches.isNotEmpty()) {
+                    val details = mismatches.take(8).mapNotNull { it.mismatchDescription }
+                        .joinToString("\n\n")
+                    val more = if (mismatches.size > 8) {
+                        "\n\n另有 " + (mismatches.size - 8) + " 项画质不匹配"
+                    } else ""
+                    AlertDialog.Builder(this)
+                        .setTitle("部分链接没有目标画质")
+                        .setMessage(
+                            "以下项目无法提供 " + qualityLabelForId(requestedQuality) +
+                                "。\n\n" + details + more
+                        )
+                        .setPositiveButton("使用可用画质下载全部") { _, _ ->
+                            enqueuePreparedBatch(prepared, failures, targets.size)
+                        }
+                        .setNeutralButton("跳过不匹配项") { _, _ ->
+                            val exactMatches = outcomes.filter { it.mismatchDescription == null }
+                                .mapNotNull { it.spec }
+                            val skipped = mismatches.mapNotNull { it.mismatchDescription }
+                                .map { "$it（已跳过）" }
+                            enqueuePreparedBatch(
+                                exactMatches,
+                                failures + skipped,
+                                targets.size
+                            )
+                        }
+                        .setNegativeButton("取消整批", null)
+                        .show()
+                } else {
+                    enqueuePreparedBatch(prepared, failures, targets.size)
+                }
+            }
+        }
+    }
+
+    private fun enqueuePreparedBatch(
+        prepared: List<DownloadSpec>,
+        failures: List<String>,
+        total: Int
+    ) {
+        prepared.forEach { spec ->
+            val id = "bili_batch_" + java.util.UUID.randomUUID()
+            downloadSpecs[id] = spec
+            persistDownloadSpec(id, spec)
+            addDownload(id, spec.video.title, spec.video.cover)
+            enqueueDownload(id, spec)
+        }
+        if (prepared.isNotEmpty()) selectTab(1)
+
+        if (failures.isEmpty()) {
+            toast("已加入 " + prepared.size + " 个下载任务")
+        } else {
+            val details = failures.take(6).joinToString("\n\n")
+            val more = if (failures.size > 6) {
+                "\n\n另有 " + (failures.size - 6) + " 项未加入"
+            } else ""
+            AlertDialog.Builder(this)
+                .setTitle("批量导入完成")
+                .setMessage(
+                    "成功加入 " + prepared.size + "/" + total + " 个任务。" +
+                        "\n失败或跳过项已单独列出，不影响其他下载。\n\n" +
+                        details + more
+                )
+                .setPositiveButton(if (prepared.isNotEmpty()) "查看下载" else "知道了") { _, _ ->
+                    if (prepared.isNotEmpty()) selectTab(1)
+                }
+                .setNegativeButton("关闭", null)
+                .show()
+        }
     }
 
     private fun onDownloadClicked() {
@@ -129,7 +391,7 @@ class MainActivity : ComponentActivity() {
             downloadDanmaku = settingsViewModel.getBoolean("danmaku", false),
             downloadSubtitles = settingsViewModel.getBoolean("subtitles", false)
         )
-        val id = "bili_" + System.currentTimeMillis()
+        val id = "bili_" + java.util.UUID.randomUUID()
         downloadSpecs[id] = spec
         persistDownloadSpec(id, spec)
         addDownload(id, video.title, video.cover)
@@ -158,6 +420,11 @@ class MainActivity : ComponentActivity() {
                     BiliDownloadWorker.KEY_PAGE to spec.video.page,
                     BiliDownloadWorker.KEY_DURATION to spec.video.durationSeconds,
                     BiliDownloadWorker.KEY_TITLE to spec.video.title,
+                    BiliDownloadWorker.KEY_PART_NAME to (
+                        spec.video.pages.firstOrNull { it.pageNumber == spec.video.page }?.part
+                            ?.takeIf { it.isNotBlank() }
+                            ?: if (spec.video.page > 1) "P" + spec.video.page else ""
+                    ),
                     BiliDownloadWorker.KEY_QUALITY to spec.qualityId,
                     BiliDownloadWorker.KEY_AUDIO_ONLY to spec.audioOnly,
                     BiliDownloadWorker.KEY_DOWNLOAD_DANMAKU to spec.downloadDanmaku,
@@ -455,13 +722,15 @@ class MainActivity : ComponentActivity() {
             return
         }
         try {
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, contentResolver.getType(uri) ?: "video/*")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            startActivity(intent)
+            val mimeType = contentResolver.getType(uri) ?: "video/*"
+            val title = items[id]?.title ?: "BiliDl 媒体"
+            startActivity(
+                LocalPlaybackActivity.intent(uri, title, mimeType)
+                    .setClass(this, LocalPlaybackActivity::class.java)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            )
         } catch (_: Exception) {
-            toast("没有可打开此文件的播放器")
+            toast("无法在应用内打开此文件")
         }
     }
 
@@ -481,21 +750,26 @@ class MainActivity : ComponentActivity() {
                     LoginUiState.Idle,
                     LoginUiState.CheckingSession -> Unit
                     LoginUiState.RequestingQr -> {
+                        activeQrLoginUrl = null
+                        qrLoginLinkTv.visibility = View.GONE
                         qrIv.setImageDrawable(null)
                         qrOverlay.text = "正在申请二维码…"
                         qrOverlay.visibility = View.VISIBLE
                         setQrStatus("正在连接 B站登录服务…")
                     }
                     is LoginUiState.QrReady -> {
-                        showQrCode(state.bitmap)
+                        showQrCode(state.bitmap, state.url)
                         setQrStatus("请使用哔哩哔哩 App 扫描二维码")
                     }
-                    LoginUiState.Scanned ->
+                    LoginUiState.Scanned -> {
+                        qrLoginLinkTv.visibility = View.GONE
                         setQrStatus("已扫描，请在哔哩哔哩 App 中确认登录")
+                    }
                     LoginUiState.Expired -> showQrExpired()
                     LoginUiState.VerifyingCookie -> {
                         setBusy(cookieBtn, true)
                         cookieBtn.text = "登录中…"
+                        setQrStatus("已取得登录凭据，正在向 B站验证账号…")
                     }
                     is LoginUiState.Success -> {
                         setBusy(cookieBtn, false)
@@ -526,8 +800,8 @@ class MainActivity : ComponentActivity() {
         loginViewModel.stopQrLogin()
     }
 
-    private fun onCookieLogin(sessdata: String) {
-        loginViewModel.loginWithSessdata(sessdata)
+    private fun onCookieLogin(cookieHeader: String) {
+        loginViewModel.loginWithCookie(cookieHeader)
     }
 
     private fun onLogoutClicked() {
@@ -535,8 +809,52 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onChoosePathClicked() {
-        toast("视频保存位置：Download/BiliDl")
+        val current = settingsViewModel.getString(KEY_DOWNLOAD_TREE_URI)
+        if (current.isBlank()) {
+            launchDownloadFolderPicker()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("下载位置")
+            .setItems(arrayOf("更改保存文件夹", "恢复默认 Download/BiliDl")) { _, which ->
+                if (which == 0) {
+                    launchDownloadFolderPicker()
+                } else {
+                    runCatching {
+                        contentResolver.releasePersistableUriPermission(
+                            Uri.parse(current),
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                    }
+                    settingsViewModel.setString(KEY_DOWNLOAD_TREE_URI, "")
+                    setDownloadPathText("Download/BiliDl")
+                    toast("已恢复默认下载目录")
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
+
+    private fun launchDownloadFolderPicker() {
+        val current = settingsViewModel.getString(KEY_DOWNLOAD_TREE_URI)
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
+                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            )
+            if (current.isNotBlank() && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(current))
+            }
+        }
+        downloadFolderPicker.launch(intent)
+    }
+
+    private fun downloadFolderLabel(uri: Uri): String =
+        runCatching {
+            val documentId = android.provider.DocumentsContract.getTreeDocumentId(uri)
+            documentId.substringAfter(':', documentId).ifBlank { "已选择文件夹" }
+        }.getOrDefault("已选择文件夹")
 
     private fun onClearCacheClicked() {
         java.io.File(cacheDir, "bilidl").deleteRecursively()
@@ -549,26 +867,40 @@ class MainActivity : ComponentActivity() {
         return String.format(java.util.Locale.US, "%02d:%02d", safe / 60, safe % 60)
     }
 
+    private fun requestedQualityId(): Int = when (settingsViewModel.getInt("quality", 0)) {
+        1 -> 80
+        2 -> 64
+        3 -> 32
+        4 -> 16
+        else -> 0
+    }
+
     private fun preferredQualityId(qualities: List<BiliQuality>): Int {
         if (qualities.isEmpty()) return 80
-        val target = when (settingsViewModel.getInt("quality", 0)) {
-            1 -> 80
-            2 -> 64
-            3 -> 32
-            4 -> 16
-            else -> return qualities.first().id
-        }
+        val target = requestedQualityId()
+        if (target <= 0) return qualities.first().id
         return qualities.firstOrNull { it.id <= target }?.id ?: qualities.last().id
+    }
+
+    private fun qualityLabelForId(id: Int): String = when (id) {
+        80 -> "1080P"
+        64 -> "720P"
+        32 -> "480P"
+        16 -> "360P"
+        else -> "自动画质"
     }
 
     private fun qualityLabelForSelection(video: BiliVideo): String {
         return video.qualities.firstOrNull { it.id == selectedQualityId }?.label
             ?: video.qualities.firstOrNull()?.label
-            ?: "自动"
+            ?: if (video.qualities.isEmpty()) "自动（下载时确认）" else "自动"
     }
 
     private fun pageUrl(video: BiliVideo, page: BiliPage): String {
-        val identity = video.bvid?.takeIf { it.isNotBlank() } ?: "av" + video.aid
+        page.url?.takeIf { it.isNotBlank() }?.let { return it }
+        val identity = page.bvid?.takeIf { it.isNotBlank() }
+            ?: video.bvid?.takeIf { it.isNotBlank() }
+            ?: "av" + (page.aid.takeIf { it > 0L } ?: video.aid)
         return "https://www.bilibili.com/video/" + identity + "?p=" + page.pageNumber
     }
 
@@ -577,16 +909,21 @@ class MainActivity : ComponentActivity() {
         val pages = video.pages.sortedBy { it.pageNumber }
         if (pages.size <= 1) return
 
+        val isEpisodeCollection = pages.any { it.isEpisode }
         val labels = pages.map { page ->
-            "P" + page.pageNumber + " · " + page.part + " · " + formatDuration(page.durationSeconds)
+            (if (page.isEpisode) "第 " + page.pageNumber + " 集" else "P" + page.pageNumber) +
+                " · " + page.part + " · " + formatDuration(page.durationSeconds)
         }.toTypedArray()
 
         AlertDialog.Builder(this)
-            .setTitle("选择视频分P")
+            .setTitle(if (isEpisodeCollection) "选择番剧剧集" else "选择视频分P")
             .setItems(labels) { _, which ->
                 onParseClicked(pageUrl(video, pages[which]))
             }
-            .setNeutralButton("下载全部 " + pages.size + " P") { _, _ ->
+            .setNeutralButton(
+                if (isEpisodeCollection) "下载整季 " + pages.size + " 集"
+                else "下载全部 " + pages.size + " P"
+            ) { _, _ ->
                 downloadAllPages(video, pages)
             }
             .setNegativeButton("取消", null)
@@ -595,56 +932,101 @@ class MainActivity : ComponentActivity() {
 
     private fun downloadAllPages(video: BiliVideo, pages: List<BiliPage>) {
         if (pages.isEmpty()) return
-        toast("正在逐P获取画质并准备下载任务…")
+        toast(if (pages.any { it.isEpisode }) "正在逐集获取画质并准备下载任务…" else "正在逐P获取画质并准备下载任务…")
         val audioOnly = settingsViewModel.getBoolean("audio_only", false)
+        val downloadDanmaku = settingsViewModel.getBoolean("danmaku", false)
+        val downloadSubtitles = settingsViewModel.getBoolean("subtitles", false)
+        val mismatchMode = BatchQualityMismatchMode.fromCode(
+            settingsViewModel.getInt(KEY_BATCH_QUALITY_MISMATCH, 0)
+        )
+        val requestedQuality = requestedQualityId()
+
         backgroundExecutor.execute {
-            val prepared = ArrayList<DownloadSpec>()
-            val skipped = ArrayList<Int>()
-            val repository = BiliRepository { SecureCookieStore.load(this) }
+            val outcomes = ArrayList<BatchResolveOutcome>()
+            val failures = ArrayList<String>()
+            val repository = BiliRepository { SecureCookieStore.load(applicationContext) }
             for (page in pages.sortedBy { it.pageNumber }) {
                 try {
-                    // Fetch each P independently so its available quality list is respected.
+                    // Each P is inspected independently: B站 can expose different qualities per part.
                     val partVideo = repository.inspect(pageUrl(video, page))
-                    val quality = preferredQualityId(partVideo.qualities)
-                    prepared += DownloadSpec(
-                        partVideo,
-                        quality,
-                        audioOnly,
-                        settingsViewModel.getBoolean("danmaku", false),
-                        settingsViewModel.getBoolean("subtitles", false)
+                    val assessment = BatchQualityMismatchPolicy.assess(
+                        mode = mismatchMode,
+                        requestedQualityId = requestedQuality,
+                        availableQualityIds = partVideo.qualities.map { it.id }
                     )
-                } catch (_: Exception) {
-                    skipped += page.pageNumber
+                    val fallbackQuality = preferredQualityId(partVideo.qualities)
+                    val wantedLabel = qualityLabelForId(requestedQuality)
+                    val actualLabel = partVideo.qualities.firstOrNull {
+                        it.id == fallbackQuality
+                    }?.label ?: qualityLabelForId(fallbackQuality)
+
+                    if (assessment.shouldSkip) {
+                        failures += (if (page.isEpisode) "第 " + page.pageNumber + " 集" else "P" + page.pageNumber) +
+                            "：" + wantedLabel + " 不可用，已跳过"
+                    } else {
+                        outcomes += BatchResolveOutcome(
+                            spec = DownloadSpec(
+                                partVideo,
+                                fallbackQuality,
+                                audioOnly,
+                                downloadDanmaku,
+                                downloadSubtitles
+                            ),
+                            mismatchDescription = if (assessment.shouldAsk) {
+                                (if (page.isEpisode) "第 " + page.pageNumber + " 集" else "P" + page.pageNumber) +
+                                    " · " + page.part + "：缺少 " + wantedLabel + "，将使用 " + actualLabel
+                            } else null
+                        )
+                    }
+                } catch (error: Exception) {
+                    failures += (if (page.isEpisode) "第 " + page.pageNumber + " 集" else "P" + page.pageNumber) +
+                        "：" + (error.message ?: "解析失败")
                 }
             }
 
+            val prepared = outcomes.mapNotNull { it.spec }
+            val mismatches = outcomes.filter { it.mismatchDescription != null }
             runOnUiThread {
-                val batchId = System.currentTimeMillis()
-                prepared.forEachIndexed { index, spec ->
-                    val id = "bili_" + batchId + "_" + spec.video.page + "_" + index
-                    downloadSpecs[id] = spec
-                    persistDownloadSpec(id, spec)
-                    addDownload(id, spec.video.title, spec.video.cover)
-                    enqueueDownload(id, spec)
+                if (mismatchMode == BatchQualityMismatchMode.ASK && mismatches.isNotEmpty()) {
+                    val details = mismatches.take(8).mapNotNull { it.mismatchDescription }
+                        .joinToString("\n\n")
+                    val more = if (mismatches.size > 8) {
+                        "\n\n另有 " + (mismatches.size - 8) +
+                            if (pages.any { it.isEpisode }) " 集画质不匹配" else " 个分P画质不匹配"
+                    } else ""
+                    AlertDialog.Builder(this)
+                        .setTitle(if (pages.any { it.isEpisode }) "部分剧集没有目标画质" else "部分分P没有目标画质")
+                        .setMessage(
+                            (if (pages.any { it.isEpisode }) "以下剧集无法提供 " else "以下分P无法提供 ") +
+                                qualityLabelForId(requestedQuality) + "。\n\n" + details + more
+                        )
+                        .setPositiveButton("使用可用画质下载全部") { _, _ ->
+                            enqueuePreparedBatch(prepared, failures, pages.size)
+                        }
+                        .setNeutralButton(if (pages.any { it.isEpisode }) "跳过不匹配剧集" else "跳过不匹配分P") { _, _ ->
+                            val exactMatches = outcomes.filter { it.mismatchDescription == null }
+                                .mapNotNull { it.spec }
+                            val skipped = mismatches.mapNotNull { it.mismatchDescription }
+                                .map { "$it（已跳过）" }
+                            enqueuePreparedBatch(exactMatches, failures + skipped, pages.size)
+                        }
+                        .setNegativeButton("取消整批", null)
+                        .show()
+                } else {
+                    enqueuePreparedBatch(prepared, failures, pages.size)
                 }
-                if (prepared.isNotEmpty()) selectTab(1)
-                val message = buildString {
-                    append("已加入 ")
-                    append(prepared.size)
-                    append("/")
-                    append(pages.size)
-                    append(" 个分P任务")
-                    if (skipped.isNotEmpty()) append("；跳过 P" + skipped.joinToString(", P"))
-                }
-                toast(message)
             }
         }
     }
 
     private fun showAvailableQualities() {
         val video = parsedVideo
-        if (video == null || video.qualities.isEmpty()) {
-            toast("请先解析视频，获取这条视频实际提供的画质")
+        if (video == null) {
+            toast("请先解析视频")
+            return
+        }
+        if (video.qualities.isEmpty()) {
+            toast("B站暂未返回画质列表；仍可直接下载，应用会在下载时重新获取，不要求先登录")
             return
         }
         val labels = video.qualities.map { it.label }.toTypedArray()
@@ -664,23 +1046,31 @@ class MainActivity : ComponentActivity() {
 
     // ===================== 供后端调用的界面方法 =====================
     fun showVideo(title: String, uploader: String, cover: Bitmap?, meta: String = "") = runOnUiThread {
-        setBusy(parseBtn, false); parseBtn.text = "解析"
+        setBusy(parseBtn, false); input.isEnabled = true; setParseLoading(false); parseBtn.text = "解析视频"
         titleTv.text = title
         upTv.text = "UP主 · $uploader"
         metaTv.text = meta
         metaTv.visibility = if (meta.isEmpty()) View.GONE else View.VISIBLE
-        val hasMultiplePages = (parsedVideo?.pages?.size ?: 0) > 1
+        val pageCount = parsedVideo?.pages?.size ?: 0
+        val hasMultiplePages = pageCount > 1
+        dlAllPagesBtn.visibility = if (hasMultiplePages) View.VISIBLE else View.GONE
+        dlAllPagesBtn.text = if (parsedVideo?.pages?.any { it.isEpisode } == true) {
+            "下载整季 " + pageCount + " 集"
+        } else {
+            "下载全部 " + pageCount + " P"
+        }
         metaTv.isClickable = hasMultiplePages
         metaTv.setTextColor(if (hasMultiplePages) pink else sub)
         metaTv.setOnClickListener { if (hasMultiplePages) showAvailablePages() }
-        if (cover != null) coverIv.setImageBitmap(cover) else coverIv.setImageDrawable(null)
+        if (cover != null) coverIv.setImageBitmap(cover)
+        else coverIv.setImageResource(R.drawable.ic_video_placeholder)
         resultCard.visibility = View.VISIBLE
         parsedVideo?.let { homeQualityTv.text = qualityLabelForSelection(it) + "  ›" }
         say("", sub)
     }
 
     fun showError(message: String) = runOnUiThread {
-        setBusy(parseBtn, false); parseBtn.text = "解析"
+        setBusy(parseBtn, false); input.isEnabled = true; setParseLoading(false); parseBtn.text = "解析视频"
         parsedVideo = null
         resultCard.visibility = View.GONE
         say(message, err)
@@ -726,9 +1116,11 @@ class MainActivity : ComponentActivity() {
         refreshDownloadList()
     }
 
-    fun showQrCode(bmp: Bitmap) = runOnUiThread {
+    fun showQrCode(bmp: Bitmap, qrUrl: String) = runOnUiThread {
         qrIv.setImageBitmap(bmp)
         qrOverlay.visibility = View.GONE
+        activeQrLoginUrl = qrUrl
+        qrLoginLinkTv.visibility = View.VISIBLE
         setQrStatus("请使用哔哩哔哩 App 扫码")
     }
 
@@ -738,6 +1130,8 @@ class MainActivity : ComponentActivity() {
     }
 
     fun showQrExpired() = runOnUiThread {
+        activeQrLoginUrl = null
+        qrLoginLinkTv.visibility = View.GONE
         qrOverlay.text = "二维码已过期\n点击刷新"
         qrOverlay.visibility = View.VISIBLE
         setQrStatus("二维码已过期，请刷新", true)
@@ -749,6 +1143,11 @@ class MainActivity : ComponentActivity() {
         refreshAccountUi()
         hideLogin()
         toast("登录成功，欢迎 $name")
+        if (::homeFeedList.isInitialized && homeFeedExpanded &&
+            homeFeedType == BiliHomeFeedType.RECOMMEND
+        ) {
+            loadHomeFeed(reset = true)
+        }
     }
 
     fun loginFailed(message: String) = runOnUiThread {
@@ -760,6 +1159,7 @@ class MainActivity : ComponentActivity() {
     fun logoutDone() = runOnUiThread {
         loggedIn = false; userName = ""; userAvatar = null; userVip = false
         refreshAccountUi()
+        if (::homeFeedList.isInitialized && homeFeedExpanded) loadHomeFeed(reset = true)
         toast("已退出登录")
     }
 
@@ -780,10 +1180,16 @@ class MainActivity : ComponentActivity() {
 
     private val qualityOptions = arrayOf("自动（最高可用）", "1080P", "720P", "480P", "360P")
     private val concurrentOptions = arrayOf("1 个", "2 个", "3 个", "5 个")
+    private val batchQualityMismatchOptions = arrayOf(
+        "自动降到可用画质",
+        "遇到不匹配时询问",
+        "跳过不匹配项目"
+    )
 
     // ---------------- 状态 ----------------
     private lateinit var pages: List<View>
-    private val tabIcon = ArrayList<TextView>()
+    private val tabIcon = ArrayList<ImageView>()
+    private val tabIconContainers = ArrayList<FrameLayout>()
     private val tabText = ArrayList<TextView>()
 
     private var loggedIn = false
@@ -792,6 +1198,7 @@ class MainActivity : ComponentActivity() {
     private var userAvatar: Bitmap? = null
 
     private val backgroundExecutor = Executors.newFixedThreadPool(2)
+    private val batchExecutor = Executors.newFixedThreadPool(3)
     private val workManager by lazy { WorkManager.getInstance(applicationContext) }
     private val taskPrefs by lazy {
         getSharedPreferences("download_tasks", Context.MODE_PRIVATE)
@@ -809,10 +1216,27 @@ class MainActivity : ComponentActivity() {
     private val savedFileUris = HashMap<String, Uri>()
 
 
+    // 首页推荐 / 热门
+    private lateinit var homeFeedList: LinearLayout
+    private lateinit var homeFeedStatus: TextView
+    private lateinit var homeFeedContent: LinearLayout
+    private lateinit var homeFeedToggle: TextView
+    private var homeFeedExpanded = false
+    private lateinit var homeFeedMore: TextView
+    private lateinit var homeFeedRecommendTab: TextView
+    private lateinit var homeFeedPopularTab: TextView
+    private var homeFeedType = BiliHomeFeedType.RECOMMEND
+    private var homeFeedPage = 1
+    private var homeFeedHasMore = true
+    private var homeFeedLoading = false
+    private val homeFeedItems = ArrayList<BiliHomeFeedItem>()
+    private val homeFeedExecutor = Executors.newSingleThreadExecutor()
+    private val homeFeedImageExecutor = Executors.newFixedThreadPool(3)
+
     // 首页
+    private lateinit var homeScroll: ScrollView
     private lateinit var input: EditText
     private lateinit var parseBtn: Button
-    private lateinit var loginTip: View
     private lateinit var resultCard: LinearLayout
     private lateinit var coverIv: ImageView
     private lateinit var titleTv: TextView
@@ -820,7 +1244,10 @@ class MainActivity : ComponentActivity() {
     private lateinit var metaTv: TextView
     private lateinit var homeQualityTv: TextView
     private lateinit var dlBtn: Button
+    private lateinit var dlAllPagesBtn: Button
     private lateinit var statusTv: TextView
+    private lateinit var parseStatusRow: LinearLayout
+    private lateinit var parseProgress: ProgressBar
 
     // 下载页
     private class DlItem(val id: String, var title: String, var cover: Bitmap?) {
@@ -830,9 +1257,14 @@ class MainActivity : ComponentActivity() {
         var sizeText = ""
     }
     private class Row(
-        val root: LinearLayout, val cover: ImageView, val title: TextView,
-        val info: TextView, val bar: ProgressBar, val primary: TextView,
-        val selection: TextView, val resources: TextView, val history: TextView
+        val root: LinearLayout,
+        val cover: ImageView,
+        val title: TextView,
+        val info: TextView,
+        val bar: ProgressBar,
+        val primary: TextView,
+        val selection: TextView,
+        val more: TextView
     )
     private val items = LinkedHashMap<String, DlItem>()
     private val rows = HashMap<String, Row>()
@@ -859,12 +1291,14 @@ class MainActivity : ComponentActivity() {
 
     // 登录页
     private lateinit var loginPage: View
+    private lateinit var loginTabsContainer: View
     private lateinit var loginSegs: List<TextView>
     private lateinit var qrPanel: LinearLayout
     private lateinit var cookiePanel: LinearLayout
     private lateinit var qrIv: ImageView
     private lateinit var qrOverlay: TextView
     private lateinit var qrStatusTv: TextView
+    private lateinit var qrLoginLinkTv: TextView
     private lateinit var cookieInput: EditText
     private lateinit var cookieBtn: Button
     private lateinit var cookieErrTv: TextView
@@ -893,9 +1327,9 @@ class MainActivity : ComponentActivity() {
 
     private fun card() = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
-        background = shape(Color.WHITE, 20)
-        setPadding(dp(18), dp(18), dp(18), dp(18))
-        elevation = dp(2).toFloat()
+        background = shape(Color.WHITE, 18, Color.parseColor("#E8EBF0"))
+        setPadding(dp(16), dp(16), dp(16), dp(16))
+        elevation = 0f
     }
 
     private fun sideMargins(top: Int = 16) = LinearLayout.LayoutParams(match, wrap).apply {
@@ -905,30 +1339,35 @@ class MainActivity : ComponentActivity() {
     private fun pillButton(label: String, filled: Boolean) = Button(this).apply {
         text = label
         isAllCaps = false
-        textSize = 15f
+        textSize = 14f
         typeface = Typeface.DEFAULT_BOLD
         stateListAnimator = null
+        minHeight = dp(48)
+        minimumHeight = dp(48)
+        setPadding(dp(18), 0, dp(18), 0)
+        backgroundTintList = null
         if (filled) {
             setTextColor(Color.WHITE)
-            background = rippleShape(pink, 24)
+            background = rippleShape(pink, 14)
         } else {
-            setTextColor(pink)
-            background = rippleShape(Color.WHITE, 24, pink)
+            setTextColor(ink)
+            background = rippleShape(Color.WHITE, 14, Color.parseColor("#E1E5EB"))
         }
     }
 
     private fun chip(label: String, filled: Boolean) = TextView(this).apply {
         text = label
-        textSize = 13f
+        textSize = 12f
         typeface = Typeface.DEFAULT_BOLD
         gravity = Gravity.CENTER
-        setPadding(dp(16), dp(8), dp(16), dp(8))
+        minHeight = dp(36)
+        setPadding(dp(12), dp(8), dp(12), dp(8))
         if (filled) {
             setTextColor(Color.WHITE)
-            background = rippleShape(pink, 18)
+            background = rippleShape(pink, 12)
         } else {
-            setTextColor(sub)
-            background = rippleShape(field, 18)
+            setTextColor(ink)
+            background = rippleShape(Color.WHITE, 12, Color.parseColor("#E5E8ED"))
         }
     }
 
@@ -951,26 +1390,22 @@ class MainActivity : ComponentActivity() {
     private fun header(title: String, subtitle: String, bottom: Int): LinearLayout {
         val h = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(24), dp(26), dp(24), dp(bottom))
-            background = GradientDrawable(
-                GradientDrawable.Orientation.TL_BR, intArrayOf(pink, pinkLight)
-            ).apply {
-                val r = dp(32).toFloat()
-                cornerRadii = floatArrayOf(0f, 0f, 0f, 0f, r, r, r, r)
-            }
+            setPadding(dp(22), dp(22), dp(22), dp(bottom.coerceAtMost(22)))
+            setBackgroundColor(Color.TRANSPARENT)
         }
         h.addView(TextView(this).apply {
             text = title
-            textSize = 26f
+            textSize = 23f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
+            setTextColor(ink)
+            includeFontPadding = false
         })
-        if (subtitle.isNotEmpty()) {
+        if (subtitle.isNotBlank()) {
             h.addView(TextView(this).apply {
                 text = subtitle
-                textSize = 13f
-                setTextColor(Color.parseColor("#CCFFFFFF"))
-                setPadding(0, dp(6), 0, 0)
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(5), 0, 0)
             })
         }
         return h
@@ -981,9 +1416,8 @@ class MainActivity : ComponentActivity() {
     ): Pair<LinearLayout, List<TextView>> {
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = shape(Color.WHITE, 26)
-            elevation = dp(4).toFloat()
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = shape(field, 12)
+            setPadding(dp(3), dp(3), dp(3), dp(3))
         }
         val tvs = labels.mapIndexed { i, l ->
             val t = TextView(this).apply {
@@ -1002,7 +1436,7 @@ class MainActivity : ComponentActivity() {
     private fun styleSegs(tvs: List<TextView>, selected: Int) {
         tvs.forEachIndexed { i, t ->
             if (i == selected) {
-                t.background = shape(pink, 22); t.setTextColor(Color.WHITE)
+                t.background = shape(Color.WHITE, 10, Color.parseColor("#E7EAF0")); t.setTextColor(ink)
             } else {
                 t.background = null; t.setTextColor(sub)
             }
@@ -1013,6 +1447,7 @@ class MainActivity : ComponentActivity() {
         statusTv.text = msg
         statusTv.setTextColor(color)
         statusTv.visibility = if (msg.isEmpty()) View.GONE else View.VISIBLE
+        parseStatusRow.visibility = if (msg.isEmpty()) View.GONE else View.VISIBLE
         statusTv.isClickable = onClick != null
         statusTv.setOnClickListener(if (onClick == null) null else View.OnClickListener { onClick() })
     }
@@ -1073,6 +1508,7 @@ class MainActivity : ComponentActivity() {
         rootFrame.addView(loginPage, FrameLayout.LayoutParams(match, match))
 
         setContentView(rootFrame)
+        handleIncomingShare(intent)
         observeParseState()
         observeLoginState()
         selectTab(0)
@@ -1080,8 +1516,27 @@ class MainActivity : ComponentActivity() {
         refreshDownloadList()
         restoreDownloadTasks()
         restoreRoomTasks()
-        setDownloadPathText("Download/BiliDl")
+        val savedTree = settingsViewModel.getString(KEY_DOWNLOAD_TREE_URI)
+        setDownloadPathText(if (savedTree.isBlank()) "Download/BiliDl" else downloadFolderLabel(Uri.parse(savedTree)))
         loginViewModel.restoreSession()
+    }
+
+    private fun handleIncomingShare(incoming: Intent?) {
+        val sharedText = when (incoming?.action) {
+            Intent.ACTION_SEND -> incoming.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()
+            Intent.ACTION_VIEW -> incoming.dataString
+            else -> null
+        }?.trim().orEmpty()
+        if (sharedText.isBlank() || !::input.isInitialized) return
+        input.setText(sharedText)
+        input.setSelection(input.text.length)
+        toast("已导入分享内容，点击「解析视频」继续")
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingShare(intent)
     }
 
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
@@ -1092,6 +1547,9 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         stopQrLogin()
         backgroundExecutor.shutdownNow()
+        batchExecutor.shutdownNow()
+        homeFeedExecutor.shutdownNow()
+        homeFeedImageExecutor.shutdownNow()
         super.onDestroy()
     }
 
@@ -1100,34 +1558,242 @@ class MainActivity : ComponentActivity() {
         val navBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.WHITE)
-            elevation = dp(8).toFloat()
+            setPadding(0, dp(5), 0, dp(3))
+            elevation = dp(2).toFloat()
         }
         val names = listOf("首页", "下载", "设置")
-        val icons = listOf("🏠", "📥", "⚙️")
-        for (i in 0..2) {
+        val icons = listOf(
+            R.drawable.ic_nav_home,
+            R.drawable.ic_nav_download,
+            R.drawable.ic_nav_settings
+        )
+        for (i in names.indices) {
             val tab = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
+                isClickable = true
+                isFocusable = true
+                setOnClickListener { selectTab(i) }
             }
-            val ic = TextView(this).apply { text = icons[i]; textSize = 20f; gravity = Gravity.CENTER }
-            val tx = TextView(this).apply { text = names[i]; textSize = 11f; gravity = Gravity.CENTER }
-            tab.addView(ic)
-            tab.addView(tx)
-            tab.setOnClickListener { selectTab(i) }
-            tabIcon.add(ic); tabText.add(tx)
+            val icon = ImageView(this).apply {
+                setImageResource(icons[i])
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                contentDescription = names[i]
+            }
+            val label = TextView(this).apply {
+                text = names[i]
+                textSize = 11f
+                gravity = Gravity.CENTER
+                setPadding(0, dp(3), 0, 0)
+            }
+            val iconContainer = FrameLayout(this).apply {
+                addView(icon, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER))
+            }
+            tab.addView(iconContainer, LinearLayout.LayoutParams(dp(48), dp(30)))
+            tab.addView(label)
+            tabIcon.add(icon)
+            tabIconContainers.add(iconContainer)
+            tabText.add(label)
             navBar.addView(tab, LinearLayout.LayoutParams(0, match, 1f))
         }
         return navBar
     }
 
     private fun selectTab(i: Int) {
-        pages.forEachIndexed { idx, p -> p.visibility = if (idx == i) View.VISIBLE else View.GONE }
-        for (k in 0 until 3) {
-            val on = k == i
-            tabIcon[k].alpha = if (on) 1f else 0.4f
-            tabText[k].setTextColor(if (on) pink else sub)
-            tabText[k].typeface = if (on) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        pages.forEachIndexed { idx, page ->
+            page.visibility = if (idx == i) View.VISIBLE else View.GONE
         }
+        for (index in 0 until 3) {
+            val selected = index == i
+            val tint = if (selected) pink else sub
+            tabIcon[index].imageTintList = ColorStateList.valueOf(tint)
+            tabIconContainers[index].background = if (selected) shape(field, 14) else null
+            tabText[index].setTextColor(tint)
+            tabText[index].typeface = if (selected) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+        }
+    }
+
+    private fun switchHomeFeed(type: BiliHomeFeedType) {
+        if (homeFeedType == type) {
+            loadHomeFeed(reset = true)
+            return
+        }
+        homeFeedType = type
+        homeFeedPage = 1
+        homeFeedHasMore = true
+        homeFeedItems.clear()
+        if (::homeFeedList.isInitialized) homeFeedList.removeAllViews()
+        refreshHomeFeedTabs()
+        loadHomeFeed(reset = true)
+    }
+
+    private fun refreshHomeFeedTabs() {
+        if (!::homeFeedRecommendTab.isInitialized || !::homeFeedPopularTab.isInitialized) return
+        val recommend = homeFeedType == BiliHomeFeedType.RECOMMEND
+        homeFeedRecommendTab.setTextColor(if (recommend) Color.WHITE else ink)
+        homeFeedRecommendTab.background = if (recommend) shape(pink, 18) else shape(field, 18)
+        homeFeedPopularTab.setTextColor(if (!recommend) Color.WHITE else ink)
+        homeFeedPopularTab.background = if (!recommend) shape(pink, 18) else shape(field, 18)
+    }
+
+    private fun loadHomeFeed(reset: Boolean) {
+        if (homeFeedLoading) return
+        if (!reset && !homeFeedHasMore) return
+        val requestedType = homeFeedType
+        val requestedPage = if (reset) 1 else homeFeedPage + 1
+        homeFeedLoading = true
+        homeFeedMore.isEnabled = false
+        homeFeedStatus.text = if (reset) {
+            "正在加载" + requestedType.title + "…"
+        } else {
+            "正在加载更多…"
+        }
+        if (reset) {
+            homeFeedPage = 1
+            homeFeedHasMore = true
+            homeFeedItems.clear()
+            homeFeedList.removeAllViews()
+            homeFeedMore.visibility = View.GONE
+        }
+
+        homeFeedExecutor.execute {
+            val result = runCatching {
+                BiliRepository { SecureCookieStore.load(applicationContext) }
+                    .fetchHomeFeed(requestedType, requestedPage)
+            }
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                homeFeedLoading = false
+                homeFeedMore.isEnabled = true
+                if (homeFeedType != requestedType) {
+                    loadHomeFeed(reset = true)
+                    return@runOnUiThread
+                }
+                result.onSuccess { data ->
+                    homeFeedPage = requestedPage
+                    homeFeedHasMore = data.hasMore
+                    val newItems = data.items.filter { incoming ->
+                        homeFeedItems.none { it.url == incoming.url }
+                    }
+                    homeFeedItems += newItems
+                    newItems.forEach(::addHomeFeedItem)
+                    homeFeedStatus.text = when {
+                        homeFeedItems.isNotEmpty() ->
+                            requestedType.title + " · 已加载 " + homeFeedItems.size + " 条"
+                        requestedType == BiliHomeFeedType.RECOMMEND ->
+                            "暂无推荐内容；可切换「热门」浏览公开内容"
+                        else -> "暂时没有热门内容"
+                    }
+                    homeFeedMore.visibility =
+                        if (homeFeedHasMore && homeFeedItems.isNotEmpty()) View.VISIBLE else View.GONE
+                }.onFailure { error ->
+                    val message = error.message.orEmpty()
+                    homeFeedStatus.text = if (
+                        requestedType == BiliHomeFeedType.RECOMMEND &&
+                        (message.contains("-101") || message.contains("未登录"))
+                    ) {
+                        "B站推荐流暂时要求账号授权；登录后可查看个性化推荐，也可先浏览「热门」"
+                    } else {
+                        message.ifBlank { "加载失败，请点击刷新重试" }
+                    }
+                    homeFeedMore.visibility = View.GONE
+                }
+            }
+        }
+    }
+
+    private fun addHomeFeedItem(item: BiliHomeFeedItem) {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = shape(Color.WHITE, 12, Color.parseColor("#EEF0F4"))
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener {
+                input.setText(item.url)
+                input.setSelection(input.text.length)
+                resultCard.visibility = View.GONE
+                say("已选择：" + item.title + " · 点击解析视频继续", sub)
+                mainViewModel.parse(item.url)
+            }
+        }
+        val cover = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = shape(field, 8)
+            setImageResource(R.drawable.ic_video_placeholder)
+        }
+        row.addView(cover, LinearLayout.LayoutParams(dp(116), dp(76)))
+        val info = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), 0, 0, 0)
+        }
+        info.addView(TextView(this).apply {
+            text = item.title
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }, LinearLayout.LayoutParams(match, wrap))
+        val authorLine = TextView(this).apply {
+            text = item.uploader + if (item.duration.isNotBlank()) " · " + item.duration else ""
+            textSize = 11f
+            setTextColor(sub)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(4), 0, 0)
+        }
+        info.addView(authorLine)
+        val stats = TextView(this).apply {
+            text = "▶ " + compactFeedNumber(item.viewCount) +
+                "   弹幕 " + compactFeedNumber(item.danmakuCount) +
+                "   赞 " + compactFeedNumber(item.likeCount)
+            textSize = 10f
+            setTextColor(sub)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(0, dp(3), 0, 0)
+        }
+        info.addView(stats)
+        if (item.reason.isNotBlank()) {
+            info.addView(TextView(this).apply {
+                text = item.reason
+                textSize = 10f
+                setTextColor(pink)
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                setPadding(0, dp(2), 0, 0)
+            })
+        }
+        row.addView(info, LinearLayout.LayoutParams(0, wrap, 1f))
+        homeFeedList.addView(row, LinearLayout.LayoutParams(match, wrap).apply {
+            bottomMargin = dp(8)
+        })
+
+        val coverUrl = item.coverUrl
+        if (!coverUrl.isNullOrBlank()) {
+            homeFeedImageExecutor.execute {
+                val bitmap = runCatching {
+                    BiliRepository { SecureCookieStore.load(applicationContext) }.fetchCover(coverUrl)
+                }.getOrNull()
+                if (bitmap != null) {
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed && cover.parent != null) {
+                            cover.setImageBitmap(bitmap)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun compactFeedNumber(value: Long): String = when {
+        value >= 100_000_000L -> String.format(java.util.Locale.US, "%.1f亿", value / 100_000_000.0)
+        value >= 10_000L -> String.format(java.util.Locale.US, "%.1f万", value / 10_000.0)
+        value > 0L -> value.toString()
+        else -> "—"
     }
 
     // ================= 首页 =================
@@ -1152,73 +1818,183 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun buildHome(): View {
-        val scroll = ScrollView(this).apply { setBackgroundColor(bg); isVerticalScrollBarEnabled = false }
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(bg)
+            isVerticalScrollBarEnabled = false
+            clipToPadding = false
+        }
+        homeScroll = scroll
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(col, match, wrap)
-        col.addView(header("B站下载器", "简单、清晰的 Bilibili 视频保存工具", 56), match, wrap)
 
-        val inputCard = card()
-        input = EditText(this).apply {
-            hint = "粘贴 B站链接、BV / av / ep / ss 号"
-            setHintTextColor(sub)
-            setTextColor(ink)
-            textSize = 15f
-            minLines = 3
-            maxLines = 5
-            gravity = Gravity.TOP
-            background = shape(field, 14)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-            setSelectAllOnFocus(false)
-        }
-
-        val pasteBtn = pillButton("粘贴", false)
-        val clearBtn = pillButton("清空", false)
-        parseBtn = pillButton("解析", true)
-        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        btnRow.addView(pasteBtn, LinearLayout.LayoutParams(0, dp(48), 1f).apply { rightMargin = dp(8) })
-        btnRow.addView(clearBtn, LinearLayout.LayoutParams(0, dp(48), 0.9f).apply { rightMargin = dp(8) })
-        btnRow.addView(parseBtn, LinearLayout.LayoutParams(0, dp(48), 1.2f))
-        inputCard.addView(input, match, wrap)
-        inputCard.addView(btnRow, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(14) })
-        inputCard.addView(TextView(this).apply {
-            text = "支持视频 BV / av、番剧 ep / ss，以及 b23.tv 分享短链接"
-            textSize = 12f
-            setTextColor(sub)
-            setPadding(dp(2), dp(10), dp(2), 0)
-        }, match, wrap)
-        col.addView(inputCard, sideMargins().apply { topMargin = -dp(32) })
-
-        val tip = LinearLayout(this).apply {
+        val brand = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            background = shape(Color.parseColor("#FFF3F6"), 16)
-            setPadding(dp(16), dp(10), dp(10), dp(10))
+            setPadding(dp(22), dp(22), dp(22), dp(18))
         }
-        tip.addView(TextView(this).apply {
-            text = "登录可能影响可选画质；最终以视频实际提供的清晰度为准"
+        val brandIcon = ImageView(this).apply {
+            setImageResource(R.mipmap.ic_launcher)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+        brand.addView(brandIcon, LinearLayout.LayoutParams(dp(40), dp(40)))
+        val brandCopy = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        brandCopy.addView(TextView(this).apply {
+            text = "BiliDl"
+            textSize = 21f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            includeFontPadding = false
+        })
+        brandCopy.addView(TextView(this).apply {
+            text = "B站视频下载"
             textSize = 12f
-            setTextColor(Color.parseColor("#A83F62"))
-        }, LinearLayout.LayoutParams(0, wrap, 1f))
-        val goLogin = chip("账号登录", true)
-        goLogin.setOnClickListener { showLogin() }
-        tip.addView(goLogin)
-        loginTip = tip
-        col.addView(tip, sideMargins(16))
+            setTextColor(sub)
+            setPadding(0, dp(3), 0, 0)
+        })
+        brand.addView(brandCopy, LinearLayout.LayoutParams(wrap, wrap).apply {
+            leftMargin = dp(11)
+        })
+        col.addView(brand, match, wrap)
 
-        resultCard = card().apply { visibility = View.GONE }
-        coverIv = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            background = shape(Color.parseColor("#E8EAF0"), 14)
-            clipToOutline = true
+        val inputCard = card()
+        val inputHeading = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
         }
-        titleTv = TextView(this).apply {
+        inputHeading.addView(TextView(this).apply {
+            text = "解析视频"
             textSize = 17f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(ink)
+        })
+        inputHeading.addView(TextView(this).apply {
+            text = "粘贴 B 站链接，查看视频信息与可用下载选项"
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(0, dp(3), 0, 0)
+        })
+        inputCard.addView(inputHeading, LinearLayout.LayoutParams(match, wrap).apply {
+            bottomMargin = dp(12)
+        })
+        input = EditText(this).apply {
+            hint = "粘贴 B 站视频或番剧链接"
+            setHintTextColor(sub)
+            setTextColor(ink)
+            textSize = 15f
+            minLines = 2
+            maxLines = 4
+            gravity = Gravity.TOP or Gravity.START
+            background = shape(Color.WHITE, 13, Color.parseColor("#E1E5EB"))
+            setPadding(dp(14), dp(13), dp(14), dp(13))
+            setSelectAllOnFocus(false)
+            includeFontPadding = false
+        }
+        inputCard.addView(input, LinearLayout.LayoutParams(match, wrap))
+
+        val inputActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val helper = TextView(this).apply {
+            text = "支持 BV / av / ep / ss · 多条链接可批量导入"
+            textSize = 12f
+            setTextColor(sub)
+        }
+        inputActions.addView(helper, LinearLayout.LayoutParams(0, wrap, 1f))
+        val pasteBtn = chip("粘贴", false)
+        inputActions.addView(pasteBtn, LinearLayout.LayoutParams(wrap, dp(38)))
+        inputCard.addView(inputActions, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(10)
+        })
+
+        parseBtn = pillButton("解析视频", true)
+        inputCard.addView(parseBtn, LinearLayout.LayoutParams(match, dp(48)).apply {
+            topMargin = dp(12)
+        })
+        col.addView(inputCard, sideMargins(4))
+
+        parseStatusRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        parseProgress = ProgressBar(this).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(pink)
+            visibility = View.GONE
+        }
+        parseStatusRow.addView(parseProgress, LinearLayout.LayoutParams(dp(16), dp(16)))
+        statusTv = TextView(this).apply {
+            textSize = 13f
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            maxLines = 3
+            ellipsize = TextUtils.TruncateAt.END
+            setPadding(dp(8), 0, dp(4), 0)
             setLineSpacing(0f, 1.15f)
         }
-        upTv = TextView(this).apply { textSize = 13f; setTextColor(sub) }
-        metaTv = TextView(this).apply { textSize = 12f; setTextColor(sub) }
+        parseStatusRow.addView(statusTv, LinearLayout.LayoutParams(0, wrap, 1f))
+        col.addView(parseStatusRow, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(8)
+            leftMargin = dp(20)
+            rightMargin = dp(20)
+            bottomMargin = dp(4)
+        })
+
+        resultCard = card().apply { visibility = View.GONE }
+        resultCard.addView(TextView(this).apply {
+            text = "解析结果"
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }, LinearLayout.LayoutParams(match, wrap).apply {
+            bottomMargin = dp(12)
+        })
+        val previewRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        coverIv = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = shape(Color.parseColor("#E8EAF0"), 12)
+            clipToOutline = true
+        }
+        previewRow.addView(coverIv, LinearLayout.LayoutParams(dp(112), dp(76)))
+        val videoCopy = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        titleTv = TextView(this).apply {
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+            setLineSpacing(0f, 1.12f)
+            includeFontPadding = false
+        }
+        upTv = TextView(this).apply {
+            textSize = 12f
+            setTextColor(sub)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        metaTv = TextView(this).apply {
+            textSize = 11f
+            setTextColor(sub)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }
+        videoCopy.addView(titleTv, match, wrap)
+        videoCopy.addView(upTv, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(5)
+        })
+        videoCopy.addView(metaTv, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(3)
+        })
+        previewRow.addView(videoCopy, LinearLayout.LayoutParams(0, wrap, 1f).apply {
+            leftMargin = dp(12)
+        })
+        resultCard.addView(previewRow, match, wrap)
 
         val qualityRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1227,10 +2003,12 @@ class MainActivity : ComponentActivity() {
             setPadding(dp(14), 0, dp(14), 0)
         }
         qualityRow.addView(TextView(this).apply {
-            text = "优先画质"; textSize = 14f; setTextColor(ink)
+            text = "下载画质"
+            textSize = 13f
+            setTextColor(ink)
         }, LinearLayout.LayoutParams(0, wrap, 1f))
         homeQualityTv = TextView(this).apply {
-            textSize = 14f
+            textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(pink)
             text = qualityText()
@@ -1238,67 +2016,197 @@ class MainActivity : ComponentActivity() {
         qualityRow.addView(homeQualityTv)
         qualityRow.setOnClickListener { showAvailableQualities() }
 
-        dlBtn = pillButton("加入下载任务", true)
-        dlBtn.setOnClickListener {
-            onDownloadClicked()
-        }
-
-        resultCard.addView(coverIv, LinearLayout.LayoutParams(match, dp(190)))
-        resultCard.addView(titleTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(14) })
-        resultCard.addView(upTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(4) })
-        resultCard.addView(metaTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(2) })
-        resultCard.addView(qualityRow, LinearLayout.LayoutParams(match, dp(46)).apply { topMargin = dp(14) })
-        resultCard.addView(dlBtn, LinearLayout.LayoutParams(match, dp(50)).apply { topMargin = dp(12) })
-        col.addView(resultCard, sideMargins())
-
-        statusTv = TextView(this).apply {
-            textSize = 14f
-            gravity = Gravity.CENTER
+        dlBtn = pillButton("下载当前视频", true)
+        dlBtn.setOnClickListener { onDownloadClicked() }
+        dlAllPagesBtn = pillButton("下载全部分P", false).apply {
             visibility = View.GONE
-        }
-        col.addView(statusTv, LinearLayout.LayoutParams(match, wrap).apply {
-            topMargin = dp(16); leftMargin = dp(24); rightMargin = dp(24); bottomMargin = dp(32)
-        })
-
-        pasteBtn.setOnClickListener {
-            val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-            val t = cm.primaryClip?.takeIf { it.itemCount > 0 }
-                ?.getItemAt(0)?.coerceToText(this)?.toString()
-            if (t.isNullOrBlank()) {
-                say("剪贴板是空的", sub)
-            } else {
-                input.setText(t)
-                input.setSelection(input.text.length)
-                resultCard.visibility = View.GONE
-                say("已粘贴剪贴板内容，点击解析继续", sub)
+            setOnClickListener {
+                val current = parsedVideo
+                if (current == null) toast("请先解析视频")
+                else downloadAllPages(current, current.pages)
             }
         }
-        clearBtn.setOnClickListener {
-            input.setText("")
-            resultCard.visibility = View.GONE
-            say("", sub)
-            input.requestFocus()
+        resultCard.addView(qualityRow, LinearLayout.LayoutParams(match, dp(44)).apply {
+            topMargin = dp(14)
+        })
+        resultCard.addView(dlBtn, LinearLayout.LayoutParams(match, dp(48)).apply {
+            topMargin = dp(10)
+        })
+        resultCard.addView(dlAllPagesBtn, LinearLayout.LayoutParams(match, dp(44)).apply {
+            topMargin = dp(8)
+        })
+        col.addView(resultCard, sideMargins(12))
+
+        val feedCard = card().apply {
+            setPadding(dp(14), dp(12), dp(14), dp(12))
         }
+        val feedHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        feedHeader.addView(TextView(this).apply {
+            text = "发现视频"
+            textSize = 15f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+        }, LinearLayout.LayoutParams(0, wrap, 1f))
+        homeFeedToggle = chip("展开", false).apply {
+            setOnClickListener {
+                homeFeedExpanded = !homeFeedExpanded
+                homeFeedContent.visibility = if (homeFeedExpanded) View.VISIBLE else View.GONE
+                text = if (homeFeedExpanded) "收起" else "展开"
+                if (homeFeedExpanded && homeFeedItems.isEmpty() && !homeFeedLoading) {
+                    loadHomeFeed(reset = true)
+                }
+            }
+        }
+        feedHeader.addView(homeFeedToggle, LinearLayout.LayoutParams(wrap, dp(36)))
+        feedCard.addView(feedHeader, LinearLayout.LayoutParams(match, dp(40)))
+
+        homeFeedContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            visibility = View.GONE
+        }
+        val feedActions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, dp(6))
+        }
+        feedActions.addView(chip("站内搜索", false).apply {
+            setOnClickListener {
+                searchLauncher.launch(Intent(this@MainActivity, SearchActivity::class.java))
+            }
+        }, LinearLayout.LayoutParams(wrap, dp(36)))
+        feedActions.addView(chip("刷新", false).apply {
+            setOnClickListener { loadHomeFeed(reset = true) }
+        }, LinearLayout.LayoutParams(wrap, dp(36)).apply {
+            leftMargin = dp(6)
+        })
+        homeFeedContent.addView(feedActions, LinearLayout.LayoutParams(match, wrap))
+
+        val feedTabRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(2), 0, dp(8))
+        }
+        homeFeedRecommendTab = TextView(this).apply {
+            text = "推荐"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+            setOnClickListener { switchHomeFeed(BiliHomeFeedType.RECOMMEND) }
+        }
+        homeFeedPopularTab = TextView(this).apply {
+            text = "热门"
+            textSize = 13f
+            gravity = Gravity.CENTER
+            setPadding(dp(18), dp(8), dp(18), dp(8))
+            setOnClickListener { switchHomeFeed(BiliHomeFeedType.POPULAR) }
+        }
+        feedTabRow.addView(homeFeedRecommendTab)
+        feedTabRow.addView(homeFeedPopularTab)
+        homeFeedContent.addView(feedTabRow)
+
+        homeFeedStatus = TextView(this).apply {
+            text = "展开后加载 B 站发现内容"
+            textSize = 12f
+            setTextColor(sub)
+            setPadding(dp(4), dp(8), dp(4), dp(8))
+            setOnClickListener {
+                if (homeFeedType == BiliHomeFeedType.RECOMMEND && !loggedIn) showLogin()
+            }
+        }
+        homeFeedContent.addView(homeFeedStatus)
+
+        homeFeedList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+        homeFeedContent.addView(homeFeedList, LinearLayout.LayoutParams(match, wrap))
+
+        homeFeedMore = TextView(this).apply {
+            text = "加载更多"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            setTextColor(pink)
+            background = shape(field, 12)
+            visibility = View.GONE
+            setOnClickListener { loadHomeFeed(reset = false) }
+        }
+        homeFeedContent.addView(homeFeedMore, LinearLayout.LayoutParams(match, dp(42)).apply {
+            topMargin = dp(8)
+        })
+        refreshHomeFeedTabs()
+        feedCard.addView(homeFeedContent, LinearLayout.LayoutParams(match, wrap))
+        col.addView(feedCard, sideMargins(12))
+
+        pasteBtn.setOnClickListener {
+            val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            val text = clipboard.primaryClip?.takeIf { it.itemCount > 0 }
+                ?.getItemAt(0)?.coerceToText(this)?.toString()
+            if (text.isNullOrBlank()) {
+                say("剪贴板是空的", sub)
+            } else {
+                input.setText(text)
+                input.setSelection(input.text.length)
+                say(
+                    if (parsedVideo != null && resultCard.visibility == View.VISIBLE) {
+                        "已粘贴链接；保留上次解析结果，点击“解析视频”更新"
+                    } else {
+                        "已粘贴链接；点击“解析视频”开始解析"
+                    },
+                    sub
+                )
+            }
+        }
+
         input.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
-                if (resultCard.visibility == View.VISIBLE) resultCard.visibility = View.GONE
-                if (!s.isNullOrBlank()) say("", sub)
+                // IME candidate selection also changes text. Keep the last successful
+                // preview visible; a new result is requested only by tapping Parse.
+                if (parsedVideo != null && resultCard.visibility == View.VISIBLE) {
+                    say("输入已修改；当前仍显示上次解析结果，点击“解析视频”更新", sub)
+                } else if (!s.isNullOrBlank()) {
+                    say("", sub)
+                }
             }
             override fun afterTextChanged(s: android.text.Editable?) {}
         })
+
         parseBtn.setOnClickListener {
-            val target = normalizeBiliInput(input.text.toString())
+            val rawInput = input.text.toString()
+            val batchTargets = BiliLinkParser.extractAll(rawInput)
+            if (batchTargets.size > 1) {
+                if (batchTargets.size > MAX_BATCH_LINKS) {
+                    say("一次最多批量添加 " + MAX_BATCH_LINKS + " 个链接", err)
+                    return@setOnClickListener
+                }
+                resultCard.visibility = View.GONE
+                input.isEnabled = false
+                setBusy(parseBtn, true)
+                setParseLoading(true)
+                parseBtn.text = "正在准备批量任务…"
+                say("正在逐条解析，失败项不会影响其他任务", sub)
+                homeScroll.post { homeScroll.smoothScrollTo(0, 0) }
+                downloadBatchLinks(batchTargets)
+                return@setOnClickListener
+            }
+
+            val target = normalizeBiliInput(rawInput)
             if (target == null) {
-                say("请粘贴有效的 B站链接，或输入 BV / av / ep / ss 编号", err)
+                say("请粘贴有效的 B 站链接，或输入 BV / av / ep / ss 编号", err)
                 return@setOnClickListener
             }
             input.setText(target)
             input.setSelection(input.text.length)
+            input.isEnabled = false
             setBusy(parseBtn, true)
-            parseBtn.text = "解析中…"
-            resultCard.visibility = View.GONE
-            say("", sub)
+            setParseLoading(true)
+            parseBtn.text = "正在解析…"
+            // Keep the last successful result on screen while the new URL is loading.
+            // Success replaces it; failure is reported by the normal parse error state.
+            say("正在解析 B 站视频信息…", sub)
             onParseClicked(target)
         }
         return scroll
@@ -1308,32 +2216,25 @@ class MainActivity : ComponentActivity() {
     private fun buildDownloads(): View {
         val page = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
 
-        val hdr = FrameLayout(this)
-        hdr.addView(header("下载管理", "任务进度会实时显示在这里", 52), FrameLayout.LayoutParams(match, wrap))
-        clearTv = TextView(this).apply {
-            text = "清空已完成"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            background = shape(Color.parseColor("#33FFFFFF"), 16)
+        val hdr = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(22), dp(14), dp(16), dp(10))
+        }
+        val titleBlock = header("下载管理", "管理当前下载与已保存的视频", 0).apply {
+            setPadding(0, 0, dp(8), 0)
+        }
+        hdr.addView(titleBlock, LinearLayout.LayoutParams(0, wrap, 1f))
+        batchTv = chip("批量选择", false).apply {
+            setOnClickListener { setBatchMode(!batchMode) }
+        }
+        hdr.addView(batchTv, LinearLayout.LayoutParams(wrap, dp(36)))
+        clearTv = chip("清空已完成", false).apply {
             visibility = View.GONE
             setOnClickListener { confirmClear() }
         }
-        hdr.addView(clearTv, FrameLayout.LayoutParams(wrap, wrap, Gravity.TOP or Gravity.END).apply {
-            topMargin = dp(28); rightMargin = dp(20)
-        })
-        batchTv = TextView(this).apply {
-            text = "批量选择"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            background = shape(Color.parseColor("#33FFFFFF"), 16)
-            setOnClickListener { setBatchMode(!batchMode) }
-        }
-        hdr.addView(batchTv, FrameLayout.LayoutParams(wrap, wrap, Gravity.TOP or Gravity.END).apply {
-            topMargin = dp(28); rightMargin = dp(112)
+        hdr.addView(clearTv, LinearLayout.LayoutParams(wrap, dp(36)).apply {
+            leftMargin = dp(6)
         })
         page.addView(hdr, match, wrap)
 
@@ -1342,7 +2243,7 @@ class MainActivity : ComponentActivity() {
             refreshDownloadList()
         }
         dlSegs = segs
-        page.addView(segBox, sideMargins().apply { topMargin = -dp(26) })
+        page.addView(segBox, sideMargins(8))
 
         batchBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1373,8 +2274,9 @@ class MainActivity : ComponentActivity() {
             setTextColor(ink)
             textSize = 14f
             isSingleLine = true
-            background = shape(Color.WHITE, 14, Color.parseColor("#E8EAF0"))
-            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = shape(Color.WHITE, 12, Color.parseColor("#E1E5EB"))
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+            minHeight = dp(46)
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
                 override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {
@@ -1398,29 +2300,29 @@ class MainActivity : ComponentActivity() {
 
     private fun emptyView(): View = TextView(this).apply {
         text = when {
-            downloadQuery.isNotBlank() -> "🔎\n\n没有找到匹配的任务\n试试其他关键词"
-            dlFilter == 0 -> "📭\n\n暂无进行中的任务\n去首页粘贴 B站链接开始下载"
-            dlFilter == 1 -> "📂\n\n还没有已完成的下载"
-            else -> "✨\n\n目前没有失败任务"
+            downloadQuery.isNotBlank() -> "没有找到匹配的任务\n试试其他关键词"
+            dlFilter == 0 -> "暂无下载任务\n粘贴 B 站链接即可开始"
+            dlFilter == 1 -> "这里会显示已完成的视频"
+            else -> "暂无失败任务"
         }
         textSize = 14f
         setTextColor(sub)
         gravity = Gravity.CENTER
-        setLineSpacing(0f, 1.2f)
-        setPadding(0, dp(64), 0, 0)
+        setLineSpacing(0f, 1.25f)
+        setPadding(dp(16), dp(64), dp(16), dp(24))
     }
 
     private fun buildRow(item: DlItem): Row {
-        val root = card().apply { setPadding(dp(14), dp(14), dp(14), dp(12)) }
+        val root = card()
         val top = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         val cover = ImageView(this).apply {
             scaleType = ImageView.ScaleType.CENTER_CROP
-            background = shape(Color.parseColor("#E8EAF0"), 12)
+            background = shape(Color.parseColor("#E8EAF0"), 10)
             clipToOutline = true
         }
         val selection = TextView(this).apply {
             text = "○"
-            textSize = 21f
+            textSize = 20f
             gravity = Gravity.CENTER
             setTextColor(pink)
             visibility = View.GONE
@@ -1428,49 +2330,51 @@ class MainActivity : ComponentActivity() {
         }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val title = TextView(this).apply {
-            textSize = 15f
+            textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(ink)
             maxLines = 2
             ellipsize = TextUtils.TruncateAt.END
+            includeFontPadding = false
         }
-        val info = TextView(this).apply { textSize = 12f; setTextColor(sub) }
+        val info = TextView(this).apply {
+            textSize = 12f
+            setTextColor(sub)
+            maxLines = 2
+            ellipsize = TextUtils.TruncateAt.END
+        }
         col.addView(title, match, wrap)
-        col.addView(info, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(6) })
-        top.addView(selection, LinearLayout.LayoutParams(dp(28), dp(70)))
-        top.addView(cover, LinearLayout.LayoutParams(dp(112), dp(70)))
-        top.addView(col, LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(12) })
+        col.addView(info, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(5) })
+        top.addView(selection, LinearLayout.LayoutParams(dp(28), dp(68)))
+        top.addView(cover, LinearLayout.LayoutParams(dp(104), dp(68)))
+        top.addView(col, LinearLayout.LayoutParams(0, wrap, 1f).apply { leftMargin = dp(11) })
 
         val progress = bar()
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.END
+            gravity = Gravity.CENTER_VERTICAL
         }
         val primary = chip("暂停", true)
-        val resources = chip("资源", false)
-        val history = chip("记录", false)
-        val delete = chip("删除", false)
-        actions.addView(delete, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
-        actions.addView(history, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
-        actions.addView(resources, LinearLayout.LayoutParams(wrap, wrap).apply { rightMargin = dp(8) })
-        actions.addView(primary)
+        val more = chip("更多", false)
+        actions.addView(primary, LinearLayout.LayoutParams(0, dp(38), 1f))
+        actions.addView(more, LinearLayout.LayoutParams(wrap, dp(38)).apply { leftMargin = dp(8) })
 
         root.addView(top, match, wrap)
-        root.addView(progress, LinearLayout.LayoutParams(match, dp(6)).apply { topMargin = dp(12) })
+        root.addView(progress, LinearLayout.LayoutParams(match, dp(5)).apply { topMargin = dp(12) })
         root.addView(actions, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(10) })
 
         primary.setOnClickListener { onPrimary(item.id) }
-        delete.setOnClickListener { confirmDelete(item.id) }
+        more.setOnClickListener { showTaskActions(item.id) }
         selection.setOnClickListener { toggleDownloadSelection(item.id) }
-        resources.setOnClickListener { showTaskResources(item.id) }
-        history.setOnClickListener { showTaskHistory(item.id) }
         root.setOnLongClickListener {
             if (!batchMode) setBatchMode(true)
             if (item.id !in selectedDownloadIds) toggleDownloadSelection(item.id)
             true
         }
-        return Row(root, cover, title, info, progress, primary, selection, resources, history)
+        return Row(root, cover, title, info, progress, primary, selection, more)
     }
+
+
 
     private fun bindRow(item: DlItem) {
         val r = rows[item.id] ?: return
@@ -1480,10 +2384,11 @@ class MainActivity : ComponentActivity() {
         r.selection.text = if (selected) "✓" else "○"
         r.selection.setTextColor(if (selected) Color.WHITE else pink)
         r.selection.background = if (selected) shape(pink, 24) else null
+        r.more.visibility = if (batchMode) View.GONE else View.VISIBLE
         val c = item.cover
-        if (c != null) r.cover.setImageBitmap(c) else r.cover.setImageDrawable(null)
+        if (c != null) r.cover.setImageBitmap(c)
+        else r.cover.setImageResource(R.drawable.ic_video_placeholder)
         r.bar.progress = item.progress
-        r.resources.visibility = if (item.state == ST_DONE) View.VISIBLE else View.GONE
         when (item.state) {
             ST_DOWNLOADING -> {
                 r.bar.visibility = View.VISIBLE
@@ -1514,7 +2419,6 @@ class MainActivity : ComponentActivity() {
                 r.info.text = item.sizeText
                 r.info.setTextColor(ok)
                 r.primary.text = "打开"
-                r.resources.visibility = View.VISIBLE
             }
         }
     }
@@ -1608,6 +2512,24 @@ class MainActivity : ComponentActivity() {
                 selectedDownloadIds.clear()
                 setBatchMode(false)
                 toast("已删除 " + ids.size + " 个任务记录")
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showTaskActions(id: String) {
+        val item = items[id] ?: return
+        val actions = mutableListOf("查看任务记录")
+        if (item.state == ST_DONE) actions += "打开已保存资源"
+        actions += "删除任务"
+        AlertDialog.Builder(this)
+            .setTitle("任务操作")
+            .setItems(actions.toTypedArray()) { _, index ->
+                when (actions[index]) {
+                    "查看任务记录" -> showTaskHistory(id)
+                    "打开已保存资源" -> showTaskResources(id)
+                    "删除任务" -> confirmDelete(id)
+                }
             }
             .setNegativeButton("取消", null)
             .show()
@@ -1739,9 +2661,9 @@ class MainActivity : ComponentActivity() {
         })
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = shape(Color.WHITE, 20)
+            background = shape(Color.WHITE, 18, Color.parseColor("#E8EBF0"))
             clipToOutline = true
-            elevation = dp(2).toFloat()
+            elevation = 0f
         }
         rowViews.forEachIndexed { i, r ->
             if (i > 0) {
@@ -1758,7 +2680,7 @@ class MainActivity : ComponentActivity() {
         val scroll = ScrollView(this).apply { setBackgroundColor(bg); isVerticalScrollBarEnabled = false }
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         scroll.addView(col, match, wrap)
-        col.addView(header("设置", "", 56), match, wrap)
+        col.addView(header("设置", "下载偏好与账号", 18), match, wrap)
 
         // 账号卡片
         avatarIv = ImageView(this).apply {
@@ -1798,16 +2720,73 @@ class MainActivity : ComponentActivity() {
             pickOption("优先画质", "quality", qualityOptions, 0) { refreshQuality() }
         }
         pathTv = valueText("系统下载目录  ›")
-        val pathRow = settingRow("下载位置", "Download/BiliDl", pathTv) { onChoosePathClicked() }
+        val pathRow = settingRow("下载位置", "选择保存文件夹；默认 Download/BiliDl", pathTv) { onChoosePathClicked() }
         col.addView(
             group(
                 "下载",
                 qualityRow,
                 choiceRow("同时下载数", "concurrent", concurrentOptions, 1),
+                choiceRow(
+                    "批量画质不匹配",
+                    KEY_BATCH_QUALITY_MISMATCH,
+                    batchQualityMismatchOptions,
+                    BatchQualityMismatchMode.AUTO_FALLBACK.code
+                ),
                 switchRow("仅 Wi-Fi 下载", "wifi_only", true, "使用移动数据时不自动下载"),
                 pathRow
             ), sideMargins(20)
         )
+
+        val videoTemplateTv = valueText(
+            settingsViewModel.getString(
+                BiliDownloadFileNamePolicy.KEY_VIDEO_TEMPLATE,
+                BiliDownloadFileNamePolicy.DEFAULT_VIDEO_TEMPLATE
+            )
+        )
+        val audioTemplateTv = valueText(
+            settingsViewModel.getString(
+                BiliDownloadFileNamePolicy.KEY_AUDIO_TEMPLATE,
+                BiliDownloadFileNamePolicy.DEFAULT_AUDIO_TEMPLATE
+            )
+        )
+        val mixedTemplateTv = valueText(
+            settingsViewModel.getString(
+                BiliDownloadFileNamePolicy.KEY_MIXED_TEMPLATE,
+                BiliDownloadFileNamePolicy.DEFAULT_MIXED_TEMPLATE
+            )
+        )
+        col.addView(
+            group(
+                "文件命名",
+                settingRow("视频文件", "用于视频内容及弹幕/字幕文件，可使用 {VideoName}、{PartName}", videoTemplateTv) {
+                    showFileNameTemplateDialog(
+                        "视频文件命名模板",
+                        BiliDownloadFileNamePolicy.KEY_VIDEO_TEMPLATE,
+                        BiliDownloadFileNamePolicy.DEFAULT_VIDEO_TEMPLATE,
+                        videoTemplateTv
+                    )
+                },
+                settingRow("仅音频", "用于单独保存的 M4A 音频", audioTemplateTv) {
+                    showFileNameTemplateDialog(
+                        "音频文件命名模板",
+                        BiliDownloadFileNamePolicy.KEY_AUDIO_TEMPLATE,
+                        BiliDownloadFileNamePolicy.DEFAULT_AUDIO_TEMPLATE,
+                        audioTemplateTv
+                    )
+                },
+                settingRow("音视频合并", "用于视频与音频合并后的 MP4", mixedTemplateTv) {
+                    showFileNameTemplateDialog(
+                        "音视频文件命名模板",
+                        BiliDownloadFileNamePolicy.KEY_MIXED_TEMPLATE,
+                        BiliDownloadFileNamePolicy.DEFAULT_MIXED_TEMPLATE,
+                        mixedTemplateTv
+                    )
+                }
+            ), sideMargins(20)
+        )
+
+        // 下载源：沿用 BVD 的内嵌策略单选布局。
+        col.addView(buildDownloadSourceSettingsCard(), sideMargins(20))
 
         // 内容
         col.addView(
@@ -1816,6 +2795,27 @@ class MainActivity : ComponentActivity() {
                 switchRow("同时下载弹幕", "danmaku", false, "保存为 B站兼容 XML 弹幕文件"),
                 switchRow("同时下载字幕", "subtitles", false, "下载视频提供的字幕并保存为 SRT"),
                 switchRow("仅保存音频", "audio_only", false, "只提取音频，不保留画面")
+            ), sideMargins(20)
+        )
+
+        col.addView(
+            group(
+                "资源管理",
+                settingRow("本地资源", "播放、导出或删除已下载的视频、音频、弹幕和字幕", valueText("打开  ›")) {
+                    startActivity(Intent(this, LocalResourceCenterActivity::class.java))
+                }
+            ), sideMargins(20)
+        )
+
+        col.addView(
+            group(
+                "播放器",
+                switchRow(
+                    "自动画中画",
+                    "picture_in_picture",
+                    true,
+                    "播放视频时离开应用，自动缩小为悬浮小窗（需系统支持）"
+                )
             ), sideMargins(20)
         )
 
@@ -1845,20 +2845,182 @@ class MainActivity : ComponentActivity() {
         return scroll
     }
 
-    private fun onAccountClick() {
-        if (!loggedIn) { showLogin(); return }
+    private fun showFileNameTemplateDialog(
+        title: String,
+        key: String,
+        defaultTemplate: String,
+        valueView: TextView
+    ) {
+        val editor = EditText(this).apply {
+            isSingleLine = true
+            setText(settingsViewModel.getString(key, defaultTemplate))
+            setSelection(text.length)
+            hint = defaultTemplate
+        }
+        val editorContainer = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(24), dp(4), dp(24), dp(4))
+            addView(editor, LinearLayout.LayoutParams(match, dp(48)))
+        }
         AlertDialog.Builder(this)
-            .setTitle("退出登录？")
-            .setPositiveButton("退出") { _, _ -> onLogoutClicked() }
+            .setTitle(title)
+            .setMessage("支持变量：{VideoName}（视频标题）、{PartName}（分 P 标题）。非法文件名字符会自动替换。")
+            .setView(editorContainer)
+            .setPositiveButton("保存") { _, _ ->
+                val template = editor.text?.toString().orEmpty().trim()
+                settingsViewModel.setString(key, template)
+                valueView.text = (template.ifBlank { defaultTemplate }) + "  ›"
+            }
+            .setNeutralButton("恢复默认") { _, _ ->
+                settingsViewModel.setString(key, defaultTemplate)
+                valueView.text = defaultTemplate + "  ›"
+            }
             .setNegativeButton("取消", null)
             .show()
+    }
+
+    private fun buildDownloadSourceSettingsCard(): View {
+        downloadSourceModeIndicators.clear()
+        fun indicator(mode: BiliDownloadSourceMode): TextView =
+            TextView(this).apply {
+                textSize = 18f
+                text = "○"
+                setTextColor(sub)
+                gravity = Gravity.CENTER
+                downloadSourceModeIndicators[mode.code] = this
+            }
+
+        val defaultRow = settingRow(
+            "默认",
+            "优先使用 B站返回的主地址和备用地址",
+            indicator(BiliDownloadSourceMode.DEFAULT)
+        ) {
+            selectDownloadSourceMode(BiliDownloadSourceMode.DEFAULT)
+        }
+        val autoProbeRow = settingRow(
+            "自动探测",
+            "下载前并发读取最多 64 KB 样本，按实际速度排序；失败源仍保留回退",
+            indicator(BiliDownloadSourceMode.AUTO_PROBE)
+        ) {
+            selectDownloadSourceMode(BiliDownloadSourceMode.AUTO_PROBE)
+        }
+        val customHostRow = settingRow(
+            "自定义 Host",
+            "优先尝试指定 CDN 节点，失败后回退 B站原始地址",
+            indicator(BiliDownloadSourceMode.CUSTOM_HOST)
+        ) {
+            selectDownloadSourceMode(BiliDownloadSourceMode.CUSTOM_HOST)
+        }
+
+        val customContent = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(downloadSourceHostRow(), match, wrap)
+            addView(
+                settingRow(
+                    "可用 Host",
+                    "选择 BVD 常用的 B站 CDN 镜像节点",
+                    valueText("选择  ›")
+                ) { showDownloadSourcePresetPicker() },
+                match,
+                wrap
+            )
+        }
+        downloadSourceCustomContent = customContent
+
+        val card = group(
+            "下载源",
+            defaultRow,
+            autoProbeRow,
+            customHostRow,
+            customContent
+        )
+        refreshDownloadSourceModeUi()
+        return card
+    }
+
+    private fun selectDownloadSourceMode(mode: BiliDownloadSourceMode) {
+        settingsViewModel.setInt(BiliDownloadSourcePolicy.KEY_MODE, mode.code)
+        refreshDownloadSourceModeUi()
+    }
+
+    private fun refreshDownloadSourceModeUi() {
+        val selected = BiliDownloadSourceMode.fromCode(
+            settingsViewModel.getInt(
+                BiliDownloadSourcePolicy.KEY_MODE,
+                BiliDownloadSourceMode.DEFAULT.code
+            )
+        )
+        downloadSourceModeIndicators.forEach { (code, view) ->
+            val isSelected = code == selected.code
+            view.text = if (isSelected) "●" else "○"
+            view.setTextColor(if (isSelected) pink else sub)
+        }
+        downloadSourceCustomContent?.visibility =
+            if (selected == BiliDownloadSourceMode.CUSTOM_HOST) View.VISIBLE else View.GONE
+    }
+
+    private fun downloadSourceHostRow(): View {
+        val current = settingsViewModel.getString(BiliDownloadSourcePolicy.KEY_CUSTOM_HOST)
+        downloadSourceHostValue = valueText(current.ifBlank { "选择 Host  ›" })
+        return settingRow(
+            "自定义 CDN Host",
+            "优先尝试替换后的地址，失败后自动回退 B站原始地址",
+            downloadSourceHostValue
+        ) {
+            showDownloadSourceHostDialog()
+        }
+    }
+
+    private fun showDownloadSourceHostDialog() {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            hint = "upos-sz-mirrorali.bilivideo.com"
+            setText(settingsViewModel.getString(BiliDownloadSourcePolicy.KEY_CUSTOM_HOST))
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_URI
+        }
+        AlertDialog.Builder(this)
+            .setTitle("自定义 CDN Host")
+            .setMessage("只允许 bilivideo.com 或 akamaized.net 的 B站 CDN 主机名，不要填写其他网站、https://、路径或查询参数。")
+            .setView(input)
+            .setNeutralButton("选择预设") { _, _ -> showDownloadSourcePresetPicker() }
+            .setPositiveButton("保存") { _, _ -> saveDownloadSourceHost(input.text.toString()) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showDownloadSourcePresetPicker() {
+        val hosts = BiliDownloadSourcePreset.entries.map { it.host }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("选择 CDN Host")
+            .setItems(hosts) { _, which -> saveDownloadSourceHost(hosts[which]) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun saveDownloadSourceHost(value: String) {
+        val host = BiliDownloadSourcePolicy.normalizeHost(value)
+        if (host == null) {
+            toast("Host 格式不正确，请只填写域名")
+            return
+        }
+        settingsViewModel.setString(BiliDownloadSourcePolicy.KEY_CUSTOM_HOST, host)
+        downloadSourceHostValue?.text = host
+    }
+
+    private fun onAccountClick() {
+        if (!loggedIn) {
+            showLogin()
+            return
+        }
+        accountCenterLauncher.launch(Intent(this, AccountCenterActivity::class.java))
     }
 
     private fun refreshAccountUi() {
         if (loggedIn) {
             nameTv.text = userName
             subTv.text = if (userVip) "已登录 · 大会员" else "已登录"
-            accountBtn.text = "退出"
+            accountBtn.text = "我的空间"
             avatarTv.text = userName.take(1)
             val a = userAvatar
             if (a != null) {
@@ -1868,13 +3030,12 @@ class MainActivity : ComponentActivity() {
             }
         } else {
             nameTv.text = "未登录"
-            subTv.text = "登录后可下载高清画质"
+            subTv.text = "未登录 · 可解析并下载公开内容"
             accountBtn.text = "登录"
             avatarTv.text = "?"
             avatarIv.setImageDrawable(null)
             avatarTv.visibility = View.VISIBLE
         }
-        loginTip.visibility = if (loggedIn) View.GONE else View.VISIBLE
     }
 
     // ================= 登录页 =================
@@ -1887,11 +3048,11 @@ class MainActivity : ComponentActivity() {
         val col = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         page.addView(col, match, wrap)
 
-        val h = header("登录哔哩哔哩", "授权后尝试获取账号可访问的画质", 56)
+        val h = header("登录哔哩哔哩", "登录是可选的，只影响账号可访问的内容", 18)
         h.addView(TextView(this).apply {
             text = "←  返回"
             textSize = 15f
-            setTextColor(Color.WHITE)
+            setTextColor(pink)
             setPadding(0, 0, dp(16), dp(14))
             setOnClickListener { hideLogin() }
         }, 0)
@@ -1899,10 +3060,42 @@ class MainActivity : ComponentActivity() {
 
         val (segBox, segs) = buildSegmented(listOf("扫码登录", "Cookie 登录")) { i -> selectLoginSeg(i) }
         loginSegs = segs
-        col.addView(segBox, sideMargins().apply { topMargin = -dp(26) })
+        loginTabsContainer = segBox
+        col.addView(loginTabsContainer, sideMargins(8))
 
         // 扫码面板
         qrPanel = card()
+        val passwordLoginEntry = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = rippleShape(field, 12)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            val labels = LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+            }
+            labels.addView(TextView(this@MainActivity).apply {
+                text = "账号密码登录"
+                textSize = 14f
+                typeface = Typeface.DEFAULT_BOLD
+                setTextColor(ink)
+            })
+            labels.addView(TextView(this@MainActivity).apply {
+                text = "进入 B站官方登录页，完成后自动返回并验证授权"
+                textSize = 12f
+                setTextColor(sub)
+                setPadding(0, dp(3), 0, 0)
+            })
+            addView(labels, LinearLayout.LayoutParams(0, wrap, 1f))
+            addView(TextView(this@MainActivity).apply {
+                text = "›"
+                textSize = 24f
+                setTextColor(sub)
+            })
+            setOnClickListener { openBilibiliPasswordLogin() }
+        }
+        qrPanel.addView(passwordLoginEntry, LinearLayout.LayoutParams(match, wrap).apply {
+            bottomMargin = dp(16)
+        })
         val qrBox = FrameLayout(this).apply {
             background = shape(Color.WHITE, 16, Color.parseColor("#E6E8EE"))
             setPadding(dp(10), dp(10), dp(10), dp(10))
@@ -1927,6 +3120,20 @@ class MainActivity : ComponentActivity() {
             gravity = Gravity.CENTER
         }
         qrPanel.addView(qrStatusTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(16) })
+        qrLoginLinkTv = TextView(this).apply {
+            text = "或者点击此处，跳转哔哩哔哩 App 登录"
+            textSize = 13f
+            setTextColor(pink)
+            gravity = Gravity.CENTER
+            paintFlags = paintFlags or android.graphics.Paint.UNDERLINE_TEXT_FLAG
+            visibility = View.GONE
+            contentDescription = "使用哔哩哔哩 App 完成二维码登录"
+            setPadding(0, dp(8), 0, dp(4))
+            setOnClickListener { openQrLoginInBilibiliApp() }
+        }
+        qrPanel.addView(qrLoginLinkTv, LinearLayout.LayoutParams(match, wrap).apply {
+            topMargin = dp(4)
+        })
         val refreshBtn = pillButton("刷新二维码", false)
         refreshBtn.setOnClickListener { refreshQr() }
         qrPanel.addView(refreshBtn, LinearLayout.LayoutParams(match, dp(46)).apply { topMargin = dp(14) })
@@ -1988,6 +3195,7 @@ class MainActivity : ComponentActivity() {
         val changed = activeLoginSegment != i
         activeLoginSegment = i
         if (i != 0) stopQrLogin()
+        loginTabsContainer.visibility = View.VISIBLE
         styleSegs(loginSegs, i)
         qrPanel.visibility = if (i == 0) View.VISIBLE else View.GONE
         cookiePanel.visibility = if (i == 1) View.VISIBLE else View.GONE
@@ -2003,7 +3211,35 @@ class MainActivity : ComponentActivity() {
     private fun hideLogin() {
         stopQrLogin()
         activeLoginSegment = -1
+        loginTabsContainer.visibility = View.VISIBLE
         loginPage.visibility = View.GONE
+    }
+
+    /**
+     * Open the same official Passport H5 page used by BVD. The WebView returns
+     * the full cookie header; LoginViewModel verifies it before saving.
+     */
+    private fun openBilibiliPasswordLogin() {
+        stopQrLogin()
+        webLoginLauncher.launch(Intent(this, BiliWebLoginActivity::class.java))
+    }
+
+    /**
+     * BVD opens the generated QR URL through Android's normal URL handler.
+     * If the installed Bilibili App claims this URL, it handles authorization.
+     * Keep polling active while that app is in the foreground.
+     */
+    private fun openQrLoginInBilibiliApp() {
+        val url = activeQrLoginUrl
+        if (url.isNullOrBlank() || !BiliQrAppLoginPolicy.isTrustedQrUrl(url)) {
+            toast("二维码登录链接无效，请刷新二维码")
+            return
+        }
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+        } catch (_: android.content.ActivityNotFoundException) {
+            toast("未找到可以打开 B站登录链接的应用")
+        }
     }
 
     private fun refreshQr() {

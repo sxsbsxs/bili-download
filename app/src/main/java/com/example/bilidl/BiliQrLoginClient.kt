@@ -20,7 +20,7 @@ internal data class BiliQrSession(
 
 internal data class BiliQrPollResult(
     val state: BiliQrLoginState,
-    val sessdata: String? = null
+    val cookieHeader: String? = null
 )
 
 internal enum class BiliQrLoginState {
@@ -80,14 +80,19 @@ internal object BiliQrLoginClient {
             BiliQrLoginState.EXPIRED -> BiliQrPollResult(BiliQrLoginState.EXPIRED)
             BiliQrLoginState.SUCCESS -> {
                 val crossDomainUrl = data.optString("url").takeIf { it.startsWith("https://") }
-                var sessdata = BiliQrLoginProtocol.extractSessdata(responseCookies, crossDomainUrl)
-                if (sessdata.isNullOrBlank() && crossDomainUrl != null) {
-                    sessdata = fetchCrossDomainCookie(crossDomainUrl)
+                var cookieHeader = BiliQrLoginProtocol.extractCookieHeader(
+                    responseCookies,
+                    crossDomainUrl
+                )
+                if (SecureCookieStore.normalizeCookie(cookieHeader.orEmpty()).isBlank() &&
+                    crossDomainUrl != null
+                ) {
+                    cookieHeader = fetchCrossDomainCookie(crossDomainUrl)
                 }
-                if (sessdata.isNullOrBlank()) {
-                    throw IOException("B站已确认扫码，但没有返回 SESSDATA；请刷新二维码重试")
+                if (SecureCookieStore.normalizeCookie(cookieHeader.orEmpty()).isBlank()) {
+                    throw IOException("B站已确认扫码，但没有返回有效登录凭据；请刷新二维码重试")
                 }
-                BiliQrPollResult(BiliQrLoginState.SUCCESS, sessdata)
+                BiliQrPollResult(BiliQrLoginState.SUCCESS, cookieHeader)
             }
         }
     }
@@ -111,8 +116,10 @@ internal object BiliQrLoginClient {
             try {
                 val status = connection.responseCode
                 collectedCookies += setCookieHeaders(connection)
-                val sessdata = BiliQrLoginProtocol.extractSessdata(collectedCookies)
-                if (!sessdata.isNullOrBlank()) return sessdata
+                val cookieHeader = BiliWebLoginPolicy.mergeCookieHeaders(collectedCookies)
+                if (SecureCookieStore.normalizeCookie(cookieHeader.orEmpty()).isNotBlank()) {
+                    return cookieHeader
+                }
 
                 if (status in 300..399) {
                     val location = connection.getHeaderField("Location")
@@ -124,13 +131,13 @@ internal object BiliQrLoginClient {
                     if (status !in 200..299) {
                         throw IOException("B站跨域授权失败（HTTP $status）")
                     }
-                    return BiliQrLoginProtocol.extractSessdata(collectedCookies)
+                    return BiliWebLoginPolicy.mergeCookieHeaders(collectedCookies)
                 }
             } finally {
                 connection.disconnect()
             }
         }
-        return BiliQrLoginProtocol.extractSessdata(collectedCookies)
+        return BiliWebLoginPolicy.mergeCookieHeaders(collectedCookies)
     }
 
     private fun requestJson(url: String): Pair<JSONObject, List<String>> {
@@ -174,6 +181,20 @@ internal object BiliQrLoginProtocol {
         86090 -> BiliQrLoginState.SCANNED
         86038, 86039 -> BiliQrLoginState.EXPIRED
         else -> throw IOException("无法识别 B站扫码状态：$code")
+    }
+
+    /**
+     * BVD stores all cookies returned by the QR poll response, not only SESSDATA.
+     * Keep each cookie value encoded and discard Set-Cookie attributes.
+     */
+    fun extractCookieHeader(
+        setCookieHeaders: Iterable<String>,
+        fallbackUrl: String? = null
+    ): String? {
+        BiliWebLoginPolicy.mergeCookieHeaders(setCookieHeaders)?.let { return it }
+        val fallbackSessdata = extractSessdata(emptyList(), fallbackUrl)
+            ?: return null
+        return BiliWebLoginPolicy.mergeCookieHeaders(listOf("SESSDATA=$fallbackSessdata"))
     }
 
     /** Keep percent-encoded SESSDATA intact; decoding it can corrupt the cookie. */

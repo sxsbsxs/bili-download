@@ -50,8 +50,6 @@ internal object SegmentedHttpDownloader {
     private const val BUFFER_SIZE = 64 * 1024
     private const val MAX_RANGE_ATTEMPTS = 3
     private const val MAX_SEQUENTIAL_ATTEMPTS = 3
-    private const val USER_AGENT =
-        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36"
 
     private data class Probe(
         val totalBytes: Long,
@@ -67,20 +65,26 @@ internal object SegmentedHttpDownloader {
         concurrency: Int,
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit,
-        writerFactory: PositionalFileWriterFactory = NativePositionalFileWriterFactory
+        writerFactory: PositionalFileWriterFactory = NativePositionalFileWriterFactory,
+        referer: String = BiliCdnRequestPolicy.MOBILE_REFERER
     ) = withContext(Dispatchers.IO) {
         var lastError: Exception? = null
+        var accessDeniedError: Exception? = null
         for (url in urls) {
             try {
-                downloadOne(url, target, cookie, concurrency, isCancelled, onProgress, writerFactory)
+                downloadOne(url, target, cookie, concurrency, isCancelled, onProgress, writerFactory, referer)
                 return@withContext
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
                 lastError = error
+                if (BiliDownloadRetryPolicy.httpStatus(error) == 403) {
+                    accessDeniedError = error
+                }
             }
         }
-        throw IOException("分段下载失败：" + (lastError?.message ?: "没有可用 CDN 地址"), lastError)
+        val finalError = accessDeniedError ?: lastError
+        throw IOException("分段下载失败：" + (finalError?.message ?: "没有可用 CDN 地址"), finalError)
     }
 
     private suspend fun downloadOne(
@@ -90,26 +94,45 @@ internal object SegmentedHttpDownloader {
         concurrency: Int,
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit,
-        writerFactory: PositionalFileWriterFactory
+        writerFactory: PositionalFileWriterFactory,
+        referer: String
     ) {
-        val probe = probeWithRetry(url, cookie)
+        val probe = try {
+            probeWithRetry(url, cookie, referer)
+        } catch (rangeError: Exception) {
+            if (BiliDownloadRetryPolicy.httpStatus(rangeError) != 403) throw rangeError
+
+            // Some CDN nodes reject Range altogether but still allow a normal
+            // full response. Try sequential GET once before abandoning this URL.
+            try {
+                downloadSequentialWithRetry(url, target, cookie, isCancelled, onProgress, referer)
+                return
+            } catch (sequentialError: CancellationException) {
+                throw sequentialError
+            } catch (sequentialError: Exception) {
+                throw IOException(
+                    "有界 Range 请求被 CDN 拒绝；顺序下载回退也失败：${sequentialError.message}",
+                    rangeError
+                ).also { it.addSuppressed(sequentialError) }
+            }
+        }
         if (
             probe == null ||
             !TransferCheckpointPolicy.supportsVerifiedRanges(probe.etag, probe.lastModified)
         ) {
             // Without a stable validator, parallel ranges could mix bytes from
             // different CDN representations. Use a clean sequential response.
-            downloadSequentialWithRetry(url, target, cookie, isCancelled, onProgress)
+            downloadSequentialWithRetry(url, target, cookie, isCancelled, onProgress, referer)
             return
         }
-        downloadRanges(url, target, cookie, probe, concurrency, isCancelled, onProgress, writerFactory)
+        downloadRanges(url, target, cookie, probe, concurrency, isCancelled, onProgress, writerFactory, referer)
     }
 
-    private suspend fun probeWithRetry(url: String, cookie: String?): Probe? {
+    private suspend fun probeWithRetry(url: String, cookie: String?, referer: String): Probe? {
         var lastError: Exception? = null
         for (attempt in 0 until MAX_RANGE_ATTEMPTS) {
             try {
-                return probe(url, cookie)
+                return probe(url, cookie, referer)
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
@@ -123,21 +146,29 @@ internal object SegmentedHttpDownloader {
         throw lastError ?: IOException("CDN 探测失败")
     }
 
-    private fun probe(url: String, cookie: String?): Probe? {
-        val connection = openConnection(url, cookie).apply {
-            setRequestProperty("Range", "bytes=0-0")
+    private fun probe(url: String, cookie: String?, referer: String): Probe? {
+        val connection = openConnection(url, cookie, referer).apply {
+            // Some Bilibili Akamai edges reject tiny probe ranges; use the same
+            // finite 4 MiB range shape as the actual transfer requests.
+            setRequestProperty("Range", "bytes=0-${CHUNK_SIZE - 1L}")
         }
         try {
             val status = connection.responseCode
             if (status == HttpURLConnection.HTTP_OK) return null
             if (status != HttpURLConnection.HTTP_PARTIAL) {
-                throw BiliHttpException(status, "CDN 探测")
+                throw httpFailure(connection, status, "CDN 探测")
             }
             val contentRange = connection.getHeaderField("Content-Range").orEmpty()
-            val total = Regex("""bytes\s+\d+-\d+/(\d+)""", RegexOption.IGNORE_CASE)
-                .find(contentRange)?.groupValues?.getOrNull(1)?.toLongOrNull()
-                ?: throw IOException("CDN 未提供有效的 Content-Range")
+            val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+)""", RegexOption.IGNORE_CASE)
+                .find(contentRange) ?: throw IOException("CDN 未提供有效的 Content-Range")
+            val actualStart = match.groupValues[1].toLong()
+            val actualEnd = match.groupValues[2].toLong()
+            val total = match.groupValues[3].toLong()
             if (total <= 0L) throw IOException("CDN 返回了无效文件大小")
+            val expectedProbeEnd = minOf(CHUNK_SIZE - 1L, total - 1L)
+            if (actualStart != 0L || actualEnd != expectedProbeEnd) {
+                throw IOException("CDN 返回的探测范围不匹配：$actualStart-$actualEnd/$total")
+            }
             connection.inputStream.use { input ->
                 if (input.read() < 0) throw IOException("CDN 返回了空数据")
             }
@@ -162,7 +193,8 @@ internal object SegmentedHttpDownloader {
         concurrency: Int,
         isCancelled: () -> Boolean,
         onProgress: (Int) -> Unit,
-        writerFactory: PositionalFileWriterFactory
+        writerFactory: PositionalFileWriterFactory,
+        referer: String
     ) = coroutineScope {
         target.parentFile?.mkdirs()
         val mapFile = File(target.absolutePath + ".ranges")
@@ -229,7 +261,8 @@ internal object SegmentedHttpDownloader {
                             completedBytes = completedBytes,
                             inFlightBytes = inFlightBytes,
                             totalBytes = total,
-                            onProgress = onProgress
+                            onProgress = onProgress,
+                            referer = referer
                         )
                         synchronized(lock) {
                             if (!writer.sync()) {
@@ -263,7 +296,8 @@ internal object SegmentedHttpDownloader {
         completedBytes: AtomicLong,
         inFlightBytes: AtomicLong,
         totalBytes: Long,
-        onProgress: (Int) -> Unit
+        onProgress: (Int) -> Unit,
+        referer: String
     ): Long {
         val expected = end - start + 1L
         var lastError: Exception? = null
@@ -272,7 +306,7 @@ internal object SegmentedHttpDownloader {
             val attemptBytes = AtomicLong(0L)
             try {
                 val received = downloadRange(
-                    url, cookie, probe, writer, start, end, isCancelled
+                    url, cookie, probe, writer, start, end, isCancelled, referer
                 ) { bytes ->
                     attemptBytes.addAndGet(bytes)
                     inFlightBytes.addAndGet(bytes)
@@ -313,9 +347,10 @@ internal object SegmentedHttpDownloader {
         start: Long,
         end: Long,
         isCancelled: () -> Boolean,
+        referer: String,
         onBytes: (Long) -> Unit
     ): Long = withContext(Dispatchers.IO) {
-        val connection = openConnection(url, cookie).apply {
+        val connection = openConnection(url, cookie, referer).apply {
             setRequestProperty("Range", "bytes=$start-$end")
             val validator = probe.etag.ifBlank { probe.lastModified }
             if (validator.isNotBlank()) setRequestProperty("If-Range", validator)
@@ -323,7 +358,7 @@ internal object SegmentedHttpDownloader {
         try {
             val status = connection.responseCode
             if (status != HttpURLConnection.HTTP_PARTIAL) {
-                throw BiliHttpException(status, "CDN 分段请求")
+                throw httpFailure(connection, status, "CDN 分段请求")
             }
             val range = connection.getHeaderField("Content-Range").orEmpty()
             val match = Regex("""bytes\s+(\d+)-(\d+)/(\d+)""", RegexOption.IGNORE_CASE)
@@ -367,7 +402,8 @@ internal object SegmentedHttpDownloader {
         target: File,
         cookie: String?,
         isCancelled: () -> Boolean,
-        onProgress: (Int) -> Unit
+        onProgress: (Int) -> Unit,
+        referer: String
     ) {
         var lastError: Exception? = null
         for (attempt in 0 until MAX_SEQUENTIAL_ATTEMPTS) {
@@ -375,7 +411,7 @@ internal object SegmentedHttpDownloader {
             File(target.absolutePath + ".ranges").delete()
             File(target.absolutePath + ".meta").delete()
             try {
-                downloadSequential(url, target, cookie, isCancelled, onProgress)
+                downloadSequential(url, target, cookie, isCancelled, onProgress, referer)
                 return
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -396,13 +432,14 @@ internal object SegmentedHttpDownloader {
         target: File,
         cookie: String?,
         isCancelled: () -> Boolean,
-        onProgress: (Int) -> Unit
+        onProgress: (Int) -> Unit,
+        referer: String
     ) {
-        val connection = openConnection(url, cookie)
+        val connection = openConnection(url, cookie, referer)
         try {
             val status = connection.responseCode
             if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_PARTIAL) {
-                throw BiliHttpException(status, "下载服务器请求")
+                throw httpFailure(connection, status, "下载服务器请求")
             }
             val total = connection.contentLengthLong
             var copied = 0L
@@ -439,20 +476,30 @@ internal object SegmentedHttpDownloader {
         }
     }
 
-    private fun openConnection(url: String, cookie: String?): HttpURLConnection {
+    private fun httpFailure(
+        connection: HttpURLConnection,
+        status: Int,
+        operation: String
+    ): BiliHttpException {
+        val detail = runCatching {
+            connection.errorStream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
+        }.getOrNull().orEmpty().take(160)
+        val host = runCatching { connection.url.host }.getOrDefault("unknown-host")
+        return BiliHttpException(status, "$operation [$host]", detail)
+    }
+
+    private fun openConnection(
+        url: String,
+        cookie: String?,
+        @Suppress("UNUSED_PARAMETER") referer: String
+    ): HttpURLConnection {
         return (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 20_000
             readTimeout = 45_000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", USER_AGENT)
-            setRequestProperty("Referer", "https://www.bilibili.com/")
-            setRequestProperty("Origin", "https://www.bilibili.com")
-            setRequestProperty("Accept", "*/*")
-            setRequestProperty("Accept-Encoding", "identity")
-            setRequestProperty("Connection", "keep-alive")
-            if (!cookie.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=$cookie")
-            }
+            // Use the same browser headers and guest-cookie fallback as BVD.
+            // BVD's DOWNLOAD_HEADERS use the mobile site as both Origin and Referer.
+            BiliCdnRequestPolicy.configure(this, cookie)
         }
     }
 }

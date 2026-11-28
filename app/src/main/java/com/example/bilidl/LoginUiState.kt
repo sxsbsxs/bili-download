@@ -12,7 +12,7 @@ sealed interface LoginUiState {
     data object Idle : LoginUiState
     data object CheckingSession : LoginUiState
     data object RequestingQr : LoginUiState
-    data class QrReady(val bitmap: Bitmap) : LoginUiState
+    data class QrReady(val bitmap: Bitmap, val url: String) : LoginUiState
     data object Scanned : LoginUiState
     data object Expired : LoginUiState
     data object VerifyingCookie : LoginUiState

@@ -24,7 +24,11 @@ data class BiliPage(
     val pageNumber: Int,
     val cid: Long,
     val part: String,
-    val durationSeconds: Int
+    val durationSeconds: Int,
+    val url: String? = null,
+    val bvid: String? = null,
+    val aid: Long = 0L,
+    val isEpisode: Boolean = false
 )
 
 data class BiliVideo(
@@ -53,14 +57,16 @@ data class BiliPlaySource(
 class BiliRepository(
     private val cookieProvider: () -> String? = { null }
 ) {
-    private val userAgent =
-        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
+    private val userAgent = BiliCdnRequestPolicy.USER_AGENT
     private var mixinKeyCache: String? = null
     private var mixinKeyExpiresAt = 0L
+    @Volatile private var sessionCookieRejected = false
 
     fun verifyCookie(rawCookie: String): Pair<String, Boolean> {
         val cookie = SecureCookieStore.normalizeCookie(rawCookie)
-        val root = requestJson("https://api.bilibili.com/x/web-interface/nav", cookie)
+        if (cookie.isBlank()) throw IOException("登录信息不包含 SESSDATA")
+        val cookieHeader = SecureCookieStore.normalizeCookieHeader(rawCookie)
+        val root = requestJson("https://api.bilibili.com/x/web-interface/nav", cookieHeader)
         val data = root.optJSONObject("data") ?: throw IOException("B站没有返回账号信息")
         if (!data.optBoolean("isLogin", false)) {
             throw IOException("SESSDATA 无效或已过期，请重新授权")
@@ -132,9 +138,11 @@ class BiliRepository(
         val title = if (pages.length() > 1 && part.isNotBlank()) baseTitle + " - " + part else baseTitle
         val owner = data.optJSONObject("owner")?.optString("name").orEmpty().ifBlank { "未知 UP 主" }
         val duration = page?.optInt("duration") ?: data.optInt("duration")
-        val coverUrl = data.optString("pic").takeIf { it.startsWith("http") }
-        val play = getPlayInfoForInspection(actualBvid, aid, cid)
-        val qualities = parseQualities(play)
+        val coverUrl = BiliCoverUrlPolicy.normalize(data.optString("pic"))
+        // Public metadata must remain usable even when the anonymous playurl
+        // endpoint refuses to return a quality list. Download re-resolves the
+        // playurl at execution time and may succeed with a different CDN token.
+        val qualities = getAvailableQualities(actualBvid, aid, cid)
         return BiliVideo(
             actualBvid, aid, cid, pageIndex + 1, title, owner, duration,
             coverUrl, null, qualities, availablePages
@@ -146,13 +154,18 @@ class BiliRepository(
             else "season_id=" + seasonId!!.removePrefix("ss")
         val root = requestJson("https://api.bilibili.com/pgc/view/web/season?" + key)
         val result = checkedData(root, "result")
-        val episodes = result.optJSONArray("episodes") ?: JSONArray()
-        val selected = if (episodeId != null) {
-            (0 until episodes.length()).mapNotNull { episodes.optJSONObject(it) }
-                .firstOrNull { it.optLong("id") == episodeId.removePrefix("ep").toLongOrNull() }
+        val episodeRows = result.optJSONArray("episodes") ?: JSONArray()
+        val allEpisodes = (0 until episodeRows.length()).mapNotNull { index ->
+            episodeRows.optJSONObject(index)?.let { index to it }
+        }
+        val targetEpisodeId = episodeId?.removePrefix("ep")?.toLongOrNull()
+        val selectedEntry = if (targetEpisodeId != null) {
+            allEpisodes.firstOrNull { (_, episode) -> episode.optLong("id") == targetEpisodeId }
         } else {
-            episodes.optJSONObject(0)
+            allEpisodes.firstOrNull()
         } ?: throw IOException("没有找到这个番剧剧集")
+        val selectedIndex = selectedEntry.first
+        val selected = selectedEntry.second
         val bvid = selected.optString("bvid").takeIf { it.isNotBlank() }
         val aid = selected.optLong("aid")
         val cid = selected.optLong("cid")
@@ -160,22 +173,443 @@ class BiliRepository(
         val seasonTitle = result.optString("title").ifBlank { "B站番剧" }
         val episodeTitle = selected.optString("long_title").ifBlank { selected.optString("title") }
         val title = (seasonTitle + " - " + episodeTitle).trimEnd(' ', '-')
-        val coverUrl = selected.optString("cover")
-            .takeIf { it.startsWith("http") }
-            ?: result.optString("cover").takeIf { it.startsWith("http") }
-        val play = getPlayInfoForInspection(bvid, aid, cid)
+        val coverUrl = BiliCoverUrlPolicy.normalize(selected.optString("cover"))
+            ?: BiliCoverUrlPolicy.normalize(result.optString("cover"))
+        val qualities = getAvailableQualities(bvid, aid, cid)
+
+        // Preserve the full season listing; every episode gets its own canonical URL and CID.
+        val seasonEpisodes = allEpisodes.mapNotNull { (index, episode) ->
+            val episodeCid = episode.optLong("cid")
+            if (episodeCid <= 0L) return@mapNotNull null
+            val id = episode.optLong("id")
+            val episodeBvid = episode.optString("bvid").takeIf { it.isNotBlank() }
+            val episodeAid = episode.optLong("aid")
+            val shortTitle = episode.optString("long_title")
+                .ifBlank { episode.optString("title") }
+                .ifBlank { "第 " + (index + 1) + " 集" }
+            val canonicalUrl = when {
+                id > 0L -> "https://www.bilibili.com/bangumi/play/ep$id"
+                !episodeBvid.isNullOrBlank() -> "https://www.bilibili.com/video/$episodeBvid"
+                episodeAid > 0L -> "https://www.bilibili.com/video/av$episodeAid"
+                else -> null
+            } ?: return@mapNotNull null
+            BiliPage(
+                pageNumber = index + 1,
+                cid = episodeCid,
+                part = shortTitle,
+                durationSeconds = episode.optInt("duration"),
+                url = canonicalUrl,
+                bvid = episodeBvid,
+                aid = episodeAid,
+                isEpisode = true
+            )
+        }
         return BiliVideo(
-            bvid, aid, cid, 1, title,
-            result.optJSONObject("up_info")?.optString("uname") ?: "番剧",
-            selected.optInt("duration"), coverUrl, null, parseQualities(play)
+            bvid = bvid,
+            aid = aid,
+            cid = cid,
+            page = selectedIndex + 1,
+            title = title,
+            uploader = result.optJSONObject("up_info")?.optString("uname") ?: "番剧",
+            durationSeconds = selected.optInt("duration"),
+            coverUrl = coverUrl,
+            cover = null,
+            qualities = qualities,
+            pages = seasonEpisodes
         )
     }
+
+
+    /**
+     * BVD-style all-site search: videos, anime, and film/TV media.
+     * Returns canonical Bilibili URLs; selecting a row reuses the normal
+     * inspect -> quality selection -> download pipeline.
+     */
+    fun searchBilibili(
+        keyword: String,
+        page: Int = 1,
+        category: BiliSearchCategory = BiliSearchCategory.VIDEO
+    ): List<BiliSearchResult> {
+        val cleanKeyword = keyword.trim()
+        require(cleanKeyword.isNotEmpty()) { "请输入搜索关键词" }
+        require(page >= 1) { "搜索页码无效" }
+
+        val parameters = linkedMapOf(
+            "search_type" to category.apiType,
+            "keyword" to cleanKeyword,
+            "page" to page.toString()
+        )
+        val signedQuery = signWbi(parameters)
+        val root = requestJson(
+            "https://api.bilibili.com/x/web-interface/wbi/search/type?$signedQuery"
+        )
+        val data = checkedData(root)
+        val items = data.optJSONArray("result") ?: JSONArray()
+
+        return (0 until items.length()).mapNotNull { index ->
+            val item = items.optJSONObject(index) ?: return@mapNotNull null
+            val bvid = item.optString("bvid").takeIf { it.isNotBlank() }
+            val aid = item.optLong("aid")
+            val seasonId = item.optLong("season_id")
+            val episodeId = item.optLong("ep_id")
+            val resultUrl = when {
+                !bvid.isNullOrBlank() -> "https://www.bilibili.com/video/$bvid"
+                seasonId > 0L -> "https://www.bilibili.com/bangumi/play/ss$seasonId"
+                episodeId > 0L -> "https://www.bilibili.com/bangumi/play/ep$episodeId"
+                aid > 0L -> "https://www.bilibili.com/video/av$aid"
+                else -> null
+            } ?: return@mapNotNull null
+
+            val rawTitle = item.optString("title").ifBlank { "B站内容" }
+            val title = android.text.Html.fromHtml(
+                rawTitle,
+                android.text.Html.FROM_HTML_MODE_LEGACY
+            ).toString().replace(Regex("\\s+"), " ").trim()
+            val author = item.optString("author")
+                .ifBlank { item.optString("uname") }
+                .ifBlank { item.optString("up_name") }
+                .ifBlank { item.optString("styles") }
+                .ifBlank { "B站创作者" }
+            val coverUrl = BiliCoverUrlPolicy.normalize(
+                item.optString("pic").ifBlank { item.optString("cover") }
+            )
+            val detail = when (category) {
+                BiliSearchCategory.VIDEO -> buildList {
+                    item.optString("duration").takeIf { it.isNotBlank() }?.let(::add)
+                    item.opt("play")?.toString()?.takeIf { it.isNotBlank() && it != "0" && it != "null" }
+                        ?.let { add("播放 $it") }
+                    item.opt("video_review")?.toString()?.takeIf { it.isNotBlank() && it != "0" && it != "null" }
+                        ?.let { add("弹幕 $it") }
+                }.joinToString(" · ")
+                else -> listOf(
+                    item.optString("index_show"),
+                    item.optString("styles"),
+                    item.optString("areas")
+                ).filter { it.isNotBlank() }.distinct().joinToString(" · ")
+            }
+            BiliSearchResult(
+                url = resultUrl,
+                title = title,
+                author = author,
+                coverUrl = coverUrl,
+                detail = detail
+            )
+        }
+    }
+
+
+    /** Read the signed-in Bilibili profile used by the BVD personal center. */
+    fun getMyAccountProfile(): BiliAccountProfile {
+        val data = checkedData(requestJson("https://api.bilibili.com/x/web-interface/nav"))
+        if (!data.optBoolean("isLogin", false)) {
+            throw IOException("请先登录 B站账号后查看个人内容")
+        }
+        val mid = data.optLong("mid")
+        if (mid <= 0L) throw IOException("B站没有返回有效账号信息")
+        return BiliAccountProfile(
+            mid = mid,
+            username = data.optString("uname").ifBlank { "B站用户" },
+            faceUrl = BiliCoverUrlPolicy.normalize(data.optString("face")),
+            sign = data.optString("sign")
+        )
+    }
+
+    /**
+     * Fetch Bilibili's homepage recommendation or global popular feed.
+     * Recommendation uses the current WBI feed endpoint; hot videos are public.
+     * Non-video cards (live rooms, ads, OGV) are filtered out before returning.
+     */
+    fun fetchHomeFeed(
+        type: BiliHomeFeedType,
+        page: Int = 1
+    ): BiliHomeFeedPage {
+        require(page >= 1) { "页码无效" }
+        val root: JSONObject
+        val rows: JSONArray
+        val hasMore: Boolean
+        when (type) {
+            BiliHomeFeedType.RECOMMEND -> {
+                val pageIndex = page.coerceAtMost(200)
+                val query = signWbi(
+                    mapOf(
+                        "fresh_type" to "4",
+                        "ps" to "20",
+                        "fresh_idx" to pageIndex.toString(),
+                        "fresh_idx_1h" to pageIndex.toString(),
+                        "brush" to pageIndex.toString(),
+                        "fetch_row" to (1 + (pageIndex - 1) * 20).toString(),
+                        "web_location" to "1430650",
+                        "feed_version" to "V8",
+                        "homepage_ver" to "1"
+                    )
+                )
+                root = requestJson(
+                    "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd?$query"
+                )
+                val data = checkedData(root)
+                rows = data.optJSONArray("item") ?: JSONArray()
+                hasMore = rows.length() >= 10
+            }
+            BiliHomeFeedType.POPULAR -> {
+                root = requestJson(
+                    "https://api.bilibili.com/x/web-interface/popular?pn=$page&ps=20"
+                )
+                val data = checkedData(root)
+                rows = data.optJSONArray("list") ?: JSONArray()
+                hasMore = !data.optBoolean("no_more", rows.length() < 20) && rows.length() > 0
+            }
+        }
+
+        val items = (0 until rows.length()).mapNotNull { index ->
+            val item = rows.optJSONObject(index) ?: return@mapNotNull null
+            if (type == BiliHomeFeedType.RECOMMEND) {
+                val goto = item.optString("goto")
+                if (goto.isNotBlank() && goto != "av") return@mapNotNull null
+                if (item.optJSONObject("business_info") != null) return@mapNotNull null
+            }
+            val bvid = item.optString("bvid").takeIf {
+                it.matches(Regex("""BV[0-9A-Za-z]{10}"""))
+            }
+            val aid = item.optLong("aid").takeIf { it > 0L }
+                ?: item.optLong("id").takeIf { it > 0L }
+                ?: 0L
+            if (bvid == null && aid <= 0L) return@mapNotNull null
+            val url = if (bvid != null) {
+                "https://www.bilibili.com/video/$bvid"
+            } else {
+                "https://www.bilibili.com/video/av$aid"
+            }
+            val owner = item.optJSONObject("owner") ?: JSONObject()
+            val stat = item.optJSONObject("stat") ?: JSONObject()
+            val title = android.text.Html.fromHtml(
+                item.optString("title").ifBlank { "B站视频" },
+                android.text.Html.FROM_HTML_MODE_LEGACY
+            ).toString().replace(Regex("\\s+"), " ").trim()
+            val durationValue = item.opt("duration")
+            val duration = when (durationValue) {
+                is Number -> formatSearchDuration(durationValue.toInt())
+                else -> durationValue?.toString()?.takeIf { it.isNotBlank() && it != "null" }.orEmpty()
+            }
+            val reason = item.optJSONObject("rcmd_reason")?.optString("content").orEmpty()
+            BiliHomeFeedItem(
+                url = url,
+                bvid = bvid,
+                aid = aid,
+                title = title.ifBlank { "B站视频" },
+                uploader = owner.optString("name").ifBlank { "B站创作者" },
+                coverUrl = BiliCoverUrlPolicy.normalize(item.optString("pic")),
+                duration = duration,
+                viewCount = stat.optLong("view"),
+                danmakuCount = stat.optLong("danmaku"),
+                likeCount = stat.optLong("like"),
+                reason = reason
+            )
+        }.distinctBy { it.bvid ?: it.aid.toString() }
+
+        return BiliHomeFeedPage(
+            items = items,
+            hasMore = hasMore && items.isNotEmpty()
+        )
+    }
+
+    /**
+     * Load the account pages exposed by BVD: submissions, viewing history,
+     * watch-later, recent likes and favorite folders / folder contents.
+     */
+    fun fetchAccountPage(
+        section: BiliAccountSection,
+        mid: Long,
+        page: Int = 1,
+        historyCursor: BiliHistoryCursorState? = null,
+        favoriteFolderId: Long = 0L,
+        submissionOrder: BiliSubmissionOrder = BiliSubmissionOrder.LATEST,
+        submissionTid: Long = 0L,
+        submissionKeyword: String = ""
+    ): BiliAccountLibraryPage {
+        require(mid > 0L) { "账号 ID 无效" }
+        require(page >= 1) { "页码无效" }
+
+        return when (section) {
+            BiliAccountSection.SUBMISSIONS -> {
+                // Match BVD's space search: sort, partition, keyword and page are WBI-signed.
+                val parameters = BiliSubmissionQueryPolicy.buildParameters(
+                    mid = mid,
+                    page = page,
+                    order = submissionOrder,
+                    tid = submissionTid,
+                    keyword = submissionKeyword
+                )
+                val query = signWbi(parameters)
+                val data = checkedData(
+                    requestJson("https://api.bilibili.com/x/space/wbi/arc/search?$query")
+                )
+                val list = data.optJSONObject("list") ?: JSONObject()
+                val rows = list.optJSONArray("vlist") ?: JSONArray()
+                val count = data.optJSONObject("page")?.optLong("count") ?: rows.length().toLong()
+                val partitionJson = list.optJSONObject("tlist") ?: JSONObject()
+                val partitions = buildList {
+                    val keys = partitionJson.keys()
+                    while (keys.hasNext()) {
+                        val item = partitionJson.optJSONObject(keys.next()) ?: continue
+                        val tid = item.optLong("tid")
+                        val name = item.optString("name")
+                        if (tid > 0L && name.isNotBlank()) {
+                            add(BiliSubmissionPartition(tid, name, item.optInt("count")))
+                        }
+                    }
+                }.sortedBy { it.name }
+                BiliAccountLibraryPage(
+                    items = parseAccountItems(rows, "投稿"),
+                    partitions = partitions,
+                    hasMore = (page * 20L) < count && rows.length() > 0
+                )
+            }
+
+            BiliAccountSection.HISTORY -> {
+                // BVD preserves all three cursor fields; max alone can repeat or skip history rows.
+                val query = BiliHistoryCursorPolicy.buildQuery(historyCursor)
+                val data = checkedData(
+                    requestJson("https://api.bilibili.com/x/web-interface/history/cursor?$query")
+                )
+                val rows = data.optJSONArray("list") ?: JSONArray()
+                val responseCursor = data.optJSONObject("cursor")
+                val nextCursor = responseCursor?.let {
+                    BiliHistoryCursorState(
+                        max = it.optLong("max"),
+                        viewAt = it.optLong("view_at"),
+                        business = it.optString("business")
+                    )
+                }
+                BiliAccountLibraryPage(
+                    items = parseAccountItems(rows, "观看历史"),
+                    nextHistoryCursor = nextCursor,
+                    hasMore = rows.length() > 0 && nextCursor != null && nextCursor != historyCursor
+                )
+            }
+
+            BiliAccountSection.WATCH_LATER -> {
+                val data = checkedData(requestJson("https://api.bilibili.com/x/v2/history/toview"))
+                val rows = data.optJSONArray("list") ?: JSONArray()
+                BiliAccountLibraryPage(items = parseAccountItems(rows, "稍后再看"))
+            }
+
+            BiliAccountSection.RECENT_LIKES -> {
+                val data = checkedData(
+                    requestJson("https://api.bilibili.com/x/space/like/video?vmid=$mid")
+                )
+                val rows = data.optJSONArray("list") ?: JSONArray()
+                BiliAccountLibraryPage(items = parseAccountItems(rows, "最近点赞"))
+            }
+
+            BiliAccountSection.FAVORITES -> {
+                if (favoriteFolderId <= 0L) {
+                    val data = checkedData(
+                        requestJson(
+                            "https://api.bilibili.com/x/v3/fav/folder/created/list-all" +
+                                "?up_mid=$mid&type=2"
+                        )
+                    )
+                    val rows = data.optJSONArray("list") ?: JSONArray()
+                    val folders = (0 until rows.length()).mapNotNull { index ->
+                        val item = rows.optJSONObject(index) ?: return@mapNotNull null
+                        val id = item.optLong("id")
+                        if (id <= 0L) return@mapNotNull null
+                        BiliFavoriteFolder(
+                            id = id,
+                            title = item.optString("title").ifBlank { "收藏夹" },
+                            mediaCount = item.optInt("media_count"),
+                            coverUrl = BiliCoverUrlPolicy.normalize(item.optString("cover"))
+                        )
+                    }
+                    BiliAccountLibraryPage(folders = folders)
+                } else {
+                    val url = "https://api.bilibili.com/x/v3/fav/resource/list" +
+                        "?media_id=$favoriteFolderId&pn=$page&ps=20"
+                    val data = checkedData(requestJson(url))
+                    val rows = data.optJSONArray("medias") ?: JSONArray()
+                    val count = data.optJSONObject("info")?.optInt("media_count") ?: rows.length()
+                    BiliAccountLibraryPage(
+                        items = parseAccountItems(rows, "收藏"),
+                        hasMore = (page * 20) < count && rows.length() > 0
+                    )
+                }
+            }
+        }
+    }
+
+    private fun parseAccountItems(rows: JSONArray, fallbackDetail: String): List<BiliAccountLibraryItem> =
+        (0 until rows.length()).mapNotNull { index ->
+            val item = rows.optJSONObject(index) ?: return@mapNotNull null
+            val history = item.optJSONObject("history") ?: JSONObject()
+            val bvid = item.optString("bvid").takeIf { it.isNotBlank() }
+                ?: history.optString("bvid").takeIf { it.isNotBlank() }
+            val aid = item.optLong("aid").takeIf { it > 0L }
+                ?: item.optLong("id").takeIf { it > 0L }
+                ?: history.optLong("oid").takeIf { it > 0L }
+            val episodeId = history.optLong("epid").takeIf { it > 0L }
+            val originalUri = item.optString("uri").takeIf {
+                it.startsWith("https://", ignoreCase = true) &&
+                    (it.contains("bilibili.com", ignoreCase = true) ||
+                        it.contains("b23.tv", ignoreCase = true))
+            }
+            val url = when {
+                !bvid.isNullOrBlank() -> "https://www.bilibili.com/video/$bvid"
+                episodeId != null -> "https://www.bilibili.com/bangumi/play/ep$episodeId"
+                originalUri != null -> originalUri
+                aid != null -> "https://www.bilibili.com/video/av$aid"
+                else -> null
+            } ?: return@mapNotNull null
+
+            val title = android.text.Html.fromHtml(
+                item.optString("title").ifBlank { "B站视频" },
+                android.text.Html.FROM_HTML_MODE_LEGACY
+            ).toString().replace(Regex("\\s+"), " ").trim()
+            val owner = item.optJSONObject("owner")
+                ?: item.optJSONObject("upper")
+                ?: JSONObject()
+            val author = item.optString("author")
+                .ifBlank { item.optString("author_name") }
+                .ifBlank { owner.optString("name") }
+                .ifBlank { fallbackDetail }
+            val cover = item.optString("pic")
+                .ifBlank { item.optString("cover") }
+                .ifBlank { item.optString("cover_url") }
+            val duration = item.optLong("duration")
+            val durationText = item.optString("length").takeIf { it.isNotBlank() }
+            val detail = when {
+                item.optString("index_show").isNotBlank() -> item.optString("index_show")
+                item.optString("show_title").isNotBlank() -> item.optString("show_title")
+                durationText != null -> durationText
+                duration > 0L -> formatSearchDuration(duration.toInt())
+                else -> fallbackDetail
+            }
+            BiliAccountLibraryItem(
+                url = url,
+                title = title.ifBlank { "B站视频" },
+                author = author,
+                coverUrl = BiliCoverUrlPolicy.normalize(cover),
+                detail = detail
+            )
+        }
+
+    private fun formatSearchDuration(seconds: Int): String {
+        val safe = seconds.coerceAtLeast(0)
+        return "%02d:%02d:%02d".format(
+            Locale.US,
+            safe / 3600,
+            safe % 3600 / 60,
+            safe % 60
+        )
+    }
+
+    /** Fetch a public cover image for search result cards. */
+    fun fetchCover(url: String?): Bitmap? = downloadCover(url)
 
     fun getPlaySource(video: BiliVideo, requestedQuality: Int): BiliPlaySource {
         // DASH is the preferred format. Older videos may expose only the
         // legacy DURL response, which requires fnval=0 rather than fnval=4048.
         val dashAttempt = runCatching {
-            checkedData(getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality))
+            checkedData(getPlayInfoWithFallback(video.bvid, video.aid, video.cid, requestedQuality))
         }
         val dashData = dashAttempt.getOrNull()
         var dashQualityUnavailable = false
@@ -222,7 +656,7 @@ class BiliRepository(
         // Do not strand older multi-part FLV videos merely because a DASH
         // response exists but contains no usable video track or no durl field.
         val legacyAttempt = runCatching {
-            checkedData(getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality, fnval = "0"))
+            checkedData(getPlayInfoWithFallback(video.bvid, video.aid, video.cid, requestedQuality, fnval = "0"))
         }
         val legacyData = legacyAttempt.getOrNull()
         if (legacyData != null) {
@@ -343,7 +777,7 @@ class BiliRepository(
             setRequestProperty("Accept", "application/json, text/plain, */*")
             setRequestProperty("Accept-Encoding", "identity")
             if (!cookieOverride.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
+                setRequestProperty("Cookie", SecureCookieStore.normalizeCookieHeader(cookieOverride))
             }
         }
         try {
@@ -372,7 +806,7 @@ class BiliRepository(
             setRequestProperty("Accept", "application/octet-stream, */*")
             setRequestProperty("Accept-Encoding", "identity")
             if (!cookieOverride.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
+                setRequestProperty("Cookie", SecureCookieStore.normalizeCookieHeader(cookieOverride))
             }
         }
         try {
@@ -410,43 +844,82 @@ class BiliRepository(
         quality: Int,
         fnval: String = "4048"
     ): JSONObject {
-        // Capture the credential once so the anonymous preview flag and the
-        // Cookie header cannot disagree if the session changes mid-request.
-        val sessionCookie = cookieProvider()
-        val parameters = BiliPlayUrlRequestPolicy.createParameters(
-            bvid = bvid,
-            aid = aid,
-            cid = cid,
-            quality = quality,
-            hasSessionCookie = !sessionCookie.isNullOrBlank(),
-            fnval = fnval
-        )
+        // Capture the credential once so the preview flag and Cookie header
+        // cannot disagree if the session changes while a request is running.
+        val sessionCookie = if (sessionCookieRejected) {
+            null
+        } else {
+            cookieProvider()?.takeIf { it.isNotBlank() }
+        }
 
-        // try_look is included before WBI signing. It is an undocumented
-        // Bilibili preview capability, so only request it for anonymous users.
-        val signedQuery = signWbi(parameters)
-        return requestJson(
-            "https://api.bilibili.com/x/player/wbi/playurl?$signedQuery",
-            sessionCookie
-        )
+        fun request(cookie: String?): JSONObject {
+            val parameters = BiliPlayUrlRequestPolicy.createParameters(
+                bvid = bvid,
+                aid = aid,
+                cid = cid,
+                quality = quality,
+                hasSessionCookie = !cookie.isNullOrBlank(),
+                fnval = fnval
+            )
+            // try_look must be included before WBI signing for anonymous requests.
+            val signedQuery = signWbi(parameters)
+            return requestJson(
+                "https://api.bilibili.com/x/player/wbi/playurl?$signedQuery",
+                cookie
+            )
+        }
+
+        val response = request(sessionCookie)
+        if (!BiliPlayUrlRequestPolicy.shouldRetryWithoutSession(
+                response.optInt("code", 0),
+                hadSessionCookie = !sessionCookie.isNullOrBlank()
+            )
+        ) {
+            return response
+        }
+
+        // The app may have started before restoreSession() finished validating
+        // a persisted cookie. Remember this rejection for the lifetime of this
+        // repository so each lower-quality retry does not resend the same stale cookie.
+        sessionCookieRejected = true
+        return request(null)
     }
 
-    private fun getPlayInfoForInspection(bvid: String?, aid: Long, cid: Long): JSONObject {
-        val dashAttempt = runCatching { getPlayInfo(bvid, aid, cid, 0) }
-        val dash = dashAttempt.getOrNull()
-        if (dash != null && runCatching { parseQualities(dash).isNotEmpty() }.getOrDefault(false)) {
-            return dash
+    private fun getPlayInfoWithFallback(
+        bvid: String?,
+        aid: Long,
+        cid: Long,
+        requestedQuality: Int,
+        fnval: String = "4048"
+    ): JSONObject {
+        var lastLoginError: JSONObject? = null
+        for (quality in BiliPlayUrlRequestPolicy.qualityFallbacks(requestedQuality)) {
+            val response = getPlayInfo(bvid, aid, cid, quality, fnval)
+            if (response.optInt("code", 0) != -101) return response
+            lastLoginError = response
+        }
+        // Preserve Bilibili's final response so checkedData() can display the
+        // real access restriction rather than pretending a lower tier exists.
+        return lastLoginError ?: getPlayInfo(bvid, aid, cid, requestedQuality, fnval)
+    }
+
+    private fun getAvailableQualities(bvid: String?, aid: Long, cid: Long): List<BiliQuality> {
+        val dash = runCatching { getPlayInfo(bvid, aid, cid, 0) }.getOrNull()
+        dash?.let { response ->
+            val qualities = runCatching { parseQualities(response) }.getOrDefault(emptyList())
+            if (qualities.isNotEmpty()) return qualities
         }
 
-        val legacyAttempt = runCatching { getPlayInfo(bvid, aid, cid, 0, fnval = "0") }
-        val legacy = legacyAttempt.getOrNull()
-        if (legacy != null && runCatching { parseQualities(legacy).isNotEmpty() }.getOrDefault(false)) {
-            return legacy
+        val legacy = runCatching { getPlayInfo(bvid, aid, cid, 0, fnval = "0") }.getOrNull()
+        legacy?.let { response ->
+            val qualities = runCatching { parseQualities(response) }.getOrDefault(emptyList())
+            if (qualities.isNotEmpty()) return qualities
         }
 
-        return dash ?: legacy ?: throw (dashAttempt.exceptionOrNull()
-            ?: legacyAttempt.exceptionOrNull()
-            ?: IOException("B站没有返回播放信息"))
+        // Do not turn a public metadata parse into a login wall merely because
+        // Bilibili withholds the quality list. The user can still try download;
+        // the worker fetches fresh playurl data when the task actually runs.
+        return emptyList()
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
@@ -532,23 +1005,17 @@ class BiliRepository(
             return mixinKeyCache!!
         }
         val root = requestJson("https://api.bilibili.com/x/web-interface/nav")
-        val data = checkedData(root)
-        val image = data.optJSONObject("wbi_img") ?: throw IOException("B站未返回 WBI 图片密钥")
-        val imgKey = image.optString("img_url").substringAfterLast('/').substringBefore('.')
-        val subKey = image.optString("sub_url").substringAfterLast('/').substringBefore('.')
-        val raw = imgKey + subKey
-        val permutation = intArrayOf(
-            46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,
-            27,43,5,49,33,9,42,19,29,28,14,39,12,38,41,13,
-            37,48,7,16,24,55,40,61,26,17,0,1,60,51,30,4,
-            22,25,54,21,56,59,6,63,57,62,11,36,20,34,44,52
+        // The anonymous nav response can be code=-101 while still containing
+        // data.wbi_img. Those public keys are not tied to the login session;
+        // do not route this response through checkedData(), which rejects every
+        // non-zero code before the WBI keys can be read.
+        val apiCode = root.optInt("code", 0)
+        val image = root.optJSONObject("data")?.optJSONObject("wbi_img")
+        mixinKeyCache = BiliWbiKeyPolicy.createMixinKey(
+            apiCode = apiCode,
+            imgUrl = image?.optString("img_url"),
+            subUrl = image?.optString("sub_url")
         )
-        mixinKeyCache = buildString {
-            permutation.forEach { index ->
-                if (index in raw.indices) append(raw[index])
-            }
-        }.take(32)
-        if (mixinKeyCache!!.length != 32) throw IOException("B站 WBI 密钥格式异常")
         mixinKeyExpiresAt = System.currentTimeMillis() + 60L * 60L * 1000L
         return mixinKeyCache!!
     }
@@ -561,7 +1028,11 @@ class BiliRepository(
     private fun checkedData(root: JSONObject, key: String = "data"): JSONObject {
         val code = root.optInt("code", 0)
         if (code != 0) {
-            val message = root.optString("message").ifBlank { "未知错误" }
+            val message = if (code == -101) {
+                "账号未登录。公开视频可以匿名解析；此视频或当前画质可能需要 B站账号授权"
+            } else {
+                root.optString("message").ifBlank { "未知错误" }
+            }
             throw IOException("B站接口错误 " + code + "：" + message)
         }
         return root.optJSONObject(key) ?: throw IOException("B站返回内容不完整")
@@ -586,21 +1057,57 @@ class BiliRepository(
     }
 
     private fun downloadCover(url: String?): Bitmap? {
-        if (url.isNullOrBlank()) return null
-        return try {
-            val connection = URL(url).openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = 10_000
-            connection.readTimeout = 15_000
-            connection.setRequestProperty("User-Agent", userAgent)
-            connection.setRequestProperty("Referer", "https://www.bilibili.com/")
-            connection.inputStream.use { BitmapFactory.decodeStream(it) }
-        } finally {
-            connection.disconnect()
+        val normalized = BiliCoverUrlPolicy.normalize(url) ?: return null
+        val referers = listOf("https://www.bilibili.com/", "https://m.bilibili.com/")
+        for (referer in referers) {
+            val connection = runCatching {
+                (URL(normalized).openConnection() as HttpURLConnection).apply {
+                    connectTimeout = 10_000
+                    readTimeout = 15_000
+                    instanceFollowRedirects = true
+                    setRequestProperty("User-Agent", userAgent)
+                    setRequestProperty("Referer", referer)
+                    setRequestProperty(
+                        "Accept",
+                        "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+                    )
+                    setRequestProperty("Accept-Encoding", "identity")
+                    setRequestProperty("Connection", "close")
+                }
+            }.getOrNull() ?: continue
+            try {
+                if (connection.responseCode !in 200..299) continue
+                val bytes = connection.inputStream.use { input ->
+                    val output = ByteArrayOutputStream()
+                    val buffer = ByteArray(16 * 1024)
+                    var total = 0
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > 8 * 1024 * 1024) throw IOException("封面图片超过大小限制")
+                        output.write(buffer, 0, count)
+                    }
+                    output.toByteArray()
+                }
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) continue
+                var sampleSize = 1
+                while (bounds.outWidth / sampleSize > 960 ||
+                    bounds.outHeight / sampleSize > 720
+                ) {
+                    sampleSize *= 2
+                }
+                val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.let { return it }
+            } catch (_: Exception) {
+                // Retry the same CDN image with the mobile web Referer below.
+            } finally {
+                connection.disconnect()
+            }
         }
-        } catch (_: Exception) {
-            null
-        }
+        return null
     }
 
     private fun requestJson(url: String, cookieOverride: String? = cookieProvider()): JSONObject {
@@ -609,14 +1116,10 @@ class BiliRepository(
             connectTimeout = 15_000
             readTimeout = 25_000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", userAgent)
-            setRequestProperty("Referer", "https://www.bilibili.com/")
-            setRequestProperty("Origin", "https://www.bilibili.com")
+            BiliCdnRequestPolicy.configure(this, cookieOverride)
+            // BVD uses okhttp/4.12.0 for view metadata, but a browser UA for playurl.
+            setRequestProperty("User-Agent", BiliApiRequestPolicy.userAgent(url))
             setRequestProperty("Accept", "application/json, text/plain, */*")
-            setRequestProperty("Accept-Encoding", "identity")
-            if (!cookieOverride.isNullOrBlank()) {
-                setRequestProperty("Cookie", "SESSDATA=" + cookieOverride)
-            }
         }
         try {
             val status = connection.responseCode

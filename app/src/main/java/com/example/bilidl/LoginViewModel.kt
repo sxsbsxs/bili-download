@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Owns Bilibili authorization jobs and local SESSDATA storage.
+ * Owns Bilibili authorization jobs and encrypted local Cookie-header storage.
  *
  * QR generation, polling and cookie verification run on IO. Polling waits
  * cooperatively, so changing tabs or leaving the login screen cancels the job
@@ -70,7 +70,7 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
                 val bitmap = withContext(Dispatchers.IO) {
                     BiliQrLoginClient.renderQr(session.url)
                 }
-                _state.value = LoginUiState.QrReady(bitmap)
+                _state.value = LoginUiState.QrReady(bitmap, session.url)
 
                 val expiresAt = System.currentTimeMillis() + QR_VALIDITY_MILLIS
                 while (System.currentTimeMillis() < expiresAt) {
@@ -85,11 +85,11 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
                             return@launch
                         }
                         BiliQrLoginState.SUCCESS -> {
-                            val sessdata = result.sessdata
+                            val cookieHeader = result.cookieHeader
                                 ?: throw IllegalStateException("扫码成功，但没有获取到登录凭据")
                             val account = withContext(Dispatchers.IO) {
-                                val verified = BiliRepository().verifyCookie(sessdata)
-                                SecureCookieStore.save(getApplication(), sessdata)
+                                val verified = BiliRepository().verifyCookie(cookieHeader)
+                                SecureCookieStore.save(getApplication(), cookieHeader)
                                 verified
                             }
                             _state.value = LoginUiState.Success(account.first, account.second)
@@ -110,7 +110,17 @@ class LoginViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Accepts either a raw SESSDATA value or the full Cookie header returned by BVD-style H5 login. */
+    fun loginWithCookie(rawCookieHeader: String) {
+        verifyAndSaveCookie(rawCookieHeader)
+    }
+
+    /** Backward-compatible entry for the manual SESSDATA field. */
     fun loginWithSessdata(rawSessdata: String) {
+        loginWithCookie(rawSessdata)
+    }
+
+    private fun verifyAndSaveCookie(rawSessdata: String) {
         qrJob?.cancel()
         qrJob = null
         authJob?.cancel()

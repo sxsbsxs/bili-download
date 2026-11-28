@@ -43,6 +43,7 @@ class BiliDownloadWorker(
             val downloadSubtitles = inputData.getBoolean(KEY_DOWNLOAD_SUBTITLES, false)
             val durationSeconds = inputData.getInt(KEY_DURATION, 0)
             val page = inputData.getInt(KEY_PAGE, 1)
+            val partName = inputData.getString(KEY_PART_NAME).orEmpty()
             val transferId = inputData.getString(KEY_TASK_ID).orEmpty()
             val concurrency = inputData.getInt(KEY_CONCURRENT, 2)
             if (taskId.isBlank()) {
@@ -87,7 +88,15 @@ class BiliDownloadWorker(
                 durationSeconds = durationSeconds,
                 coverUrl = null,
                 cover = null,
-                qualities = emptyList()
+                qualities = emptyList(),
+                pages = listOf(
+                    BiliPage(
+                        pageNumber = page,
+                        cid = cid,
+                        part = partName,
+                        durationSeconds = durationSeconds
+                    )
+                )
             )
             val progressPolicy = DownloadProgressPolicy()
             val saved = coroutineScope {
@@ -192,9 +201,9 @@ class BiliDownloadWorker(
                 Result.retry()
             } else {
                 if (taskId.isNotBlank()) {
-                    taskRepository.markFailed(taskId, error.message ?: "下载失败")
+                    taskRepository.markFailed(taskId, failureMessage(error))
                 }
-                Result.failure(workDataOf(KEY_ERROR to (error.message ?: "下载失败")))
+                Result.failure(workDataOf(KEY_ERROR to failureMessage(error)))
             }
         }
     }
@@ -229,6 +238,31 @@ class BiliDownloadWorker(
         }
     }
 
+    private fun failureMessage(error: Exception): String {
+        // Preserve the useful response details instead of replacing every 403
+        // with the same generic sentence. BiliHttpException stores the operation,
+        // CDN host and a short response excerpt, never the signed media URL.
+        val transportDetails = (
+            listOfNotNull(error.message) +
+                generateSequence(error.cause) { it.cause }
+                    .filterIsInstance<BiliHttpException>()
+                    .map { it.message.orEmpty() }
+                    .toList()
+            ).map { it.replace(Regex("\\s+"), " ").take(240) }
+            .distinct()
+            .joinToString("；")
+            .take(420)
+
+        return when (BiliDownloadRetryPolicy.httpStatus(error)) {
+            403 -> "HTTP 403：B站 CDN 拒绝访问。应用已尝试备用地址并刷新视频链接。" +
+                "请查看失败详情中的 CDN 主机和响应信息；这可能是 CDN 风控、节点限制或请求范围策略。" +
+                if (transportDetails.isBlank()) "" else " 详情：$transportDetails"
+            404 -> "HTTP 404：B站视频地址已失效或资源不可用，请重新解析后下载。"
+            429 -> "HTTP 429：B站请求过于频繁，请稍后再试。"
+            else -> error.message ?: "下载失败"
+        }
+    }
+
     companion object {
         private const val TAG = "BiliDownloadWorker"
         const val KEY_TASK_ID = "task_id"
@@ -242,6 +276,7 @@ class BiliDownloadWorker(
         const val KEY_DOWNLOAD_SUBTITLES = "download_subtitles"
         const val KEY_DURATION = "duration_seconds"
         const val KEY_PAGE = "page_number"
+        const val KEY_PART_NAME = "part_name"
         const val KEY_CONTENT_FILES = "content_files"
         const val KEY_CONTENT_WARNINGS = "content_warnings"
         const val KEY_CONCURRENT = "concurrent"

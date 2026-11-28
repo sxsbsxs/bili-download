@@ -4,12 +4,15 @@ This file is a status sheet, not a marketing checklist.
 
 | Area | Current state | Notes |
 |---|---|---|
-| Bilibili links | Implemented | b23.tv, BV, av, ep, ss |
-| Video metadata | Implemented | CID, page list, title, cover, uploader |
-| Available qualities | Implemented | Read from Bilibili playurl response; anonymous WBI playurl requests include `try_look=1` before signing, but higher quality availability remains server-controlled |
+| Bilibili links | Implemented | b23.tv, BV, av, ep, ss; paste up to 50 links for batch import with per-link error isolation |\n| Multipart batch download | Implemented | A visible action queues all P parts; each part is inspected independently |
+| Video metadata | Implemented | Public view/season metadata is shown even if anonymous playurl quality discovery is denied; CID, page list, title and uploader are independent of login |
+| Cover art | Implemented with fallback | Protocol-relative/http cover URLs are upgraded to HTTPS, downloaded with image headers and sampled decoding; missing/blocked covers use a bundled placeholder instead of a blank panel |
+| Available qualities | Implemented with anonymous fallback | Read only from Bilibili playurl data; an empty anonymous quality list no longer blocks parsing or queue creation, and the worker resolves fresh playurl data at download time. Login only affects Bilibili's account-specific entitlements |
+| Unauthenticated public use | Implemented | Parse public metadata, view the result, select automatic quality and queue a download without signing in; login is optional and is never required just to open the app or create a task |
+| Application icon | Implemented | Adaptive and round launcher icons use the original down-arrow/open-frame mark, with a monochrome layer and an in-app cover placeholder |
 | DASH video + audio | Implemented | Separate streams downloaded then remuxed |
 | Audio-only | Implemented with limits | AAC DASH is packaged as M4A |
-| Segmented HTTP | Implemented | Range scheduler, ETag/Last-Modified checkpoints, bounded retry; local HTTP integration tests cover interruption retry, valid resume, validator change, ignored Range, and backup CDN fallback. DURL alternatives are retained as per-segment fallback candidates |
+| Segmented HTTP | Implemented | Range scheduler, ETag/Last-Modified checkpoints, bounded retry; sends the exact Bilibili video-page Referer, tries backup CDN URLs and on HTTP 403 refreshes playurl once. Local HTTP tests cover interruption retry, valid resume, validator change, ignored Range, backup CDN and Referer forwarding |
 | QR authorization | Implemented | Bilibili web QR login; SESSDATA stored with Android Keystore |
 | Background tasks | Implemented | WorkManager foreground worker; Room stores task specs and lifecycle snapshots |
 | Presentation state | In progress | Main, Downloads, Login and Settings ViewModels own parse, history, authorization and preference state; View-based screen construction remains hosted by MainActivity |

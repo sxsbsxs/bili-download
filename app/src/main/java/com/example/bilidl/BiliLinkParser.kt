@@ -39,4 +39,34 @@ object BiliLinkParser {
         }
         return null
     }
+
+    /** Extract Bilibili links or IDs from pasted text, preserving order. */
+    fun extractAll(raw: String): List<String> {
+        val text = raw.trim()
+        if (text.isEmpty()) return emptyList()
+
+        val urls = acceptedUrl.findAll(text)
+            .map { it.value.trimEnd('.', ',', ';', '，', '。', ')', '）', ']', '】') }
+            .filter { it.isNotBlank() }
+            .distinct()
+            .toList()
+        if (urls.isNotEmpty()) return urls
+        if (anyUrl.containsMatchIn(text)) return emptyList()
+
+        val tokenPattern = Regex(
+            """\b(BV[0-9A-Za-z]{10}|av\d+|ep\d+|ss\d+)\b""",
+            RegexOption.IGNORE_CASE
+        )
+        return tokenPattern.findAll(text).map { match ->
+            val token = match.value
+            when {
+                token.startsWith("BV", ignoreCase = true) ||
+                    token.startsWith("av", ignoreCase = true) ->
+                    "https://www.bilibili.com/video/" + token
+                token.startsWith("ep", ignoreCase = true) ->
+                    "https://www.bilibili.com/bangumi/play/" + token
+                else -> "https://www.bilibili.com/bangumi/play/" + token
+            }
+        }.distinct().toList()
+    }
 }

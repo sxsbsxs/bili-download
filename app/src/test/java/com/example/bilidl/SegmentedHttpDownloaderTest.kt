@@ -2,6 +2,7 @@ package com.example.bilidl
 
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -67,7 +68,7 @@ class SegmentedHttpDownloaderTest {
             )
 
             assertArrayEquals(bytes, target.readBytes())
-            assertFalse(server.ranges.contains("bytes=0-${CHUNK_SIZE - 1}"))
+            assertEquals(1, server.ranges.count { it == "bytes=0-${CHUNK_SIZE - 1}" })
             assertTrue(server.ranges.contains("bytes=$CHUNK_SIZE-${bytes.lastIndex}"))
         }
     }
@@ -110,8 +111,73 @@ class SegmentedHttpDownloaderTest {
             )
 
             assertArrayEquals(bytes, target.readBytes())
-            assertTrue(server.ranges.contains("bytes=0-0"))
+            assertTrue(server.ranges.contains("bytes=0-${CHUNK_SIZE - 1}"))
             assertTrue(server.ranges.any { it.isEmpty() })
+        }
+    }
+
+    @Test
+    fun usesAChunkSizedBoundedProbeWhenCdnRejectsSingleByteProbe() = runBlocking {
+        val bytes = payload(CHUNK_SIZE + 12_345)
+        LocalRangeServer(payload = bytes, rejectSingleByteProbe = true).use { server ->
+            val target = File(temporaryFolder.root, "bounded-probe.bin")
+            SegmentedHttpDownloader.download(
+                urls = listOf(server.url),
+                target = target,
+                cookie = null,
+                concurrency = 2,
+                isCancelled = { false },
+                onProgress = {},
+                writerFactory = TestFileWriterFactory
+            )
+
+            assertArrayEquals(bytes, target.readBytes())
+            assertFalse(server.ranges.contains("bytes=0-0"))
+            assertTrue(server.ranges.contains("bytes=0-${CHUNK_SIZE - 1}"))
+        }
+    }
+
+    @Test
+    fun fallsBackToSequentialGetWhenCdnRejectsRangeRequests() = runBlocking {
+        val bytes = payload(192 * 1024)
+        LocalRangeServer(payload = bytes, rejectRangeRequests = true).use { server ->
+            val target = File(temporaryFolder.root, "sequential-after-range-403.bin")
+            SegmentedHttpDownloader.download(
+                urls = listOf(server.url),
+                target = target,
+                cookie = null,
+                concurrency = 2,
+                isCancelled = { false },
+                onProgress = {},
+                writerFactory = TestFileWriterFactory
+            )
+
+            assertArrayEquals(bytes, target.readBytes())
+            assertTrue(server.ranges.contains("bytes=0-${CHUNK_SIZE - 1}"))
+            assertTrue(server.ranges.any { it.isEmpty() })
+        }
+    }
+
+    @Test
+    fun sendsTheActualVideoPageAsRefererToCdnRequests() = runBlocking {
+        val bytes = payload(160 * 1024)
+        val referer = "https://www.bilibili.com/video/BV1xx411c7mD?p=2"
+        LocalRangeServer(payload = bytes).use { server ->
+            val target = File(temporaryFolder.root, "referer.bin")
+            SegmentedHttpDownloader.download(
+                urls = listOf(server.url),
+                target = target,
+                cookie = null,
+                concurrency = 2,
+                isCancelled = { false },
+                onProgress = {},
+                writerFactory = TestFileWriterFactory,
+                referer = referer
+            )
+
+            assertArrayEquals(bytes, target.readBytes())
+            assertTrue(server.referers.isNotEmpty())
+            assertTrue(server.referers.all { it == BiliCdnRequestPolicy.MOBILE_REFERER })
         }
     }
 
@@ -204,7 +270,9 @@ private class LocalRangeServer(
     private val etag: String = "\"test-etag\"",
     private val ignoreRanges: Boolean = false,
     private val statusCode: Int? = null,
-    private val truncateFirstDataRange: String? = null
+    private val truncateFirstDataRange: String? = null,
+    private val rejectSingleByteProbe: Boolean = false,
+    private val rejectRangeRequests: Boolean = false
 ) : Closeable {
     private val server = ServerSocket(0)
     private val running = AtomicBoolean(true)
@@ -223,6 +291,7 @@ private class LocalRangeServer(
     val url: String = "http://127.0.0.1:${server.localPort}/media"
     val ranges = CopyOnWriteArrayList<String>()
     val requests = CopyOnWriteArrayList<String>()
+    val referers = CopyOnWriteArrayList<String>()
     private val truncated = AtomicBoolean(false)
 
     private fun handle(socket: Socket) {
@@ -244,6 +313,7 @@ private class LocalRangeServer(
             val range = headers["range"].orEmpty()
             ranges += range
             requests += requestLine
+            referers += headers["referer"].orEmpty()
             val output = client.getOutputStream()
             if (statusCode != null) {
                 val body = "test error".toByteArray()
@@ -257,11 +327,35 @@ private class LocalRangeServer(
                 return
             }
 
+            if (rejectRangeRequests && range.isNotBlank()) {
+                val body = "range requests are not supported".toByteArray()
+                output.write(
+                    ("HTTP/1.1 403 Forbidden\\r\\n" +
+                        "Content-Length: ${body.size}\\r\\n" +
+                        "Connection: close\\r\\n\\r\\n").toByteArray(Charsets.ISO_8859_1)
+                )
+                output.write(body)
+                output.flush()
+                return
+            }
+
+            if (rejectSingleByteProbe && range == "bytes=0-0") {
+                val body = "tiny probe ranges are not supported".toByteArray()
+                output.write(
+                    ("HTTP/1.1 403 Forbidden\r\n" +
+                        "Content-Length: ${body.size}\r\n" +
+                        "Connection: close\r\n\r\n").toByteArray(Charsets.ISO_8859_1)
+                )
+                output.write(body)
+                output.flush()
+                return
+            }
+
             val match = Regex("bytes=(\\d+)-(\\d+)", RegexOption.IGNORE_CASE).matchEntire(range)
             val useRange = !ignoreRanges && match != null
             val start = if (useRange) match!!.groupValues[1].toInt() else 0
-            val end = if (useRange) match!!.groupValues[2].toInt() else payload.lastIndex
-            if (start !in payload.indices || end !in start..payload.lastIndex) {
+            val requestedEnd = if (useRange) match!!.groupValues[2].toInt() else payload.lastIndex
+            if (start !in payload.indices || requestedEnd < start) {
                 output.write(
                     "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                         .toByteArray(Charsets.ISO_8859_1)
@@ -269,6 +363,8 @@ private class LocalRangeServer(
                 output.flush()
                 return
             }
+            // Servers may clamp a requested end beyond EOF to the final byte.
+            val end = minOf(requestedEnd, payload.lastIndex)
 
             val body = payload.copyOfRange(start, end + 1)
             val code = if (useRange) 206 else 200
@@ -286,6 +382,7 @@ private class LocalRangeServer(
 
             val shouldTruncate = truncateFirstDataRange != null &&
                 range == truncateFirstDataRange &&
+                ranges.count { it == range } > 1 &&
                 truncated.compareAndSet(false, true)
             if (shouldTruncate) {
                 output.write(body, 0, minOf(body.size, 64 * 1024))
