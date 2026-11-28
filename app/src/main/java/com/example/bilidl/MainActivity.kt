@@ -440,19 +440,19 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private fun buildVideoDetailPage(video: BiliVideo, searchItem: BiliSearchVideo?): View {
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#101014"))
+            setBackgroundColor(Color.parseColor("#F5F6F8"))
         }
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(14), dp(4), dp(18), dp(4))
-            setBackgroundColor(Color.parseColor("#17171D"))
+            setBackgroundColor(Color.WHITE)
         }
         toolbar.addView(TextView(this).apply {
             text = "‹"
             textSize = 32f
             gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor("#181A1F"))
             setOnClickListener { closeVideoDetail() }
         }, LinearLayout.LayoutParams(dp(44), dp(48)))
         toolbar.addView(TextView(this).apply {
@@ -461,12 +461,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.WHITE)
         }, LinearLayout.LayoutParams(0, wrap, 1f))
-        toolbar.addView(TextView(this).apply {
-            text = "BiliDl"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#FB7299"))
-        })
         page.addView(toolbar, LinearLayout.LayoutParams(match, dp(52)))
 
         val content = layoutInflater.inflate(
@@ -2116,7 +2110,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     @Volatile private var qrLoginGeneration = 0
     @Volatile private var qrLoginActive = false
-    private var activeLoginSegment = -1
 
     private fun onRequestQrCode() {
         val generation = ++qrLoginGeneration
@@ -2205,18 +2198,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private fun stopQrLogin() {
         qrLoginActive = false
         qrLoginGeneration++
-    }
-
-    private fun onCookieLogin(cookie: String) {
-        backgroundExecutor.execute {
-            try {
-                val (name, vip) = BiliRepository().verifyCookie(cookie)
-                SecureCookieStore.save(this, cookie)
-                runOnUiThread { loginSuccess(name, null, vip) }
-            } catch (error: Exception) {
-                loginFailed(error.message ?: "授权验证失败")
-            }
-        }
     }
 
     private fun onLogoutClicked() {
@@ -2451,7 +2432,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     fun loginSuccess(name: String, avatar: Bitmap?, vip: Boolean = false) = runOnUiThread {
         loggedIn = true; userName = name; userAvatar = avatar; userVip = vip
-        setBusy(cookieBtn, false); cookieBtn.text = "登录"; cookieInput.setText("")
         refreshAccountUi()
         hideLogin()
         (supportFragmentManager.findFragmentByTag("bilivdl-profile") as? ProfileFragment)?.refreshAccount()
@@ -2459,8 +2439,6 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
 
     fun loginFailed(message: String) = runOnUiThread {
-        setBusy(cookieBtn, false); cookieBtn.text = "登录"
-        cookieErrTv.text = message
         setQrStatus(message, true)
     }
 
@@ -2639,15 +2617,10 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
     // 登录页
     private lateinit var loginPage: View
-    private lateinit var loginSegs: List<TextView>
     private lateinit var qrPanel: LinearLayout
-    private lateinit var cookiePanel: LinearLayout
     private lateinit var qrIv: ImageView
     private lateinit var qrOverlay: TextView
     private lateinit var qrStatusTv: TextView
-    private lateinit var cookieInput: EditText
-    private lateinit var cookieBtn: Button
-    private lateinit var cookieErrTv: TextView
 
     // ---------------- 通用小工具 ----------------
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
@@ -4182,11 +4155,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }, 0)
         col.addView(h, match, wrap)
 
-        val (segBox, segs) = buildSegmented(listOf("扫码登录", "Cookie 登录")) { i -> selectLoginSeg(i) }
-        loginSegs = segs
-        col.addView(segBox, sideMargins().apply { topMargin = -dp(26) })
-
-        // 扫码面板
+        // QR authorization is the only sign-in route; the session is stored internally after approval.
         qrPanel = card()
         val qrBox = FrameLayout(this).apply {
             background = shape(Color.WHITE, 16, Color.parseColor("#E6E8EE"))
@@ -4224,71 +4193,23 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }, match, wrap)
         col.addView(qrPanel, sideMargins())
 
-        // Cookie 面板
-        cookiePanel = card().apply { visibility = View.GONE }
-        cookiePanel.addView(TextView(this).apply {
-            text = "使用 Cookie 登录"
-            textSize = 16f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(ink)
-        })
-        cookiePanel.addView(TextView(this).apply {
-            text = "粘贴 B 站完整 Cookie（需包含 SESSDATA 和 bili_jct），才能使用点赞、投币、收藏、评论和弹幕互动。凭据使用 Android Keystore 加密保存，不会上传到本应用服务器；请勿分享给他人。"
+        col.addView(TextView(this).apply {
+            text = "使用哔哩哔哩 App 扫描并确认授权，无需手动复制 Cookie。授权信息仅保存在本机，用于访问你账号允许的内容。"
             textSize = 12f
             setTextColor(sub)
-            setLineSpacing(0f, 1.2f)
-            setPadding(0, dp(6), 0, dp(12))
-        })
-        cookieInput = EditText(this).apply {
-            hint = "粘贴完整 Cookie，至少包含 SESSDATA 和 bili_jct"
-            setHintTextColor(sub)
-            setTextColor(ink)
-            textSize = 14f
-            minLines = 3
-            gravity = Gravity.TOP
-            background = shape(field, 14)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-        }
-        cookiePanel.addView(cookieInput, match, wrap)
-        cookieErrTv = TextView(this).apply { textSize = 13f; setTextColor(err) }
-        cookiePanel.addView(cookieErrTv, LinearLayout.LayoutParams(match, wrap).apply { topMargin = dp(8) })
-        cookieBtn = pillButton("登录", true)
-        cookieBtn.setOnClickListener {
-            val v = cookieInput.text.toString().trim()
-            if (v.isEmpty()) { cookieErrTv.text = "请先粘贴完整 Cookie"; return@setOnClickListener }
-            cookieErrTv.text = ""
-            setBusy(cookieBtn, true)
-            cookieBtn.text = "登录中…"
-            onCookieLogin(v)
-        }
-        cookiePanel.addView(cookieBtn, LinearLayout.LayoutParams(match, dp(48)).apply { topMargin = dp(12) })
-        col.addView(cookiePanel, sideMargins())
-
-        col.addView(View(this), match, dp(32))
-        styleSegs(loginSegs, 0)
+            setPadding(dp(4), dp(12), dp(4), dp(28))
+        }, match, wrap)
         return page
     }
 
-    private fun selectLoginSeg(i: Int) {
-        val changed = activeLoginSegment != i
-        activeLoginSegment = i
-        if (i != 0) stopQrLogin()
-        styleSegs(loginSegs, i)
-        qrPanel.visibility = if (i == 0) View.VISIBLE else View.GONE
-        cookiePanel.visibility = if (i == 1) View.VISIBLE else View.GONE
-        if (i == 0 && changed) refreshQr()
-    }
-
     private fun showLogin() {
-        cookieErrTv.text = ""
         loginPage.visibility = View.VISIBLE
         loginPage.bringToFront()
-        selectLoginSeg(0)
+        refreshQr()
     }
 
     private fun hideLogin() {
         stopQrLogin()
-        activeLoginSegment = -1
         loginPage.visibility = View.GONE
     }
 

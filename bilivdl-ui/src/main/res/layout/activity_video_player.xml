@@ -13,7 +13,7 @@
 
         <FrameLayout
             android:layout_width="match_parent"
-            android:layout_height="220dp"
+            android:layout_height="232dp"
             android:background="@color/black">
 
             <androidx.media3.ui.PlayerView
@@ -38,18 +38,8 @@
             android:orientation="vertical"
             android:paddingStart="18dp"
             android:paddingEnd="18dp"
-            android:paddingTop="18dp"
-            android:paddingBottom="28dp">
-
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginBottom="7dp"
-                android:text="BILIBILI VIDEO"
-                android:textColor="@color/brand"
-                android:textSize="10sp"
-                android:textStyle="bold"
-                android:letterSpacing="0.1" />
+            android:paddingTop="14dp"
+            android:paddingBottom="24dp">
 
             <TextView
                 android:id="@+id/player_title"

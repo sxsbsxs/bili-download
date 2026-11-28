@@ -20,6 +20,9 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         binding = FragmentProfileBinding.bind(view)
+        binding?.accountCard?.setOnClickListener {
+            if (binding?.accountLogin?.visibility == View.VISIBLE) host.requestLogin()
+        }
         binding?.accountLogin?.setOnClickListener { host.requestLogin() }
         binding?.accountRefresh?.setOnClickListener { refreshAccount() }
         binding?.accountLogout?.setOnClickListener { host.requestLogout() }
