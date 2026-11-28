@@ -1872,7 +1872,7 @@ class MainActivity : ComponentActivity() {
             topMargin = dp(8)
             leftMargin = dp(20)
             rightMargin = dp(20)
-            bottomMargin = dp(28)
+            bottomMargin = dp(4)
         })
 
         resultCard = card().apply { visibility = View.GONE }
