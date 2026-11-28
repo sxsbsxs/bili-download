@@ -106,7 +106,7 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
             .show()
     }
 
-    private fun refreshSettings() {
+    fun refreshSettings() {
         host.loadSettings { settings ->
             val b = binding ?: return@loadSettings
             currentQualityIndex = settings.qualityIndex.coerceIn(qualityOptions.indices)
