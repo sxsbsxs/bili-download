@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.View
 import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.Fragment
+import com.bumptech.glide.Glide
 import com.sxsbsxs.bilivdl.ui.databinding.FragmentProfileBinding
 
 /** BiliVdl profile and download preferences, backed by the host app's settings store. */
@@ -120,6 +121,15 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
             val b = binding ?: return@loadAccount
             b.accountName.text = account.name
             b.accountStatus.text = account.status
+            b.accountSignature.text = account.signature.ifBlank {
+                if (account.loggedIn) "Bilibili 账号已连接" else "登录后同步你的账号信息"
+            }
+            Glide.with(this)
+                .load(account.avatarUrl)
+                .circleCrop()
+                .placeholder(android.R.drawable.sym_def_app_icon)
+                .error(android.R.drawable.sym_def_app_icon)
+                .into(b.accountAvatar)
             b.accountLogin.visibility = if (account.loggedIn) View.GONE else View.VISIBLE
             b.accountLogout.visibility = if (account.loggedIn) View.VISIBLE else View.GONE
         }

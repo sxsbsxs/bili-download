@@ -1782,7 +1782,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         addSection("视频流 · 画质 / 编码 / 码率")
         val videoSpinner = android.widget.Spinner(this)
         val videoLabels = options.videoChoices.map { it.label }.ifEmpty {
-            listOf("单流媒体（MP4）")
+            listOf(if (options.direct) "B站直连媒体流" else "单流媒体（MP4）")
         }
         videoSpinner.adapter = android.widget.ArrayAdapter(
             this,
@@ -1810,9 +1810,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }
         val combinedOption = android.widget.RadioButton(this).apply {
             id = View.generateViewId()
-            text = "视频 + 音频（MP4）"
+            text = if (options.direct) "视频文件（B站直连流）" else "视频 + 音频（MP4）"
             textSize = 14f
-            isEnabled = options.videoChoices.isNotEmpty() || options.audioChoices.isEmpty()
+            isEnabled = options.direct || options.videoChoices.isNotEmpty() || options.audioChoices.isEmpty()
         }
         val audioOption = android.widget.RadioButton(this).apply {
             id = View.generateViewId()
@@ -1859,7 +1859,11 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         content.addView(danmakuOption)
         content.addView(subtitleOption)
         content.addView(TextView(this).apply {
-            text = "规格以当前视频接口实际返回为准；选定流会保存在任务中，重试不会自动换成其他码率。"
+            text = if (options.direct) {
+                "B站本次只返回直连媒体文件，将按原始媒体格式保存。"
+            } else {
+                "规格以当前视频接口实际返回为准；选定流会保存在任务中，重试不会自动换成其他码率。"
+            }
             textSize = 11f
             setTextColor(sub)
             setPadding(dp(2), dp(8), dp(2), 0)
@@ -1871,7 +1875,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             .setNegativeButton("取消", null)
             .setPositiveButton("加入下载") { _, _ ->
                 val audioOnly = mediaGroup.checkedRadioButtonId == audioOption.id
-                val videoChoice = if (!audioOnly) {
+                val videoChoice = if (!audioOnly && !options.direct) {
                     options.videoChoices.getOrNull(videoSpinner.selectedItemPosition)
                 } else null
                 val audioChoice = options.audioChoices.getOrNull(audioSpinner.selectedItemPosition)
@@ -2384,8 +2388,37 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     }
 
     private fun onLogoutClicked() {
-        SecureCookieStore.clear(this)
-        logoutDone()
+        val cookie = SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
+        if (cookie.isNullOrBlank()) {
+            SecureCookieStore.clear(this)
+            logoutDone()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("退出 B 站账号")
+            .setMessage("将向 B 站提交退出请求。服务端确认成功后，才会清除本机保存的登录凭据。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("确认退出") { _, _ ->
+                val progress = ProgressDialog(this).apply {
+                    setMessage("正在向 B 站退出账号…")
+                    setCancelable(false)
+                    show()
+                }
+                backgroundExecutor.execute {
+                    val result = runCatching { BiliRepository { cookie }.logout() }
+                    runOnUiThread {
+                        if (progress.isShowing) progress.dismiss()
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        result.onSuccess {
+                            SecureCookieStore.clear(this)
+                            logoutDone()
+                        }.onFailure {
+                            toast("B 站尚未确认退出，已保留本机登录凭据：${it.message ?: "请求失败"}")
+                        }
+                    }
+                }
+            }
+            .show()
     }
 
     private fun onSettingChanged(key: String, value: Any) {
@@ -3145,14 +3178,22 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }
         backgroundExecutor.execute {
             val account = runCatching {
-                val (name, vip) = BiliRepository().verifyCookie(cookie)
+                val profile = BiliRepository { cookie }.getAccountProfile(cookie)
                 loggedIn = true
-                userName = name
-                userVip = vip
-                BiliVdlAccount(name, if (vip) "账号已连接 · 大会员" else "账号已连接", true)
+                userName = profile.name
+                userVip = profile.vip
+                BiliVdlAccount(
+                    name = profile.name,
+                    status = if (profile.vip) "账号已连接 · 大会员" else "账号已连接",
+                    loggedIn = true,
+                    avatarUrl = profile.avatarUrl,
+                    signature = profile.signature
+                )
             }.getOrElse { error ->
                 SecureCookieStore.clear(this)
                 loggedIn = false
+                userName = ""
+                userVip = false
                 BiliVdlAccount("未登录", error.message ?: "登录状态已失效", false)
             }
             runOnUiThread { callback(account) }

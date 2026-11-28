@@ -115,7 +115,16 @@ data class BiliStreamChoice(
 
 data class BiliDownloadStreamOptions(
     val videoChoices: List<BiliStreamChoice>,
-    val audioChoices: List<BiliStreamChoice>
+    val audioChoices: List<BiliStreamChoice>,
+    val direct: Boolean = false
+)
+
+data class BiliAccountProfile(
+    val mid: Long,
+    val name: String,
+    val vip: Boolean,
+    val avatarUrl: String?,
+    val signature: String
 )
 
 data class BiliPlaySource(
@@ -195,15 +204,45 @@ class BiliRepository(
     private var mixinKeyExpiresAt = 0L
 
     fun verifyCookie(rawCookie: String): Pair<String, Boolean> {
-        val cookie = SecureCookieStore.normalizeCookie(rawCookie)
-        val root = requestJson("https://api.bilibili.com/x/web-interface/nav", cookie)
-        val data = root.optJSONObject("data") ?: throw IOException("B站没有返回账号信息")
-        if (!data.optBoolean("isLogin", false)) {
+        val profile = getAccountProfile(rawCookie)
+        return profile.name to profile.vip
+    }
+
+    /**
+     * Verifies the local Bilibili session and reads the account card data.
+     * Signature lookup is optional: a valid nav session stays logged in if the
+     * optional space-profile endpoint is unavailable.
+     */
+    fun getAccountProfile(rawCookie: String): BiliAccountProfile {
+        val cookie = SecureCookieStore.normalizeCookieHeader(rawCookie)
+        val nav = checkedData(requestJson("https://api.bilibili.com/x/web-interface/nav", cookie))
+        if (!nav.optBoolean("isLogin", false)) {
             throw IOException("SESSDATA 无效或已过期，请重新授权")
         }
-        val name = data.optString("uname").ifBlank { "B站用户" }
-        val vip = data.optInt("vipStatus", 0) == 1
-        return name to vip
+        val mid = nav.optLong("mid")
+        val profile = if (mid > 0L) runCatching {
+            val signed = signWbi(mapOf("mid" to mid.toString()))
+            checkedData(
+                requestJson("https://api.bilibili.com/x/space/wbi/acc/info?$signed", cookie)
+            )
+        }.getOrNull() else null
+        return BiliAccountProfile(
+            mid = mid,
+            name = nav.optString("uname").ifBlank { "B站用户" },
+            vip = nav.optInt("vipStatus", 0) == 1,
+            avatarUrl = nav.optString("face").takeIf { it.startsWith("http") },
+            signature = profile?.optString("sign").orEmpty()
+        )
+    }
+
+    /** BVD's passport sign-out flow. The caller clears local credentials only on success. */
+    fun logout() {
+        val csrf = requireCsrf()
+        val response = requestFormJson(
+            "https://passport.bilibili.com/login/exit/v2",
+            mapOf("biliCSRF" to csrf)
+        )
+        ensureMutationSuccess(response, "B站退出登录失败")
     }
 
     /**
@@ -490,7 +529,15 @@ class BiliRepository(
         requestedQuality: Int
     ): BiliDownloadStreamOptions {
         val data = checkedData(getPlayInfo(video.bvid, video.aid, video.cid, requestedQuality))
-        val dash = data.optJSONObject("dash") ?: return BiliDownloadStreamOptions(emptyList(), emptyList())
+        val dash = data.optJSONObject("dash")
+        if (dash == null) {
+            val direct = data.optJSONArray("durl")
+            return BiliDownloadStreamOptions(
+                videoChoices = emptyList(),
+                audioChoices = emptyList(),
+                direct = direct != null && direct.length() > 0
+            )
+        }
         val videos = dash.optJSONArray("video") ?: JSONArray()
         val audios = dash.optJSONArray("audio") ?: JSONArray()
         val videoChoices = (0 until videos.length()).mapNotNull { index ->

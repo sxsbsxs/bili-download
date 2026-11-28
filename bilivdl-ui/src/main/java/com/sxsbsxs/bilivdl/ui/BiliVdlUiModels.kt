@@ -40,7 +40,9 @@ data class BiliVdlDownloadTask(
 data class BiliVdlAccount(
     val name: String,
     val status: String,
-    val loggedIn: Boolean
+    val loggedIn: Boolean,
+    val avatarUrl: String? = null,
+    val signature: String = ""
 )
 
 data class BiliVdlSettings(
