@@ -27,17 +27,17 @@ internal object BiliWebLoginPolicy {
             "path", "domain", "expires", "max-age", "secure",
             "httponly", "samesite", "priority"
         )
-        headers.filterNotNull().forEach { header ->
-            header.split(';').forEach { token ->
+        for (header in headers.filterNotNull()) {
+            for (token in header.split(';')) {
                 val separator = token.indexOf('=')
-                if (separator <= 0) return@forEach
+                if (separator <= 0) continue
                 val name = token.substring(0, separator).trim()
                 val value = token.substring(separator + 1).trim()
                 if (name.isBlank() ||
-                    name.equalsAny(ignoredAttributes) ||
+                    ignoredAttributes.any { it.equals(name, ignoreCase = true) } ||
                     !name.matches(Regex("[A-Za-z0-9_]+")) ||
                     value.any { it == '\\r' || it == '\\n' }
-                ) return@forEach
+                ) continue
                 cookies[name] = value
             }
         }
@@ -45,6 +45,4 @@ internal object BiliWebLoginPolicy {
         return cookies.entries.joinToString("; ") { (name, value) -> "$name=$value" }
     }
 
-    private fun String.equalsAny(values: Set<String>): Boolean =
-        values.any { equals(it, ignoreCase = true) }
 }
