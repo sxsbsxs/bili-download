@@ -12,8 +12,8 @@
         android:allowBackup="false"
         android:usesCleartextTraffic="false"
         android:label="BiliDl"
-        android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round"
+        android:icon="@mipmap/bilidl_icon"
+        android:roundIcon="@mipmap/bilidl_icon"
         android:theme="@style/Theme.BiliVdl">
         <provider
             android:name="androidx.core.content.FileProvider"
