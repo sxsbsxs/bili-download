@@ -34,6 +34,8 @@ The application remains a single Gradle app module for now; package boundaries a
 
 ## Build
 
+The Android module compiles against Android API 36 to satisfy the current Media3 playback dependencies; the app target SDK remains independently configured.
+
 Open the repository in Android Studio with JDK 17 and Gradle 8.13 support, or run:
 
     gradle --no-daemon :app:assembleDebug
