@@ -12,11 +12,13 @@ BiliDl is a Bilibili-focused Android downloader. The project uses its own Bilibi
 - Resolve video metadata, all multipart page CIDs, cover art, and the quality options returned by Bilibili for each page.
 - Use Bilibili's WBI-signed playurl endpoint to request DASH streams and show only qualities actually returned by the API.
 - Download video and audio streams with BiliDl's own HTTP Range scheduler: parallel chunks, per-chunk checkpoints, validator-aware resume, bounded retry, and sequential fallback.
-- Mux DASH video/audio into MP4, interleaving samples by presentation timestamp without re-encoding. AAC audio-only downloads are packaged as M4A.
+- Mux DASH video/audio into MP4, interleaving samples by presentation timestamp without re-encoding. AAC audio-only downloads are packaged as M4A; unsupported DASH audio codecs are rejected before transfer rather than producing silent or broken output.
 - Support Bilibili web QR authorization and optional Cookie entry. Recognized session fields are encrypted locally with Android Keystore AES-GCM; the complete stored Cookie header is reused for authenticated playurl and CDN requests.
 - Handle multipart video selection, batch task creation, WorkManager background tasks, foreground progress notifications, and task restoration.
 - Optionally export segmented Bilibili danmaku as XML and BCC subtitles as SRT. The two options are controlled separately in Settings and are saved with each task.
+- Validate MP4 structure and FLV tag boundaries before publishing direct downloads; validate MP4 sample-table references after DASH remux. MediaStore copies are checked byte-for-byte before they become visible.
 - Save finished media and sidecar files in Download/BiliDl through MediaStore without requesting broad storage access.
+- Ship an original adaptive launcher icon, themed monochrome icon, and matching foreground download notification icon.
 - Include an original C++/JNI core for positional writes, durable file sync, and structural MP4 inspection. The inspector checks box boundaries, track/sample tables, timing-table counts, chunk mappings, and verifies that each media chunk points into an actual mdat payload.
 
 ## Repository layout
@@ -41,12 +43,12 @@ Open the repository in Android Studio with JDK 17 and Gradle 8.13 support, or ru
     gradle --no-daemon :app:assembleDebug
     gradle --no-daemon :app:testDebugUnitTest
 
-The Android workflow also builds the native C++ inspector tests, verifies the packaged arm64 library, and uploads the debug APK.
+The Android workflow also builds the native C++ inspector tests, verifies the native core for all declared ABIs and the packaged launcher/notification assets, and uploads the debug APK.
 
 ## Current limits
 
 - Multi-segment legacy DURL/FLV streams are reported as unsupported rather than concatenated unsafely.
-- DASH remuxing still uses Android MediaExtractor/MediaMuxer. Device codec availability and behavior may vary.
+- DASH remuxing still uses Android MediaExtractor/MediaMuxer, not FFmpeg. AAC is the guaranteed audio packaging path; other audio codecs are rejected until an audited LGPL FFmpegKitNext source build is integrated. Device video codec and muxer support can still vary.
 - Danmaku/subtitle export is implemented but still needs live Bilibili CDN and on-device validation across representative public and account-authorized videos.
 - The native MP4 inspector validates the container and sample-table references; it does not decode frames or prove audio/video perceptual quality.
 - Room v1 is the durable task index for task specifications, lifecycle state, resource records, and transition history. WorkManager owns execution scheduling; SharedPreferences is retained as a compatibility mirror for older installs.
