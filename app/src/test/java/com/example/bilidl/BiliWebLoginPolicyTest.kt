@@ -52,4 +52,19 @@ class BiliWebLoginPolicyTest {
             )
         )
     }
+
+    @Test
+    fun secureStoreKeepsFullCookieHeaderAndSupportsLegacySessdata() {
+        assertEquals(
+            "SESSDATA=abc%2Cdef; bili_jct=csrf",
+            SecureCookieStore.normalizeCookieHeader("SESSDATA=abc%2Cdef; bili_jct=csrf; Path=/")
+        )
+        assertEquals("abc%2Cdef", SecureCookieStore.normalizeCookie("SESSDATA=abc%2Cdef; bili_jct=csrf"))
+        assertEquals("SESSDATA=legacy-token", SecureCookieStore.normalizeCookieHeader("legacy-token"))
+    }
+
+    @Test
+    fun callbackHostMustMatchExactly() {
+        assertFalse(BiliWebLoginPolicy.isCallbackUrl("https://m.bilibili.com.evil.example/"))
+    }
 }
