@@ -1226,7 +1226,7 @@ class MainActivity : ComponentActivity() {
                                 val sessdata = result.sessdata
                                     ?: throw IOException("扫码成功，但没有获取到登录凭据")
                                 val (name, vip) = BiliRepository().verifyCookie(sessdata)
-                                SecureCookieStore.save(this, sessdata)
+                                SecureCookieStore.save(this, result.cookieHeader?.takeIf { it.isNotBlank() } ?: sessdata)
                                 finished = true
                                 qrLoginActive = false
                                 runOnUiThread {
