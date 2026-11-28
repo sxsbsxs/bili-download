@@ -36,6 +36,7 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
             }
         }
         binding?.settingDanmakuDisplay?.setOnClickListener { host.openDanmakuSettings() }
+        binding?.settingDownloadPathRow?.setOnClickListener { host.chooseDownloadDirectory() }
         binding?.accountLogin?.setOnClickListener { host.requestLogin() }
         binding?.accountRefresh?.setOnClickListener { refreshAccount() }
         binding?.accountLogout?.setOnClickListener { host.requestLogout() }
