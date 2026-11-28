@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity() {
     private val downloadsViewModel: DownloadsViewModel by viewModels()
     private val loginViewModel: LoginViewModel by viewModels()
     private val settingsViewModel: SettingsViewModel by viewModels()
+    private var downloadSourceHostValue: TextView? = null
 
     companion object {
         private const val DOWNLOAD_TAG = "bilidl-download"
@@ -2034,6 +2035,20 @@ class MainActivity : ComponentActivity() {
             ), sideMargins(20)
         )
 
+        // 下载源：与 BVD 一样区分默认、自动探测和自定义 Host。
+        col.addView(
+            group(
+                "下载源",
+                choiceRow(
+                    "下载源策略",
+                    BiliDownloadSourcePolicy.KEY_MODE,
+                    arrayOf("默认（B站主/备用地址）", "自动探测（64 KB 测速）", "自定义 CDN Host"),
+                    BiliDownloadSourceMode.DEFAULT.code
+                ),
+                downloadSourceHostRow()
+            ), sideMargins(20)
+        )
+
         // 内容
         col.addView(
             group(
@@ -2068,6 +2083,55 @@ class MainActivity : ComponentActivity() {
             setPadding(0, dp(24), 0, dp(32))
         }, match, wrap)
         return scroll
+    }
+
+    private fun downloadSourceHostRow(): View {
+        val current = settingsViewModel.getString(BiliDownloadSourcePolicy.KEY_CUSTOM_HOST)
+        downloadSourceHostValue = valueText(current.ifBlank { "选择 Host  ›" })
+        return settingRow(
+            "自定义 CDN Host",
+            "优先尝试替换后的地址，失败后自动回退 B站原始地址",
+            downloadSourceHostValue
+        ) {
+            showDownloadSourceHostDialog()
+        }
+    }
+
+    private fun showDownloadSourceHostDialog() {
+        val input = EditText(this).apply {
+            setSingleLine(true)
+            hint = "upos-sz-mirrorali.bilivideo.com"
+            setText(settingsViewModel.getString(BiliDownloadSourcePolicy.KEY_CUSTOM_HOST))
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                android.text.InputType.TYPE_TEXT_VARIATION_URI
+        }
+        AlertDialog.Builder(this)
+            .setTitle("自定义 CDN Host")
+            .setMessage("只填写主机名，不要填写 https://、路径或查询参数。下载时会保留 B站返回的签名路径和参数。")
+            .setView(input)
+            .setNeutralButton("选择预设") { _, _ -> showDownloadSourcePresetPicker() }
+            .setPositiveButton("保存") { _, _ -> saveDownloadSourceHost(input.text.toString()) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun showDownloadSourcePresetPicker() {
+        val hosts = BiliDownloadSourcePreset.entries.map { it.host }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("选择 CDN Host")
+            .setItems(hosts) { _, which -> saveDownloadSourceHost(hosts[which]) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun saveDownloadSourceHost(value: String) {
+        val host = BiliDownloadSourcePolicy.normalizeHost(value)
+        if (host == null) {
+            toast("Host 格式不正确，请只填写域名")
+            return
+        }
+        settingsViewModel.setString(BiliDownloadSourcePolicy.KEY_CUSTOM_HOST, host)
+        downloadSourceHostValue?.text = host
     }
 
     private fun onAccountClick() {
