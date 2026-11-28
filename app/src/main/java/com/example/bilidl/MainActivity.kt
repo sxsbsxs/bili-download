@@ -3172,8 +3172,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         qualityOptions[prefs.getInt("quality", 0).coerceIn(0, qualityOptions.lastIndex)] + "  ›"
 
     private fun refreshQuality() {
-        homeQualityTv.text = qualityText()
-        setQualityTv.text = qualityText()
+        val label = qualityText()
+        if (::homeQualityTv.isInitialized) homeQualityTv.text = label
+        if (::setQualityTv.isInitialized) setQualityTv.text = label
     }
 
     private fun pickOption(title: String, key: String, options: Array<String>, def: Int, after: () -> Unit) {
