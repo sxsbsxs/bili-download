@@ -23,4 +23,6 @@ interface BiliVdlUiHost {
     fun clearTemporaryCache()
     fun requestLogin()
     fun requestLogout()
+    fun openRepository()
+    fun checkForUpdates()
 }
