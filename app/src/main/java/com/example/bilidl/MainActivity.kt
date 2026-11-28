@@ -84,6 +84,22 @@ class MainActivity : ComponentActivity() {
             mainViewModel.parse(selectedUrl)
         }
     }
+    private val accountCenterLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            when {
+                result.data?.getBooleanExtra(AccountCenterActivity.EXTRA_LOGOUT, false) == true ->
+                    onLogoutClicked()
+                !result.data?.getStringExtra(AccountCenterActivity.EXTRA_SELECTED_URL).isNullOrBlank() -> {
+                    val selectedUrl = result.data?.getStringExtra(AccountCenterActivity.EXTRA_SELECTED_URL).orEmpty()
+                    input.setText(selectedUrl)
+                    input.setSelection(input.text.length)
+                    mainViewModel.parse(selectedUrl)
+                }
+            }
+        }
+    }
     private var activeQrLoginUrl: String? = null
     private var downloadSourceHostValue: TextView? = null
     private val downloadSourceModeIndicators = mutableMapOf<Int, TextView>()
@@ -2266,19 +2282,18 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onAccountClick() {
-        if (!loggedIn) { showLogin(); return }
-        AlertDialog.Builder(this)
-            .setTitle("退出登录？")
-            .setPositiveButton("退出") { _, _ -> onLogoutClicked() }
-            .setNegativeButton("取消", null)
-            .show()
+        if (!loggedIn) {
+            showLogin()
+            return
+        }
+        accountCenterLauncher.launch(Intent(this, AccountCenterActivity::class.java))
     }
 
     private fun refreshAccountUi() {
         if (loggedIn) {
             nameTv.text = userName
             subTv.text = if (userVip) "已登录 · 大会员" else "已登录"
-            accountBtn.text = "退出"
+            accountBtn.text = "我的空间"
             avatarTv.text = userName.take(1)
             val a = userAvatar
             if (a != null) {
