@@ -1,0 +1,19 @@
+package com.sxsbsxs.bilivdl.ui
+
+/**
+ * Boundary between the BiliVdl UI component and the host application's real
+ * repository, account and WorkManager implementations.
+ */
+interface BiliVdlUiHost {
+    fun loadPopular(page: Int, callback: (Result<List<BiliVdlVideo>>) -> Unit)
+    fun searchVideos(query: String, page: Int, callback: (Result<List<BiliVdlVideo>>) -> Unit)
+    fun openVideo(video: BiliVdlVideo)
+    fun navigateToDiscover()
+    fun loadDownloadTasks(callback: (List<BiliVdlDownloadTask>) -> Unit)
+    fun pauseDownload(taskId: String)
+    fun resumeDownload(taskId: String)
+    fun cancelDownload(taskId: String)
+    fun loadAccount(callback: (BiliVdlAccount) -> Unit)
+    fun requestLogin()
+    fun requestLogout()
+}
