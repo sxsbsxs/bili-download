@@ -215,6 +215,9 @@ class LocalResourceCenterActivity : ComponentActivity() {
             actions.addView(action("播放") { playResource(resource) }, LinearLayout.LayoutParams(0, dp(38), 1f).apply {
                 leftMargin = dp(6)
             })
+            actions.addView(action("转换") { openConversion(resource) }, LinearLayout.LayoutParams(0, dp(38), 1f).apply {
+                leftMargin = dp(6)
+            })
         }
         actions.addView(action("导出") { exportResource(resource) }, LinearLayout.LayoutParams(0, dp(38), 1f).apply {
             leftMargin = dp(6)
@@ -224,6 +227,15 @@ class LocalResourceCenterActivity : ComponentActivity() {
         })
         card.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
         list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+    }
+
+    private fun openConversion(resource: DownloadResourceEntity) {
+        startActivity(Intent(this, MediaConversionActivity::class.java).apply {
+            putExtra(MediaConversionActivity.EXTRA_URI, resource.contentUri)
+            putExtra(MediaConversionActivity.EXTRA_TITLE, resource.displayName)
+            putExtra(MediaConversionActivity.EXTRA_MIME, resource.mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        })
     }
 
     private fun showMediaInfo(resource: DownloadResourceEntity) {

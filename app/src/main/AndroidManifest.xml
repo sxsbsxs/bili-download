@@ -35,6 +35,9 @@
             android:name=".MediaInfoActivity"
             android:exported="false" />
         <activity
+            android:name=".MediaConversionActivity"
+            android:exported="false" />
+        <activity
             android:name=".LocalResourceCenterActivity"
             android:exported="false" />
         <activity
