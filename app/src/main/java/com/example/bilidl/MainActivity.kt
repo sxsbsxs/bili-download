@@ -1998,13 +1998,15 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
 
         addSection("音频流 · 编码 / 码率")
         val audioSpinner = android.widget.Spinner(this)
-        val audioLabels = listOf("不合并音频（仅保存视频流）") + options.audioChoices.map { it.label }
+        val audioLabels = options.audioChoices.map { it.label }.ifEmpty {
+            listOf("B站没有返回可用的 AAC 音频轨")
+        }
         audioSpinner.adapter = android.widget.ArrayAdapter(
             this,
             android.R.layout.simple_spinner_item,
             audioLabels
         ).also { it.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
-        audioSpinner.setSelection(if (options.audioChoices.isNotEmpty()) 1 else 0)
+        audioSpinner.setSelection(0)
         content.addView(audioSpinner, LinearLayout.LayoutParams(match, dp(48)))
 
         val mediaGroup = android.widget.RadioGroup(this).apply {
@@ -2093,7 +2095,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     options.videoChoices.getOrNull(videoSpinner.selectedItemPosition)
                 } else null
                 val audioChoice = if (includeAudio) {
-                    options.audioChoices.getOrNull(audioSpinner.selectedItemPosition - 1)
+                    options.audioChoices.getOrNull(audioSpinner.selectedItemPosition)
                 } else null
                 if (audioOnly && audioChoice == null) {
                     toast("当前没有可用的 AAC 音频流")
