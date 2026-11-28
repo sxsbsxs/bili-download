@@ -3245,9 +3245,11 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("ui", Context.MODE_PRIVATE)
-        window.statusBarColor = Color.parseColor("#101014")
-        window.navigationBarColor = Color.parseColor("#101014")
-        window.decorView.systemUiVisibility = 0
+        window.statusBarColor = Color.WHITE
+        window.navigationBarColor = Color.WHITE
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility =
+            View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
 
         // The UI shell and its resources are imported from the user's BiliVdl project.
         rootFrame = FrameLayout(this)
