@@ -431,679 +431,271 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
     private fun buildVideoDetailPage(video: BiliVideo, searchItem: BiliSearchVideo?): View {
         val page = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(bg)
+            setBackgroundColor(Color.parseColor("#101014"))
         }
         val toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(8))
-            background = shape(Color.WHITE, 0)
+            setPadding(dp(14), dp(4), dp(18), dp(4))
+            setBackgroundColor(Color.parseColor("#17171D"))
         }
         toolbar.addView(TextView(this).apply {
             text = "‹"
             textSize = 32f
-            setTextColor(ink)
             gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
             setOnClickListener { closeVideoDetail() }
-        }, LinearLayout.LayoutParams(dp(42), dp(48)))
+        }, LinearLayout.LayoutParams(dp(44), dp(48)))
         toolbar.addView(TextView(this).apply {
             text = "视频详情"
-            textSize = 17f
+            textSize = 16f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(ink)
+            setTextColor(Color.WHITE)
         }, LinearLayout.LayoutParams(0, wrap, 1f))
         toolbar.addView(TextView(this).apply {
             text = "BiliDl"
             textSize = 13f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(pink)
+            setTextColor(Color.parseColor("#FB7299"))
         })
-        page.addView(toolbar, LinearLayout.LayoutParams(match, dp(56)))
+        page.addView(toolbar, LinearLayout.LayoutParams(match, dp(52)))
 
-        val scroll = ScrollView(this).apply { isVerticalScrollBarEnabled = false }
-        val column = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, 0, 0, dp(26))
-        }
-        scroll.addView(column, LinearLayout.LayoutParams(match, wrap))
-        page.addView(scroll, LinearLayout.LayoutParams(match, 0, 1f))
+        val content = layoutInflater.inflate(
+            com.sxsbsxs.bilivdl.ui.R.layout.activity_video_player,
+            page,
+            false
+        )
+        page.addView(content, LinearLayout.LayoutParams(match, 0, 1f))
 
-        val playerFrame = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        val playerView = PlayerView(this).apply {
+        val playerView = content.findViewById<PlayerView>(
+            com.sxsbsxs.bilivdl.ui.R.id.player_view
+        ).apply {
             useController = true
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             setBackgroundColor(Color.BLACK)
         }
         detailPlayerView = playerView
-        playerFrame.addView(playerView, FrameLayout.LayoutParams(match, match))
-        val danmakuOverlay = BiliDanmakuOverlay(this).apply {
+
+        val overlay = content.findViewById<com.sxsbsxs.bilivdl.ui.DanmakuOverlayView>(
+            com.sxsbsxs.bilivdl.ui.R.id.danmaku_overlay
+        ).apply {
             positionProvider = { currentPlayer?.currentPosition ?: 0L }
             playingProvider = { currentPlayer?.isPlaying == true }
             danmakuEnabled = detailDanmakuVisible
         }
-        detailDanmakuOverlay = danmakuOverlay
-        playerFrame.addView(danmakuOverlay, FrameLayout.LayoutParams(match, match))
-        column.addView(playerFrame, LinearLayout.LayoutParams(match, dp(218)))
+        detailDanmakuOverlay = overlay
 
-        val playbackStatus = TextView(this).apply {
-            text = "正在准备播放器…"
-            textSize = 12f
-            setTextColor(sub)
-            setPadding(dp(16), dp(8), dp(16), dp(8))
-            background = ColorDrawable(Color.WHITE)
+        content.findViewById<TextView>(com.sxsbsxs.bilivdl.ui.R.id.player_title).text = video.title
+        content.findViewById<TextView>(com.sxsbsxs.bilivdl.ui.R.id.owner_name).text =
+            video.uploader.ifBlank { "B站创作者" }
+        val avatar = content.findViewById<ImageView>(
+            com.sxsbsxs.bilivdl.ui.R.id.owner_avatar
+        )
+        val avatarUrl = video.ownerAvatarUrl.orEmpty()
+        if (avatarUrl.isNotBlank()) {
+            Glide.with(this)
+                .load(avatarUrl)
+                .placeholder(com.sxsbsxs.bilivdl.ui.R.drawable.bg_empty_card)
+                .error(com.sxsbsxs.bilivdl.ui.R.drawable.bg_empty_card)
+                .circleCrop()
+                .into(avatar)
+        } else {
+            avatar.setImageResource(com.sxsbsxs.bilivdl.ui.R.drawable.bg_empty_card)
         }
-        detailPlaybackStatus = playbackStatus
-        column.addView(playbackStatus, LinearLayout.LayoutParams(match, wrap))
-        val danmakuControls = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(3), dp(14), dp(3))
+
+        content.findViewById<TextView>(com.sxsbsxs.bilivdl.ui.R.id.video_stats).text =
+            formatCount(video.viewCount) + " 播放  ·  " +
+                formatCount(video.danmakuCount) + " 弹幕  ·  " +
+                formatCount(video.likeCount) + " 点赞  ·  " +
+                formatCount(video.commentCount) + " 评论"
+
+        content.findViewById<TextView>(com.sxsbsxs.bilivdl.ui.R.id.video_description).text =
+            buildString {
+                if (video.categoryName.isNotBlank()) append("分区：").append(video.categoryName).append('\n')
+                val publishTime = if (video.publishTime > 0L) video.publishTime else searchItem?.publishTime ?: 0L
+                if (publishTime > 0L) append("投稿：").append(formatPublishDate(publishTime)).append('\n')
+                if (video.bvid.isNullOrBlank().not()) append("BV号：").append(video.bvid).append('\n')
+                append(video.description.ifBlank { "暂无简介" })
+                if (video.tags.isNotEmpty()) {
+                    append("\n\n标签：")
+                    append(video.tags.joinToString("  ·  "))
+                }
+            }
+
+        detailPlaybackStatus = content.findViewById(
+            com.sxsbsxs.bilivdl.ui.R.id.player_status
+        )
+        detailPlaybackStatus?.text = "正在获取播放地址…"
+
+        val qualityButton = content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.quality_button
+        )
+        detailQualityLabel = qualityButton
+        qualityButton.text = qualityLabelForSelection(video)
+        qualityButton.setOnClickListener { showAvailableQualities() }
+
+        val speedButton = content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.playback_speed_button
+        )
+        speedButton.text = "倍速 1.0x"
+        speedButton.setOnClickListener {
+            val speeds = listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f)
+            val labels = speeds.map { it.toString() + "x" }.toTypedArray()
+            AlertDialog.Builder(this)
+                .setTitle("播放速度")
+                .setSingleChoiceItems(labels, speeds.indexOf(currentPlayer?.playbackParameters?.speed ?: 1f).coerceAtLeast(0)) { dialog, which ->
+                    val speed = speeds[which]
+                    currentPlayer?.playbackParameters = PlaybackParameters(speed)
+                    speedButton.text = "倍速 " + speed + "x"
+                    dialog.dismiss()
+                }
+                .setNegativeButton("取消", null)
+                .show()
         }
-        val danmakuToggle = chip(if (detailDanmakuVisible) "弹幕：开" else "弹幕：关", false)
-        danmakuToggle.setOnClickListener {
+
+        content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.player_download
+        ).setOnClickListener { onDownloadClicked() }
+
+        val partButton = content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.part_button
+        )
+        partButton.visibility = if (video.pages.size > 1) View.VISIBLE else View.GONE
+        partButton.text = if (video.pages.size > 1) "选择分P（共 " + video.pages.size + " P）" else "单P视频"
+        partButton.setOnClickListener { showAvailablePages() }
+
+        val danmakuButton = content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.danmaku_button
+        )
+        fun updateDanmakuButton() {
+            danmakuButton.text = if (detailDanmakuVisible) "弹幕：开" else "弹幕：关"
+        }
+        updateDanmakuButton()
+        danmakuButton.setOnClickListener {
             detailDanmakuVisible = !detailDanmakuVisible
             detailDanmakuOverlay?.danmakuEnabled = detailDanmakuVisible
-            danmakuToggle.text = if (detailDanmakuVisible) "弹幕：开" else "弹幕：关"
-        }
-        danmakuControls.addView(danmakuToggle, LinearLayout.LayoutParams(0, wrap, 1f))
-        val sendDanmaku = chip("发送弹幕", true)
-        sendDanmaku.setOnClickListener { showDanmakuComposer(video) }
-        danmakuControls.addView(sendDanmaku)
-        column.addView(danmakuControls, LinearLayout.LayoutParams(match, wrap))
-
-        val info = card()
-        info.addView(TextView(this).apply {
-            text = video.title
-            textSize = 18f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(ink)
-            setLineSpacing(0f, 1.15f)
-        }, LinearLayout.LayoutParams(match, wrap))
-
-        val author = TextView(this).apply {
-            text = "UP主  ·  " + video.uploader
-            textSize = 13f
-            setTextColor(sub)
-            setPadding(0, dp(9), 0, 0)
-        }
-        info.addView(author, LinearLayout.LayoutParams(match, wrap))
-        val identityText = buildString {
-            if (video.categoryName.isNotBlank()) append(video.categoryName)
-            if (video.categoryId > 0) {
-                if (isNotEmpty()) append("  ·  ")
-                append("分区 ")
-                append(video.categoryId)
-            }
-            if (video.bvid != null) {
-                if (isNotEmpty()) append("  ·  ")
-                append(video.bvid)
-            } else if (video.aid > 0L) {
-                if (isNotEmpty()) append("  ·  ")
-                append("AV")
-                append(video.aid)
-            }
-            if (video.cid > 0L) {
-                if (isNotEmpty()) append("  ·  ")
-                append("CID ")
-                append(video.cid)
-            }
-            if (video.ownerMid > 0L) {
-                if (isNotEmpty()) append("  ·  ")
-                append("UP主 UID ")
-                append(video.ownerMid)
-            }
-            if (video.copyright > 0) {
-                if (isNotEmpty()) append("  ·  ")
-                append(if (video.copyright == 1) "自制" else "转载")
-            }
-        }
-        if (identityText.isNotBlank()) {
-            info.addView(TextView(this).apply {
-                text = identityText
-                textSize = 11f
-                setTextColor(sub)
-                setPadding(0, dp(5), 0, 0)
-            }, LinearLayout.LayoutParams(match, wrap))
+            updateDanmakuButton()
         }
 
-        if (video.pages.size > 1) {
-            info.addView(TextView(this).apply {
-                text = "视频分P · " + video.pages.size + " P"
-                textSize = 13f
-                typeface = Typeface.DEFAULT_BOLD
-                setTextColor(ink)
-                setPadding(0, dp(13), 0, dp(6))
-            }, LinearLayout.LayoutParams(match, wrap))
-            val pageScroller = HorizontalScrollView(this).apply {
-                isHorizontalScrollBarEnabled = false
-            }
-            val pageRow = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-            }
-            video.pages.forEach { videoPage ->
-                val selected = videoPage.cid == video.cid
-                val label = "P" + videoPage.pageNumber + "  " +
-                    videoPage.part.ifBlank { "第 " + videoPage.pageNumber + " P" }
-                pageRow.addView(chip(label, selected).apply {
-                    setOnClickListener {
-                        if (videoPage.cid != video.cid) {
-                            val nextVideo = video.copy(
-                                cid = videoPage.cid,
-                                page = videoPage.pageNumber,
-                                durationSeconds = videoPage.durationSeconds
-                            )
-                            showVideoDetail(nextVideo, searchItem)
-                        }
-                    }
-                }, LinearLayout.LayoutParams(wrap, dp(40)).apply {
-                    rightMargin = dp(8)
-                })
-            }
-            pageScroller.addView(pageRow, FrameLayout.LayoutParams(wrap, wrap))
-            info.addView(pageScroller, LinearLayout.LayoutParams(match, wrap))
-        }
+        content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.more_actions
+        ).setOnClickListener { showVideoMoreActions(video) }
 
-        val views = if (video.viewCount > 0L) video.viewCount else searchItem?.viewCount ?: 0L
-        val danmaku = if (video.danmakuCount > 0L) video.danmakuCount else searchItem?.danmakuCount ?: 0L
-        val likes = if (video.likeCount > 0L) video.likeCount else searchItem?.likeCount ?: 0L
-        val favorites = if (video.favoriteCount > 0L) video.favoriteCount else searchItem?.favoriteCount ?: 0L
-        val comments = if (video.commentCount > 0L) video.commentCount else searchItem?.commentCount ?: 0L
-        info.addView(TextView(this).apply {
-            text = "播放 " + formatCount(views) + "  ·  弹幕 " + formatCount(danmaku) +
-                "  ·  评论 " + formatCount(comments)
-            textSize = 12f
-            setTextColor(sub)
-            setPadding(0, dp(8), 0, 0)
-        }, LinearLayout.LayoutParams(match, wrap))
-        info.addView(TextView(this).apply {
-            text = "点赞 " + formatCount(likes) + "  ·  投币 " + formatCount(video.coinCount) +
-                "  ·  收藏 " + formatCount(favorites)
-            textSize = 12f
-            setTextColor(sub)
-            setPadding(0, dp(5), 0, 0)
-        }, LinearLayout.LayoutParams(match, wrap))
-        info.addView(TextView(this).apply {
-            text = "分享 " + formatCount(video.shareCount) +
-                "  ·  时长 " + formatDuration(video.durationSeconds)
-            textSize = 12f
-            setTextColor(sub)
-            setPadding(0, dp(5), 0, 0)
-        }, LinearLayout.LayoutParams(match, wrap))
-
-        val interactionRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        detailLikeButton = chip(if (video.userLiked) "已点赞" else "点赞", video.userLiked)
+        detailLikeButton = content.findViewById(
+            com.sxsbsxs.bilivdl.ui.R.id.video_like
+        )
+        detailLikeButton.text = if (video.userLiked) "已点赞" else "点赞"
         detailLikeButton.setOnClickListener {
             parsedVideo?.let { currentVideo -> performVideoLike(currentVideo) }
         }
-        interactionRow.addView(detailLikeButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
-            rightMargin = dp(4)
-        })
-        interactionRow.addView(chip("投币", false).apply {
-            setOnClickListener { showCoinDialog(video) }
-        }, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
-            leftMargin = dp(4)
-            rightMargin = dp(4)
-        })
-        detailFavoriteButton = chip(if (video.userFavorited) "已收藏" else "收藏", video.userFavorited)
-        detailFavoriteButton.setOnClickListener { showFavoriteFolderPicker(video) }
-        interactionRow.addView(detailFavoriteButton, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
-            leftMargin = dp(4)
-        })
-        info.addView(interactionRow, LinearLayout.LayoutParams(match, wrap).apply {
-            topMargin = dp(12)
-        })
-        info.addView(chip("一键三连", false).apply {
-            setOnClickListener { performTripleLike(video) }
-        }, LinearLayout.LayoutParams(match, dp(42)).apply {
-            topMargin = dp(6)
-        })
 
-        val published = if (video.publishTime > 0L) video.publishTime else searchItem?.publishTime ?: 0L
-        if (published > 0L) {
-            info.addView(TextView(this).apply {
-                text = "投稿时间  ·  " + formatPublishDate(published)
-                textSize = 12f
-                setTextColor(sub)
-                setPadding(0, dp(5), 0, 0)
-            }, LinearLayout.LayoutParams(match, wrap))
-        }
+        content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_coin
+        ).setOnClickListener { showCoinDialog(video) }
 
-        val description = video.description.ifBlank { searchItem?.description.orEmpty() }
-        if (description.isNotBlank()) {
-            info.addView(TextView(this).apply {
-                text = description
-                textSize = 13f
-                setTextColor(ink)
-                setLineSpacing(dp(3).toFloat(), 1.1f)
-                setPadding(0, dp(13), 0, 0)
-            }, LinearLayout.LayoutParams(match, wrap))
-        }
-        val tags = video.tags.ifEmpty { searchItem?.tags.orEmpty() }
-        if (tags.isNotEmpty()) {
-            info.addView(TextView(this).apply {
-                text = "标签  ·  " + tags.joinToString("   ") { "#" + it }
-                textSize = 12f
-                setTextColor(pink)
-                setPadding(0, dp(12), 0, 0)
-                setOnClickListener {
-                    val firstTag = tags.firstOrNull()
-                    if (!firstTag.isNullOrBlank()) {
-                        closeVideoDetail()
-                        input.setText(firstTag)
-                        startVideoSearch(firstTag, true)
-                    }
-                }
-            }, LinearLayout.LayoutParams(match, wrap))
-        }
-        val qualityRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            background = shape(field, 12)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-        qualityRow.addView(TextView(this).apply {
-            text = "播放 / 下载画质"
-            textSize = 13f
-            setTextColor(ink)
-        }, LinearLayout.LayoutParams(0, wrap, 1f))
-        val qualityLabel = TextView(this).apply {
-            text = qualityLabelForSelection(video) + "  ▾"
-            textSize = 13f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(pink)
-        }
-        detailQualityLabel = qualityLabel
-        qualityRow.addView(qualityLabel)
-        qualityRow.setOnClickListener { showAvailableQualities() }
-        info.addView(qualityRow, LinearLayout.LayoutParams(match, wrap).apply {
-            topMargin = dp(16)
-        })
-
-        val actionRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-        val downloadButton = pillButton("下载视频", true)
-        downloadButton.setOnClickListener { onDownloadClicked() }
-        actionRow.addView(downloadButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
-            rightMargin = dp(6)
-        })
-        val pagesButton = pillButton(
-            if (video.pages.size > 1) "分P / 批量下载" else "加入下载",
-            false
+        detailFavoriteButton = content.findViewById(
+            com.sxsbsxs.bilivdl.ui.R.id.video_favorite
         )
-        pagesButton.setOnClickListener {
-            if (video.pages.size > 1) showAvailablePages() else onDownloadClicked()
-        }
-        actionRow.addView(pagesButton, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
-            leftMargin = dp(6)
-        })
-        info.addView(actionRow, LinearLayout.LayoutParams(match, wrap).apply {
-            topMargin = dp(12)
-        })
-        column.addView(info, sideMargins(14).apply { topMargin = dp(14) })
-        column.addView(buildCommentsSection(video), sideMargins(14).apply { topMargin = dp(12) })
-        column.addView(buildRelatedSection(), sideMargins(14).apply { topMargin = dp(12) })
+        detailFavoriteButton.text = if (video.userFavorited) "已收藏" else "收藏"
+        detailFavoriteButton.setOnClickListener { showFavoriteFolderPicker(video) }
 
-        val note = TextView(this).apply {
-            text = "播放地址实时向 B 站获取；能否播放和画质取决于该视频的公开状态及账号权限。"
-            textSize = 11f
-            setTextColor(sub)
-            setPadding(dp(20), dp(12), dp(20), 0)
+        content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.video_triple
+        ).setOnClickListener { performTripleLike(video) }
+
+        content.findViewById<MaterialButton>(
+            com.sxsbsxs.bilivdl.ui.R.id.danmaku_send
+        ).setOnClickListener { showDanmakuComposer(video) }
+
+        content.findViewById<TextView>(
+            com.sxsbsxs.bilivdl.ui.R.id.download_status
+        ).text = "保存位置：Download/BiliDl"
+
+        detailCommentInput = content.findViewById(
+            com.sxsbsxs.bilivdl.ui.R.id.comment_input
+        )
+        detailCommentInput.hint = if (loggedIn) "写下你的评论…" else "登录后参与评论"
+        detailCommentSend = content.findViewById(
+            com.sxsbsxs.bilivdl.ui.R.id.comment_send
+        )
+        detailCommentSend.setOnClickListener { sendDetailComment(video) }
+
+        detailCommentsStatus = content.findViewById(
+            com.sxsbsxs.bilivdl.ui.R.id.comments_status
+        )
+        detailCommentSortButton = content.findViewById(
+            com.sxsbsxs.bilivdl.ui.R.id.comment_sort
+        )
+        detailCommentSortButton?.text = if (commentsSort == 2) "按热度" else "按时间"
+        detailCommentSortButton?.setOnClickListener {
+            commentsSort = if (commentsSort == 2) 1 else 2
+            detailCommentSortButton?.text = if (commentsSort == 2) "按热度" else "按时间"
+            loadVideoComments(video, true)
         }
-        column.addView(note, LinearLayout.LayoutParams(match, wrap))
+
+        val commentsList = content.findViewById<RecyclerView>(
+            com.sxsbsxs.bilivdl.ui.R.id.comments_list
+        )
+        detailCommentsList = commentsList
+        detailCommentsAdapter = CommentAdapter(
+            onReplies = { uiComment ->
+                detailComments.firstOrNull { it.id == uiComment.id }?.let { comment ->
+                    parsedVideo?.let { currentVideo -> showCommentReplyDialog(currentVideo, comment) }
+                }
+            },
+            onLike = { uiComment ->
+                detailComments.firstOrNull { it.id == uiComment.id }?.let { comment ->
+                    parsedVideo?.let { currentVideo -> performCommentLike(currentVideo, comment) }
+                }
+            }
+        )
+        commentsList.layoutManager = LinearLayoutManager(this)
+        commentsList.adapter = detailCommentsAdapter
+        commentsList.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(recyclerView: RecyclerView, dx: Int, dy: Int) {
+                super.onScrolled(recyclerView, dx, dy)
+                val manager = recyclerView.layoutManager as? LinearLayoutManager ?: return
+                if (!commentsLoading && commentsHasMore &&
+                    manager.findLastVisibleItemPosition() >= manager.itemCount - 3
+                ) {
+                    loadVideoComments(video, false)
+                }
+            }
+        })
+
         return page
     }
 
-    private fun repositoryWithSavedCookie() = BiliRepository {
-        SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this)
-    }
-
-    private fun requireInteractionLogin(): Boolean {
-        if (!loggedIn) {
-            toast("请先登录 B 站账号")
-            showLogin()
-            return false
-        }
-        if (SecureCookieStore.csrf(this).isNullOrBlank()) {
-            toast("当前登录凭据缺少 bili_jct，请重新扫码登录后再互动")
-            showLogin()
-            return false
-        }
-        return true
-    }
-
-    private fun loadVideoDanmaku(video: BiliVideo) {
-        val requestToken = ++danmakuRequestToken
-        detailDanmakuOverlay?.clear()
-        backgroundExecutor.execute {
-            try {
-                val repository = repositoryWithSavedCookie()
-                val items = try {
-                    repository.getVideoDanmaku(video)
-                } catch (protoError: Exception) {
-                    // Retain compatibility with the legacy XML feed if a segment request is rejected.
-                    val xml = repository.getDanmakuXml(video.cid)
-                    runOnUiThread {
-                        if (requestToken == danmakuRequestToken &&
-                            detailDanmakuOverlay != null &&
-                            parsedVideo?.cid == video.cid
-                        ) detailDanmakuOverlay?.setXml(xml)
-                    }
-                    return@execute
-                }
-                val xmlFallback = if (items.isEmpty()) {
-                    runCatching { repository.getDanmakuXml(video.cid) }.getOrNull()
-                } else null
-                runOnUiThread {
-                    if (requestToken != danmakuRequestToken ||
-                        detailDanmakuOverlay == null ||
-                        parsedVideo?.cid != video.cid
-                    ) return@runOnUiThread
-                    when {
-                        items.isNotEmpty() -> detailDanmakuOverlay?.setDanmaku(items)
-                        xmlFallback != null -> detailDanmakuOverlay?.setXml(xmlFallback)
-                        else -> detailPlaybackStatus?.text = "当前视频暂无可显示的弹幕"
-                    }
-                }
-            } catch (error: Exception) {
-                runOnUiThread {
-                    if (requestToken == danmakuRequestToken && parsedVideo?.cid == video.cid) {
-                        detailPlaybackStatus?.text = error.message?.let { "弹幕暂不可用：$it" }
-                            ?: "弹幕暂不可用"
-                    }
-                }
-            }
-        }
-    }
-
-    private fun showDanmakuComposer(video: BiliVideo) {
-        if (!requireInteractionLogin()) return
-        val editor = EditText(this).apply {
-            hint = "发送一条弹幕（最多 50 个字）"
-            setTextColor(ink)
-            setHintTextColor(sub)
-            textSize = 15f
-            minLines = 2
-            maxLines = 3
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or
-                android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            filters = arrayOf(android.text.InputFilter.LengthFilter(50))
-            background = shape(field, 12)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-        }
-        val modeSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                listOf("滚动弹幕", "顶部弹幕", "底部弹幕")
-            )
-        }
-        val colorChoices = listOf(
-            "白色" to 0xFFFFFF,
-            "黄色" to 0xFFFF00,
-            "粉色" to 0xFF79B8,
-            "蓝色" to 0x66CCFF,
-            "绿色" to 0x66CC66
-        )
-        val colorSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                colorChoices.map { it.first }
-            )
-        }
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(4))
-            addView(editor, LinearLayout.LayoutParams(match, wrap))
-            addView(TextView(this@MainActivity).apply {
-                text = "显示方式"
-                textSize = 12f
-                setTextColor(sub)
-                setPadding(0, dp(12), 0, dp(2))
-            })
-            addView(modeSpinner, LinearLayout.LayoutParams(match, dp(44)))
-            addView(TextView(this@MainActivity).apply {
-                text = "弹幕颜色"
-                textSize = 12f
-                setTextColor(sub)
-                setPadding(0, dp(8), 0, dp(2))
-            })
-            addView(colorSpinner, LinearLayout.LayoutParams(match, dp(44)))
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle("发送弹幕")
-            .setView(content)
-            .setNegativeButton("取消", null)
-            .setPositiveButton("发送", null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val message = editor.text?.toString()?.trim().orEmpty()
-                if (message.isBlank()) {
-                    editor.error = "请输入弹幕内容"
-                    return@setOnClickListener
-                }
-                val modes = listOf(1, 5, 4)
-                val selectedMode = modes.getOrElse(modeSpinner.selectedItemPosition) { 1 }
-                val selectedColor = colorChoices.getOrElse(colorSpinner.selectedItemPosition) {
-                    colorChoices.first()
-                }.second
-                val progressMs = currentPlayer?.currentPosition ?: 0L
-                setBusy(dialog.getButton(AlertDialog.BUTTON_POSITIVE), true)
-                backgroundExecutor.execute {
-                    try {
-                        repositoryWithSavedCookie().sendDanmaku(
-                            video = video,
-                            text = message,
-                            progressMs = progressMs,
-                            color = selectedColor,
-                            mode = selectedMode
-                        )
-                        runOnUiThread {
-                            if (parsedVideo?.cid == video.cid) {
-                                detailDanmakuOverlay?.addLocalDanmaku(
-                                    message, selectedColor, selectedMode, progressMs
-                                )
-                            }
-                            toast("弹幕发送成功")
-                            dialog.dismiss()
-                        }
-                    } catch (error: Exception) {
-                        runOnUiThread {
-                            setBusy(dialog.getButton(AlertDialog.BUTTON_POSITIVE), false)
-                            toast(error.message ?: "弹幕发送失败")
-                        }
-                    }
-                }
-            }
-        }
-        dialog.show()
-        editor.requestFocus()
-    }
-
-    private fun performVideoLike(video: BiliVideo) {
-        if (!requireInteractionLogin()) return
-        val targetLiked = !video.userLiked
-        backgroundExecutor.execute {
-            try {
-                repositoryWithSavedCookie().setVideoLike(video.aid, targetLiked)
-                runOnUiThread {
-                    val updated = video.copy(userLiked = targetLiked)
-                    parsedVideo = updated
-                    detailLikeButton.text = if (targetLiked) "已点赞" else "点赞"
-                    detailLikeButton.setTextColor(if (targetLiked) Color.WHITE else sub)
-                    detailLikeButton.background = rippleShape(if (targetLiked) pink else field, 18)
-                    toast(if (targetLiked) "点赞成功" else "已取消点赞")
-                }
-            } catch (error: Exception) {
-                runOnUiThread { toast(error.message ?: "点赞失败") }
-            }
-        }
-    }
-
-    private fun performTripleLike(video: BiliVideo) {
-        if (!requireInteractionLogin()) return
-        backgroundExecutor.execute {
-            try {
-                repositoryWithSavedCookie().tripleLike(video.aid)
-                runOnUiThread {
-                    parsedVideo = video.copy(userLiked = true)
-                    detailLikeButton.text = "已点赞"
-                    detailLikeButton.setTextColor(Color.WHITE)
-                    detailLikeButton.background = rippleShape(pink, 18)
-                    toast("一键三连成功")
-                }
-            } catch (error: Exception) {
-                runOnUiThread { toast(error.message ?: "一键三连失败") }
-            }
-        }
-    }
-
-    private fun showCoinDialog(video: BiliVideo) {
-        if (!requireInteractionLogin()) return
-        val maxCoins = if (video.copyright == 2) 1 else 2
-        val options = if (maxCoins == 1) {
-            arrayOf("投 1 个币")
-        } else {
-            arrayOf("投 1 个币", "投 2 个币")
-        }
+    private fun showVideoMoreActions(video: BiliVideo) {
+        val link = "https://www.bilibili.com/video/" +
+            (video.bvid?.takeIf { it.isNotBlank() } ?: ("av" + video.aid))
+        val options = arrayOf("复制视频链接", "分享视频链接", "复制 BV / AV 号")
         AlertDialog.Builder(this)
-            .setTitle("给 UP 主投币")
-            .setItems(options) { _, index ->
-                val coins = index + 1
-                backgroundExecutor.execute {
-                    try {
-                        repositoryWithSavedCookie().addVideoCoin(video.aid, coins)
-                        runOnUiThread {
-                            if (parsedVideo?.aid == video.aid) {
-                                val latest = parsedVideo ?: video
-                                parsedVideo = latest.copy(
-                                    coinCount = latest.coinCount + coins,
-                                    userCoin = (latest.userCoin + coins).coerceAtMost(2)
-                                )
-                            }
-                            toast("投币成功")
+            .setTitle("更多操作")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> {
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Bilibili video", link))
+                        toast("已复制视频链接")
+                    }
+                    1 -> {
+                        val intent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, link)
                         }
-                    } catch (error: Exception) {
-                        runOnUiThread { toast(error.message ?: "投币失败") }
+                        startActivity(Intent.createChooser(intent, "分享视频"))
+                    }
+                    2 -> {
+                        val id = video.bvid?.takeIf { it.isNotBlank() } ?: ("av" + video.aid)
+                        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("Bilibili ID", id))
+                        toast("已复制视频编号")
                     }
                 }
             }
-            .setNegativeButton("取消", null)
+            .setNegativeButton("关闭", null)
             .show()
-    }
-
-    private fun showFavoriteFolderPicker(video: BiliVideo) {
-        if (!requireInteractionLogin()) return
-        toast("正在读取收藏夹状态…")
-        backgroundExecutor.execute {
-            try {
-                val folders = repositoryWithSavedCookie().getFavoriteFolders(video.aid)
-                runOnUiThread {
-                    if (detailPage == null || parsedVideo?.aid != video.aid) return@runOnUiThread
-                    if (folders.isEmpty()) {
-                        toast("没有可用收藏夹，请先在 B 站创建收藏夹")
-                        return@runOnUiThread
-                    }
-                    val isAlreadyFavorited = folders.any { it.favState }
-                    if (parsedVideo?.aid == video.aid) {
-                        parsedVideo = video.copy(userFavorited = isAlreadyFavorited)
-                        detailFavoriteButton.text = if (isAlreadyFavorited) "已收藏" else "收藏"
-                        detailFavoriteButton.setTextColor(if (isAlreadyFavorited) Color.WHITE else sub)
-                        detailFavoriteButton.background =
-                            rippleShape(if (isAlreadyFavorited) pink else field, 18)
-                    }
-                    val content = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                        setPadding(dp(18), dp(4), dp(18), dp(4))
-                    }
-                    content.addView(TextView(this).apply {
-                        text = "可同时勾选多个收藏夹；取消勾选已收藏的项目即可移出。"
-                        textSize = 12f
-                        setTextColor(sub)
-                        setPadding(0, 0, 0, dp(8))
-                    })
-                    val list = LinearLayout(this).apply {
-                        orientation = LinearLayout.VERTICAL
-                    }
-                    val checks = folders.map { folder ->
-                        CheckBox(this).apply {
-                            text = folder.title + "  ·  " + folder.mediaCount + " 个视频"
-                            textSize = 13f
-                            setTextColor(ink)
-                            isChecked = folder.favState
-                            setPadding(dp(4), dp(5), dp(4), dp(5))
-                            list.addView(this, LinearLayout.LayoutParams(match, wrap))
-                        }
-                    }
-                    val scroll = ScrollView(this).apply {
-                        isVerticalScrollBarEnabled = true
-                        addView(list, FrameLayout.LayoutParams(match, wrap))
-                    }
-                    content.addView(scroll, LinearLayout.LayoutParams(match, dp(300)))
-                    val dialog = AlertDialog.Builder(this)
-                        .setTitle("收藏夹")
-                        .setView(content)
-                        .setNegativeButton("取消", null)
-                        .setPositiveButton("保存", null)
-                        .create()
-                    dialog.setOnShowListener {
-                        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                            val selected = folders.filterIndexed { index, _ ->
-                                checks[index].isChecked
-                            }
-                            val selectedIds = selected.map { it.id }.toSet()
-                            val addIds = folders.filter {
-                                !it.favState && it.id in selectedIds
-                            }.map { it.id }
-                            val removeIds = folders.filter {
-                                it.favState && it.id !in selectedIds
-                            }.map { it.id }
-                            if (addIds.isEmpty() && removeIds.isEmpty()) {
-                                dialog.dismiss()
-                                return@setOnClickListener
-                            }
-                            val saveButton = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
-                            setBusy(saveButton, true)
-                            backgroundExecutor.execute {
-                                try {
-                                    repositoryWithSavedCookie().updateVideoFavoriteFolders(
-                                        video.aid, addIds, removeIds
-                                    )
-                                    runOnUiThread {
-                                        if (parsedVideo?.aid == video.aid) {
-                                            val isFavorited = selectedIds.isNotEmpty()
-                                            parsedVideo = video.copy(userFavorited = isFavorited)
-                                            detailFavoriteButton.text =
-                                                if (isFavorited) "已收藏" else "收藏"
-                                            detailFavoriteButton.setTextColor(
-                                                if (isFavorited) Color.WHITE else sub
-                                            )
-                                            detailFavoriteButton.background =
-                                                rippleShape(if (isFavorited) pink else field, 18)
-                                        }
-                                        toast("收藏夹更新成功")
-                                        dialog.dismiss()
-                                    }
-                                } catch (error: Exception) {
-                                    runOnUiThread {
-                                        setBusy(saveButton, false)
-                                        toast(error.message ?: "收藏夹更新失败")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    dialog.show()
-                }
-            } catch (error: Exception) {
-                runOnUiThread { toast(error.message ?: "读取收藏夹失败") }
-            }
-        }
     }
 
     private fun buildCommentsSection(video: BiliVideo): View {
