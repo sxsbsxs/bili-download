@@ -96,7 +96,7 @@ class MainActivity : ComponentActivity() {
         parseBtn.text = "正在打开…"
         backgroundExecutor.execute {
             try {
-                val video = BiliRepository { SecureCookieStore.load(this) }.inspect(text)
+                val video = BiliRepository { SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this) }.inspect(text)
                 runOnUiThread {
                     setBusy(parseBtn, false)
                     parseBtn.text = "搜索"
@@ -150,7 +150,7 @@ class MainActivity : ComponentActivity() {
         renderSearchResults()
         backgroundExecutor.execute {
             try {
-                val results = BiliRepository { SecureCookieStore.load(this) }
+                val results = BiliRepository { SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this) }
                     .getPopularVideos(requestedPage, 20)
                 runOnUiThread {
                     if (requestToken != searchRequestToken || isFinishing) return@runOnUiThread
@@ -199,7 +199,7 @@ class MainActivity : ComponentActivity() {
 
         backgroundExecutor.execute {
             try {
-                val results = BiliRepository { SecureCookieStore.load(this) }
+                val results = BiliRepository { SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this) }
                     .searchVideos(query, requestedPage, searchOrder)
                 runOnUiThread {
                     if (requestToken != searchRequestToken || isFinishing) return@runOnUiThread
@@ -363,7 +363,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     "https://www.bilibili.com/video/" + item.bvid
                 }
-                val video = BiliRepository { SecureCookieStore.load(this) }.inspect(target)
+                val video = BiliRepository { SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this) }.inspect(target)
                 runOnUiThread {
                     if (requestToken != detailLoadToken || isFinishing) return@runOnUiThread
                     setBusy(parseBtn, false)
@@ -2355,7 +2355,7 @@ class MainActivity : ComponentActivity() {
         backgroundExecutor.execute {
             val prepared = ArrayList<DownloadSpec>()
             val skipped = ArrayList<Int>()
-            val repository = BiliRepository { SecureCookieStore.load(this) }
+            val repository = BiliRepository { SecureCookieStore.loadCookieHeader(this) ?: SecureCookieStore.load(this) }
             for (page in pages.sortedBy { it.pageNumber }) {
                 try {
                     // Fetch each P independently so its available quality list is respected.
