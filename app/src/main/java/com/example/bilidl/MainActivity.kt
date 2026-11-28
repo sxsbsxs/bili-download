@@ -82,8 +82,13 @@ class MainActivity : ComponentActivity() {
             val readWriteFlags = result.data?.flags?.and(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
             ) ?: (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-            runCatching { contentResolver.takePersistableUriPermission(treeUri, readWriteFlags) }
-                .onFailure { toast("系统未授予目录持久访问权限，请重新选择") }
+            val permissionSaved = runCatching {
+                contentResolver.takePersistableUriPermission(treeUri, readWriteFlags)
+            }.isSuccess
+            if (!permissionSaved) {
+                toast("无法保存此目录的访问权限，请选择其他文件夹")
+                return@registerForActivityResult
+            }
             settingsViewModel.setString(KEY_DOWNLOAD_TREE_URI, treeUri.toString())
             setDownloadPathText(downloadFolderLabel(treeUri))
             toast("下载位置已更新")
@@ -677,13 +682,40 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun onChoosePathClicked() {
+        val current = settingsViewModel.getString(KEY_DOWNLOAD_TREE_URI)
+        if (current.isBlank()) {
+            launchDownloadFolderPicker()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("下载位置")
+            .setItems(arrayOf("更改保存文件夹", "恢复默认 Download/BiliDl")) { _, which ->
+                if (which == 0) {
+                    launchDownloadFolderPicker()
+                } else {
+                    runCatching {
+                        contentResolver.releasePersistableUriPermission(
+                            Uri.parse(current),
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        )
+                    }
+                    settingsViewModel.setString(KEY_DOWNLOAD_TREE_URI, "")
+                    setDownloadPathText("Download/BiliDl")
+                    toast("已恢复默认下载目录")
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun launchDownloadFolderPicker() {
+        val current = settingsViewModel.getString(KEY_DOWNLOAD_TREE_URI)
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
             addFlags(
                 Intent.FLAG_GRANT_READ_URI_PERMISSION or
                     Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
                     Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
             )
-            val current = settingsViewModel.getString(KEY_DOWNLOAD_TREE_URI)
             if (current.isNotBlank() && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 putExtra(android.provider.DocumentsContract.EXTRA_INITIAL_URI, Uri.parse(current))
             }

@@ -648,7 +648,7 @@ object BiliDownloadEngine {
     ): SavedDownload {
         val safeTitle = title
             .replace(Regex("""[\\/:*?"<>|]"""), "_")
-            .replace(Regex("""\\s+"""), " ")
+            .replace(Regex("""\s+"""), " ")
             .trim()
             .take(80)
             .ifBlank { "BiliDl video" }
