@@ -1014,12 +1014,23 @@ class BiliRepository(
         val publicQuery = publicParameters.entries.joinToString("&") {
             encode(it.key) + "=" + encode(it.value)
         }
-        val publicResponse = runCatching {
-            requestJson("https://api.bilibili.com/x/player/playurl?" + publicQuery)
-        }.getOrNull()
+        val playbackCookie = cookieProvider()
+        val playbackReferer = BiliPlayUrlPolicy.videoReferer(aid)
+        val publicAttempt = runCatching {
+            requestJson(
+                "https://api.bilibili.com/x/player/playurl?" + publicQuery,
+                cookieOverride = playbackCookie,
+                referer = playbackReferer,
+                requestUserAgent = BiliPlayUrlPolicy.PLAYER_USER_AGENT
+            )
+        }
+        val publicResponse = publicAttempt.getOrNull()
         if (publicResponse != null && hasPlayablePlayInfo(publicResponse)) {
             return publicResponse
         }
+        val publicFailure = publicAttempt.exceptionOrNull()?.message
+            ?: publicResponse?.let(::describePlayUrlFailure)
+            ?: "普通播放接口没有返回响应"
 
         // Fall back to WBI. For anonymous requests try_look=1 may expose additional
         // ordinary-user formats; authenticated requests omit it. Neither path
@@ -1039,18 +1050,49 @@ class BiliRepository(
             parameters,
             hasSessionCookie = !cookieHeader(cookieProvider()).isNullOrBlank()
         )
-        val signedQuery = signWbi(parameters)
-        return requestJson("https://api.bilibili.com/x/player/wbi/playurl?" + signedQuery)
+        val signedQuery = try {
+            signWbi(parameters)
+        } catch (error: Exception) {
+            throw IOException(
+                "B站普通播放接口未返回可播放流（" + publicFailure +
+                    "）；生成备用 WBI 签名失败：" + (error.message ?: "未知错误"),
+                error
+            )
+        }
+        val fallbackAttempt = runCatching {
+            requestJson(
+                "https://api.bilibili.com/x/player/wbi/playurl?" + signedQuery,
+                cookieOverride = playbackCookie,
+                referer = playbackReferer,
+                requestUserAgent = BiliPlayUrlPolicy.PLAYER_USER_AGENT
+            )
+        }
+        val fallback = fallbackAttempt.getOrNull()
+        if (fallback != null && hasPlayablePlayInfo(fallback)) return fallback
+        val fallbackFailure = fallbackAttempt.exceptionOrNull()?.message
+            ?: fallback?.let(::describePlayUrlFailure)
+            ?: "WBI 备用接口没有返回响应"
+        throw IOException(
+            "B站播放地址获取失败。普通接口：" + publicFailure +
+                "；WBI 备用接口：" + fallbackFailure
+        )
+    }
+
+    private fun describePlayUrlFailure(root: JSONObject): String {
+        val code = root.optInt("code", Int.MIN_VALUE)
+        val message = root.optString("message")
+            .ifBlank { root.optString("msg") }
+            .ifBlank { "没有返回可播放的视频流" }
+        return if (code == Int.MIN_VALUE) message else "code=" + code + "，" + message
     }
 
     private fun hasPlayablePlayInfo(root: JSONObject): Boolean {
         if (root.optInt("code", -1) != 0) return false
         val data = root.optJSONObject("data") ?: return false
-        val dash = data.optJSONObject("dash")
-        val hasDashVideo = (dash?.optJSONArray("video")?.length() ?: 0) > 0
-        val hasDashAudio = (dash?.optJSONArray("audio")?.length() ?: 0) > 0
-        val hasDurl = (data.optJSONArray("durl")?.length() ?: 0) > 0
-        return (hasDashVideo && hasDashAudio) || hasDurl
+        val dashVideoCount = data.optJSONObject("dash")
+            ?.optJSONArray("video")?.length() ?: 0
+        val durlCount = data.optJSONArray("durl")?.length() ?: 0
+        return BiliPlayUrlPolicy.hasPlayableStream(dashVideoCount, durlCount)
     }
 
     private fun parseQualities(play: JSONObject): List<BiliQuality> {
@@ -1206,14 +1248,19 @@ class BiliRepository(
         }
     }
 
-    private fun requestJson(url: String, cookieOverride: String? = cookieProvider()): JSONObject {
+    private fun requestJson(
+        url: String,
+        cookieOverride: String? = cookieProvider(),
+        referer: String = "https://www.bilibili.com/",
+        requestUserAgent: String = userAgent
+    ): JSONObject {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 15_000
             readTimeout = 25_000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", userAgent)
-            setRequestProperty("Referer", "https://www.bilibili.com/")
+            setRequestProperty("User-Agent", requestUserAgent)
+            setRequestProperty("Referer", referer)
             setRequestProperty("Origin", "https://www.bilibili.com")
             setRequestProperty("Accept", "application/json, text/plain, */*")
             setRequestProperty("Accept-Encoding", "identity")

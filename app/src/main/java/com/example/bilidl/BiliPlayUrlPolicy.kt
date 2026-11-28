@@ -8,6 +8,13 @@ package com.example.bilidl
  * and not a grant to premium-only formats.
  */
 internal object BiliPlayUrlPolicy {
+    const val PLAYER_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/63.0.3239.84 Safari/537.36"
+
+    fun videoReferer(aid: Long): String = "https://www.bilibili.com/av$aid"
+
+    fun hasPlayableStream(dashVideoCount: Int, durlCount: Int): Boolean =
+        dashVideoCount > 0 || durlCount > 0
+
     fun publicPlayUrlParameters(
         aid: Long,
         cid: Long,

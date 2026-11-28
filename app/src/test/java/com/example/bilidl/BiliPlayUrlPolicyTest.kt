@@ -25,6 +25,26 @@ class BiliPlayUrlPolicyTest {
     }
 
     @Test
+    fun playerHeadersUseTheVideoSpecificReferer() {
+        assertEquals("https://www.bilibili.com/av123456", BiliPlayUrlPolicy.videoReferer(123456L))
+    }
+
+    @Test
+    fun dashVideoDoesNotRequireSeparateAudioToBeAccepted() {
+        assertEquals(true, BiliPlayUrlPolicy.hasPlayableStream(1, 0))
+    }
+
+    @Test
+    fun progressiveResponseIsPlayable() {
+        assertEquals(true, BiliPlayUrlPolicy.hasPlayableStream(0, 1))
+    }
+
+    @Test
+    fun emptyResponseIsNotPlayable() {
+        assertEquals(false, BiliPlayUrlPolicy.hasPlayableStream(0, 0))
+    }
+
+    @Test
     fun anonymousWbiPlaybackRequestsIncludeTryLook() {
         val params = mutableMapOf("bvid" to "BV1xx", "qn" to "80")
 

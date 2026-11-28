@@ -1582,8 +1582,9 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         return@runOnUiThread
                     }
                     val headers = HashMap<String, String>().apply {
-                        put("Referer", "https://www.bilibili.com/")
+                        put("Referer", BiliPlayUrlPolicy.videoReferer(video.aid))
                         put("Origin", "https://www.bilibili.com")
+                        put("User-Agent", BiliPlayUrlPolicy.PLAYER_USER_AGENT)
                         if (!cookie.isNullOrBlank()) {
                             put(
                                 "Cookie",
@@ -1593,7 +1594,7 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                         }
                     }
                     val dataSourceFactory = DefaultHttpDataSource.Factory()
-                        .setUserAgent("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124.0.0.0 Mobile Safari/537.36")
+                        .setUserAgent(BiliPlayUrlPolicy.PLAYER_USER_AGENT)
                         .setAllowCrossProtocolRedirects(true)
                         .setDefaultRequestProperties(headers)
                     val progressiveFactory = ProgressiveMediaSource.Factory(dataSourceFactory)
