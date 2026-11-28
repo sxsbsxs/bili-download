@@ -33,7 +33,7 @@ class AccountCenterActivity : ComponentActivity() {
     private var profile: BiliAccountProfile? = null
     private var section = BiliAccountSection.WATCH_LATER
     private var page = 1
-    private var historyCursor = 0L
+    private var historyCursor: BiliHistoryCursorState? = null
     private var favoriteFolderId = 0L
     private var favoriteFolderTitle = ""
     private var isLoading = false
@@ -130,7 +130,7 @@ class AccountCenterActivity : ComponentActivity() {
                         section = value
                         favoriteFolderId = 0L
                         favoriteFolderTitle = ""
-                        historyCursor = 0L
+                        historyCursor = null
                         page = 1
                         styleSectionButtons()
                         loadContent(reset = true)
@@ -213,7 +213,7 @@ class AccountCenterActivity : ComponentActivity() {
         val account = profile ?: return
         if (isLoading) return
         val requestedPage = if (reset) 1 else page + 1
-        val requestedCursor = if (reset) 0L else historyCursor
+        val requestedCursor = if (reset) null else historyCursor
         isLoading = true
         loadMoreButton.isEnabled = false
         statusText.text = when {
@@ -229,7 +229,7 @@ class AccountCenterActivity : ComponentActivity() {
                 runOnUiThread {
                     isLoading = false
                     page = requestedPage
-                    historyCursor = data.nextCursor
+                    historyCursor = data.nextHistoryCursor
                     loadMoreButton.isEnabled = true
                     if (reset) contentList.removeAllViews()
                     if (section == BiliAccountSection.FAVORITES && favoriteFolderId == 0L) {

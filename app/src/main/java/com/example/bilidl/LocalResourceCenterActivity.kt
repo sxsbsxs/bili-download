@@ -211,7 +211,10 @@ class LocalResourceCenterActivity : ComponentActivity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         if (resource.resourceType == DownloadResourceType.MEDIA) {
-            actions.addView(action("播放") { playResource(resource) }, LinearLayout.LayoutParams(0, dp(38), 1f))
+            actions.addView(action("信息") { showMediaInfo(resource) }, LinearLayout.LayoutParams(0, dp(38), 1f))
+            actions.addView(action("播放") { playResource(resource) }, LinearLayout.LayoutParams(0, dp(38), 1f).apply {
+                leftMargin = dp(6)
+            })
         }
         actions.addView(action("导出") { exportResource(resource) }, LinearLayout.LayoutParams(0, dp(38), 1f).apply {
             leftMargin = dp(6)
@@ -221,6 +224,15 @@ class LocalResourceCenterActivity : ComponentActivity() {
         })
         card.addView(actions, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) })
         list.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
+    }
+
+    private fun showMediaInfo(resource: DownloadResourceEntity) {
+        startActivity(Intent(this, MediaInfoActivity::class.java).apply {
+            putExtra(MediaInfoActivity.EXTRA_URI, resource.contentUri)
+            putExtra(MediaInfoActivity.EXTRA_TITLE, resource.displayName)
+            putExtra(MediaInfoActivity.EXTRA_MIME, resource.mimeType)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        })
     }
 
     private fun playResource(resource: DownloadResourceEntity) {

@@ -26,6 +26,7 @@ class LocalPlaybackActivity : ComponentActivity() {
     private var playButton: Button? = null
     private var durationText: TextView? = null
     private var isPrepared = false
+    private var pipAspectRatio = Rational(16, 9)
 
     private val handler = Handler(Looper.getMainLooper())
     private val progressUpdater = object : Runnable {
@@ -64,7 +65,13 @@ class LocalPlaybackActivity : ComponentActivity() {
         controller.setAnchorView(player)
         player.setMediaController(controller)
         player.setVideoURI(uri)
-        player.setOnPreparedListener { it.isLooping = false; player.start() }
+        player.setOnPreparedListener { prepared ->
+            prepared.isLooping = false
+            if (prepared.videoWidth > 0 && prepared.videoHeight > 0) {
+                pipAspectRatio = Rational(prepared.videoWidth, prepared.videoHeight)
+            }
+            player.start()
+        }
         player.setOnErrorListener { _, _, _ ->
             android.widget.Toast.makeText(this, "此文件暂时无法播放", android.widget.Toast.LENGTH_SHORT).show()
             true
@@ -212,6 +219,24 @@ class LocalPlaybackActivity : ComponentActivity() {
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        val player = videoView
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && player?.isPlaying == true) {
+            runCatching {
+                enterPictureInPictureMode(
+                    PictureInPictureParams.Builder().setAspectRatio(pipAspectRatio).build()
+                )
+            }
+        }
+    }
+
+    override fun onStop() {
+        val inPip = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && isInPictureInPictureMode
+        if (!inPip) videoView?.pause()
+        super.onStop()
+    }
 
     override fun onDestroy() {
         handler.removeCallbacks(progressUpdater)

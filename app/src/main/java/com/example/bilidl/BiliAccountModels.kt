@@ -30,9 +30,15 @@ data class BiliFavoriteFolder(
     val coverUrl: String?
 )
 
+data class BiliHistoryCursorState(
+    val max: Long = 0L,
+    val viewAt: Long = 0L,
+    val business: String = ""
+)
+
 data class BiliAccountLibraryPage(
     val items: List<BiliAccountLibraryItem> = emptyList(),
     val folders: List<BiliFavoriteFolder> = emptyList(),
-    val nextCursor: Long = 0L,
+    val nextHistoryCursor: BiliHistoryCursorState? = null,
     val hasMore: Boolean = false
 )

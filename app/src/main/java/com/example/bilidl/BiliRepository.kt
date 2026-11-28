@@ -277,7 +277,7 @@ class BiliRepository(
         section: BiliAccountSection,
         mid: Long,
         page: Int = 1,
-        historyCursor: Long = 0L,
+        historyCursor: BiliHistoryCursorState? = null,
         favoriteFolderId: Long = 0L
     ): BiliAccountLibraryPage {
         require(mid > 0L) { "账号 ID 无效" }
@@ -308,15 +308,28 @@ class BiliRepository(
             }
 
             BiliAccountSection.HISTORY -> {
-                val url = "https://api.bilibili.com/x/web-interface/history/cursor" +
-                    "?max=$historyCursor&view_at=0&business=&ps=20&type=all"
-                val data = checkedData(requestJson(url))
+                // BVD preserves all three cursor fields; max alone can repeat or skip history rows.
+                val cursor = historyCursor ?: BiliHistoryCursorState()
+                val query = "max=${cursor.max}" +
+                    "&view_at=${cursor.viewAt}" +
+                    "&business=${encode(cursor.business)}" +
+                    "&ps=20&type=archive"
+                val data = checkedData(
+                    requestJson("https://api.bilibili.com/x/web-interface/history/cursor?$query")
+                )
                 val rows = data.optJSONArray("list") ?: JSONArray()
-                val cursor = data.optJSONObject("cursor")?.optLong("max") ?: 0L
+                val responseCursor = data.optJSONObject("cursor")
+                val nextCursor = responseCursor?.let {
+                    BiliHistoryCursorState(
+                        max = it.optLong("max"),
+                        viewAt = it.optLong("view_at"),
+                        business = it.optString("business")
+                    )
+                }
                 BiliAccountLibraryPage(
                     items = parseAccountItems(rows, "观看历史"),
-                    nextCursor = cursor,
-                    hasMore = rows.length() > 0 && cursor > 0L && cursor != historyCursor
+                    nextHistoryCursor = nextCursor,
+                    hasMore = rows.isNotEmpty() && nextCursor != null && nextCursor != historyCursor
                 )
             }
 

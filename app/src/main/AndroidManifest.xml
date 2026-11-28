@@ -29,6 +29,10 @@
             android:exported="false" />
         <activity
             android:name=".LocalPlaybackActivity"
+            android:exported="false"
+            android:supportsPictureInPicture="true" />
+        <activity
+            android:name=".MediaInfoActivity"
             android:exported="false" />
         <activity
             android:name=".LocalResourceCenterActivity"
