@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.testing.Test
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -42,14 +44,6 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
-        unitTests.all {
-            // Robolectric downloads Android framework jars at test runtime.
-            // Use Maven Central's canonical host rather than the legacy repo1 alias.
-            systemProperty(
-                "robolectric.dependency.repo.url",
-                "https://repo.maven.apache.org/maven2"
-            )
-        }
     }
 
     externalNativeBuild {
@@ -86,4 +80,14 @@ dependencies {
 ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
     arg("room.incremental", "true")
+}
+
+
+// Robolectric fetches instrumented Android framework jars at test runtime.
+// Use Maven Central's canonical hostname rather than the legacy repo1 alias.
+tasks.withType<Test>().configureEach {
+    systemProperty(
+        "robolectric.dependency.repo.url",
+        "https://repo.maven.apache.org/maven2"
+    )
 }
