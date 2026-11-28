@@ -588,6 +588,7 @@ class MainActivity : ComponentActivity() {
                     LoginUiState.VerifyingCookie -> {
                         setBusy(cookieBtn, true)
                         cookieBtn.text = "登录中…"
+                        setQrStatus("已取得登录凭据，正在向 B站验证账号…")
                     }
                     is LoginUiState.Success -> {
                         setBusy(cookieBtn, false)
@@ -2276,7 +2277,7 @@ class MainActivity : ComponentActivity() {
 
         // 扫码面板
         qrPanel = card()
-        val nativeLoginEntry = LinearLayout(this).apply {
+        val passwordLoginEntry = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             background = rippleShape(field, 12)
@@ -2304,7 +2305,7 @@ class MainActivity : ComponentActivity() {
             })
             setOnClickListener { openBilibiliPasswordLogin() }
         }
-        qrPanel.addView(nativeLoginEntry, LinearLayout.LayoutParams(match, wrap).apply {
+        qrPanel.addView(passwordLoginEntry, LinearLayout.LayoutParams(match, wrap).apply {
             bottomMargin = dp(16)
         })
         val qrBox = FrameLayout(this).apply {
