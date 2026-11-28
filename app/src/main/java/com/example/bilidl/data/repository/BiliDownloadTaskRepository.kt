@@ -101,7 +101,8 @@ class BiliDownloadTaskRepository private constructor(
             taskId = taskId,
             targetStatus = DownloadTaskStatus.RUNNING,
             stage = "正在下载",
-            detail = "后台任务已启动"
+            detail = "后台任务已启动",
+            resetProgress = true
         )
     }
 
