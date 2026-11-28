@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "bili-download"
-include(":app")
+include(":app", ":bilivdl-ui")
