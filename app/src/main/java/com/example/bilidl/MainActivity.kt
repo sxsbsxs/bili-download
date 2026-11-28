@@ -897,45 +897,84 @@ class MainActivity : ComponentActivity() {
         if (pages.isEmpty()) return
         toast("正在逐P获取画质并准备下载任务…")
         val audioOnly = settingsViewModel.getBoolean("audio_only", false)
+        val downloadDanmaku = settingsViewModel.getBoolean("danmaku", false)
+        val downloadSubtitles = settingsViewModel.getBoolean("subtitles", false)
+        val mismatchMode = BatchQualityMismatchMode.fromCode(
+            settingsViewModel.getInt(KEY_BATCH_QUALITY_MISMATCH, 0)
+        )
+        val requestedQuality = requestedQualityId()
+
         backgroundExecutor.execute {
-            val prepared = ArrayList<DownloadSpec>()
-            val skipped = ArrayList<Int>()
-            val repository = BiliRepository { SecureCookieStore.load(this) }
+            val outcomes = ArrayList<BatchResolveOutcome>()
+            val failures = ArrayList<String>()
+            val repository = BiliRepository { SecureCookieStore.load(applicationContext) }
             for (page in pages.sortedBy { it.pageNumber }) {
                 try {
-                    // Fetch each P independently so its available quality list is respected.
+                    // Each P is inspected independently: B站 can expose different qualities per part.
                     val partVideo = repository.inspect(pageUrl(video, page))
-                    val quality = preferredQualityId(partVideo.qualities)
-                    prepared += DownloadSpec(
-                        partVideo,
-                        quality,
-                        audioOnly,
-                        settingsViewModel.getBoolean("danmaku", false),
-                        settingsViewModel.getBoolean("subtitles", false)
+                    val assessment = BatchQualityMismatchPolicy.assess(
+                        mode = mismatchMode,
+                        requestedQualityId = requestedQuality,
+                        availableQualityIds = partVideo.qualities.map { it.id }
                     )
-                } catch (_: Exception) {
-                    skipped += page.pageNumber
+                    val fallbackQuality = preferredQualityId(partVideo.qualities)
+                    val wantedLabel = qualityLabelForId(requestedQuality)
+                    val actualLabel = partVideo.qualities.firstOrNull {
+                        it.id == fallbackQuality
+                    }?.label ?: qualityLabelForId(fallbackQuality)
+
+                    if (assessment.shouldSkip) {
+                        failures += "P" + page.pageNumber + "：" + wantedLabel + " 不可用，已跳过"
+                    } else {
+                        outcomes += BatchResolveOutcome(
+                            spec = DownloadSpec(
+                                partVideo,
+                                fallbackQuality,
+                                audioOnly,
+                                downloadDanmaku,
+                                downloadSubtitles
+                            ),
+                            mismatchDescription = if (assessment.shouldAsk) {
+                                "P" + page.pageNumber + " · " + page.part +
+                                    "：缺少 " + wantedLabel + "，将使用 " + actualLabel
+                            } else null
+                        )
+                    }
+                } catch (error: Exception) {
+                    failures += "P" + page.pageNumber + "：" + (error.message ?: "解析失败")
                 }
             }
 
+            val prepared = outcomes.mapNotNull { it.spec }
+            val mismatches = outcomes.filter { it.mismatchDescription != null }
             runOnUiThread {
-                prepared.forEach { spec ->
-                    val id = "bili_batch_" + java.util.UUID.randomUUID()
-                    downloadSpecs[id] = spec
-                    persistDownloadSpec(id, spec)
-                    addDownload(id, spec.video.title, spec.video.cover)
-                    enqueueDownload(id, spec)
+                if (mismatchMode == BatchQualityMismatchMode.ASK && mismatches.isNotEmpty()) {
+                    val details = mismatches.take(8).mapNotNull { it.mismatchDescription }
+                        .joinToString("\n\n")
+                    val more = if (mismatches.size > 8) {
+                        "\n\n另有 " + (mismatches.size - 8) + " 个分P画质不匹配"
+                    } else ""
+                    AlertDialog.Builder(this)
+                        .setTitle("部分分P没有目标画质")
+                        .setMessage(
+                            "以下分P无法提供 " + qualityLabelForId(requestedQuality) +
+                                "。\n\n" + details + more
+                        )
+                        .setPositiveButton("使用可用画质下载全部") { _, _ ->
+                            enqueuePreparedBatch(prepared, failures, pages.size)
+                        }
+                        .setNeutralButton("跳过不匹配分P") { _, _ ->
+                            val exactMatches = outcomes.filter { it.mismatchDescription == null }
+                                .mapNotNull { it.spec }
+                            val skipped = mismatches.mapNotNull { it.mismatchDescription }
+                                .map { "$it（已跳过）" }
+                            enqueuePreparedBatch(exactMatches, failures + skipped, pages.size)
+                        }
+                        .setNegativeButton("取消整批", null)
+                        .show()
+                } else {
+                    enqueuePreparedBatch(prepared, failures, pages.size)
                 }
-                if (prepared.isNotEmpty()) selectTab(1)
-                val message = buildString {
-                    append("已加入 ")
-                    append(prepared.size)
-                    append("/")
-                    append(pages.size)
-                    append(" 个分P任务")
-                    if (skipped.isNotEmpty()) append("；跳过 P" + skipped.joinToString(", P"))
-                }
-                toast(message)
             }
         }
     }
