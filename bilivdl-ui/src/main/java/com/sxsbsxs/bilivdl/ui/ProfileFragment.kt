@@ -127,8 +127,9 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
             Glide.with(this)
                 .load(account.avatarUrl)
                 .circleCrop()
-                .placeholder(android.R.drawable.sym_def_app_icon)
-                .error(android.R.drawable.sym_def_app_icon)
+                .fallback(R.drawable.ic_account_placeholder)
+                .placeholder(R.drawable.ic_account_placeholder)
+                .error(R.drawable.ic_account_placeholder)
                 .into(b.accountAvatar)
             b.accountLogin.visibility = if (account.loggedIn) View.GONE else View.VISIBLE
             b.accountLogout.visibility = if (account.loggedIn) View.VISIBLE else View.GONE
