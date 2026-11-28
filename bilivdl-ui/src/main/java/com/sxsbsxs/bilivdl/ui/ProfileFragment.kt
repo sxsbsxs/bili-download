@@ -10,6 +10,7 @@ import com.sxsbsxs.bilivdl.ui.databinding.FragmentProfileBinding
 /** BiliVdl profile and download preferences, backed by the host app's settings store. */
 class ProfileFragment : Fragment(R.layout.fragment_profile) {
     private var binding: FragmentProfileBinding? = null
+    private var currentAccount: BiliVdlAccount? = null
 
     private val host: BiliVdlUiHost
         get() = requireActivity() as? BiliVdlUiHost
@@ -27,8 +28,14 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
         super.onViewCreated(view, savedInstanceState)
         binding = FragmentProfileBinding.bind(view)
         binding?.accountCard?.setOnClickListener {
-            if (binding?.accountLogin?.visibility == View.VISIBLE) host.requestLogin()
+            val account = currentAccount
+            if (account?.loggedIn == true) {
+                if (account.mid > 0L) host.openUserSpace(account.mid) else refreshAccount()
+            } else {
+                host.requestLogin()
+            }
         }
+        binding?.settingDanmakuDisplay?.setOnClickListener { host.openDanmakuSettings() }
         binding?.accountLogin?.setOnClickListener { host.requestLogin() }
         binding?.accountRefresh?.setOnClickListener { refreshAccount() }
         binding?.accountLogout?.setOnClickListener { host.requestLogout() }
@@ -133,6 +140,7 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
     fun refreshAccount() {
         host.loadAccount { account ->
             val b = binding ?: return@loadAccount
+            currentAccount = account
             b.accountName.text = account.name
             b.accountStatus.text = account.status
             b.accountSignature.text = account.signature.ifBlank {
