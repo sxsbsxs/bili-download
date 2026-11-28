@@ -19,7 +19,7 @@ class ProfileFragment : Fragment(R.layout.fragment_profile) {
         binding = FragmentProfileBinding.bind(view)
         binding?.accountLogin?.setOnClickListener { host.requestLogin() }
         binding?.accountRefresh?.setOnClickListener { refresh() }
-        binding?.accountLogout?.setOnClickListener { host.requestLogout(); refresh() }
+        binding?.accountLogout?.setOnClickListener { host.requestLogout(); refreshAccount() }
         refreshAccount()
     }
 
