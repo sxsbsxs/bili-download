@@ -338,14 +338,39 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
             ellipsize = TextUtils.TruncateAt.END
             setLineSpacing(0f, 1.08f)
         }, LinearLayout.LayoutParams(match, wrap))
-        body.addView(TextView(this).apply {
+        val authorRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(6), 0, 0)
+        }
+        val authorAvatar = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = circle(Color.parseColor("#FFEAF0"))
+        }
+        if (!item.authorAvatarUrl.isNullOrBlank()) {
+            Glide.with(this)
+                .load(item.authorAvatarUrl)
+                .circleCrop()
+                .placeholder(com.sxsbsxs.bilivdl.ui.R.drawable.ic_account_placeholder)
+                .error(com.sxsbsxs.bilivdl.ui.R.drawable.ic_account_placeholder)
+                .into(authorAvatar)
+        } else {
+            authorAvatar.setImageResource(com.sxsbsxs.bilivdl.ui.R.drawable.ic_account_placeholder)
+        }
+        authorAvatar.setOnClickListener { openUserSpacePage(item.authorMid) }
+        authorAvatar.isClickable = item.authorMid > 0L
+        authorRow.addView(authorAvatar, LinearLayout.LayoutParams(dp(22), dp(22)))
+        authorRow.addView(TextView(this).apply {
             text = item.author
             textSize = 11f
             setTextColor(sub)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
-            setPadding(0, dp(6), 0, 0)
-        }, LinearLayout.LayoutParams(match, wrap))
+            setPadding(dp(7), 0, 0, 0)
+            isClickable = item.authorMid > 0L
+            setOnClickListener { openUserSpacePage(item.authorMid) }
+        }, LinearLayout.LayoutParams(0, wrap, 1f))
+        body.addView(authorRow, LinearLayout.LayoutParams(match, wrap))
         body.addView(TextView(this).apply {
             text = "播放 " + formatCount(item.viewCount) + "  ·  弹幕 " + formatCount(item.danmakuCount)
             textSize = 10f
@@ -1490,17 +1515,74 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         detailCommentSortButton?.text = if (commentsSort == 2) "按热度" else "按时间"
     }
 
+    private fun buildCommentIdentityRow(
+        name: String,
+        avatarUrl: String?,
+        userMid: Long,
+        meta: String,
+        onReport: (() -> Unit)? = null
+    ): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val avatar = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            background = circle(Color.parseColor("#FFEAF0"))
+            isClickable = userMid > 0L
+            setOnClickListener { openUserSpacePage(userMid) }
+        }
+        Glide.with(this)
+            .load(avatarUrl)
+            .circleCrop()
+            .placeholder(com.sxsbsxs.bilivdl.ui.R.drawable.ic_account_placeholder)
+            .error(com.sxsbsxs.bilivdl.ui.R.drawable.ic_account_placeholder)
+            .into(avatar)
+        row.addView(avatar, LinearLayout.LayoutParams(dp(34), dp(34)))
+        val identity = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(8), 0, 0, 0)
+        }
+        identity.addView(TextView(this).apply {
+            text = name
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(ink)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            isClickable = userMid > 0L
+            setOnClickListener { openUserSpacePage(userMid) }
+        })
+        identity.addView(TextView(this).apply {
+            text = meta
+            textSize = 10f
+            setTextColor(sub)
+        }, LinearLayout.LayoutParams(wrap, wrap).apply { topMargin = dp(2) })
+        row.addView(identity, LinearLayout.LayoutParams(0, wrap, 1f))
+        if (onReport != null) {
+            row.addView(chip("举报", false).apply {
+                textSize = 11f
+                setPadding(dp(10), dp(6), dp(10), dp(6))
+                setOnClickListener { onReport() }
+            })
+        }
+        return row
+    }
+
     private fun showCommentReplyDialog(video: BiliVideo, rootComment: BiliComment) {
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(8), dp(18), dp(8))
         }
-        body.addView(TextView(this).apply {
-            text = rootComment.userName + "  ·  " + formatPublishDate(rootComment.createTime)
-            textSize = 12f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(sub)
-        })
+        body.addView(
+            buildCommentIdentityRow(
+                name = rootComment.userName,
+                avatarUrl = rootComment.avatarUrl,
+                userMid = rootComment.userMid,
+                meta = formatPublishDate(rootComment.createTime),
+                onReport = { showCommentReportDialog(video, rootComment) }
+            )
+        )
         body.addView(TextView(this).apply {
             text = rootComment.message
             textSize = 14f
@@ -1566,25 +1648,66 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
                     val row = LinearLayout(this).apply {
                         orientation = LinearLayout.VERTICAL
                     }
-                    row.addView(TextView(this).apply {
-                        text = reply.userName + "  ·  " + formatPublishDate(reply.createTime)
-                        textSize = 11f
-                        typeface = Typeface.DEFAULT_BOLD
-                        setTextColor(ink)
-                    })
+                    row.addView(
+                        buildCommentIdentityRow(
+                            name = reply.userName,
+                            avatarUrl = reply.avatarUrl,
+                            userMid = reply.userMid,
+                            meta = formatPublishDate(reply.createTime),
+                            onReport = { showCommentReportDialog(video, reply) }
+                        )
+                    )
                     row.addView(TextView(this).apply {
                         text = reply.message
                         textSize = 13f
                         setTextColor(ink)
                         setPadding(0, dp(4), 0, dp(4))
                     })
-                    row.addView(chip("回复", false).apply {
+                    val actions = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL
+                        gravity = Gravity.CENTER_VERTICAL
+                    }
+                    val likeButton = chip(
+                        (if (reply.likedByMe) "已赞 " else "点赞 ") + formatCount(reply.likeCount),
+                        reply.likedByMe
+                    )
+                    likeButton.setOnClickListener {
+                        if (!requireInteractionLogin()) return@setOnClickListener
+                        val targetLiked = !reply.likedByMe
+                        setBusy(likeButton, true)
+                        backgroundExecutor.execute {
+                            try {
+                                repositoryWithSavedCookie().likeVideoComment(video.aid, reply.id, targetLiked)
+                                runOnUiThread {
+                                    setBusy(likeButton, false)
+                                    val replyIndex = replyItems.indexOfFirst { it.id == reply.id }
+                                    if (replyIndex >= 0) {
+                                        val latest = replyItems[replyIndex]
+                                        replyItems[replyIndex] = latest.copy(
+                                            likedByMe = targetLiked,
+                                            likeCount = (latest.likeCount + if (targetLiked) 1L else -1L)
+                                                .coerceAtLeast(0L)
+                                        )
+                                        render()
+                                    }
+                                }
+                            } catch (error: Exception) {
+                                runOnUiThread {
+                                    setBusy(likeButton, false)
+                                    toast(error.message ?: "回复点赞失败")
+                                }
+                            }
+                        }
+                    }
+                    actions.addView(likeButton)
+                    actions.addView(chip("回复", false).apply {
                         setOnClickListener {
                             targetParentId = reply.id
                             editor.hint = "回复 " + reply.userName
                             editor.requestFocus()
                         }
                     })
+                    row.addView(actions)
                     repliesContainer.addView(row, LinearLayout.LayoutParams(match, wrap))
                 }
             }
@@ -1687,6 +1810,64 @@ class MainActivity : FragmentActivity(), BiliVdlUiHost {
         }
         dialog.show()
         loadReplies(true)
+    }
+
+    private fun showCommentReportDialog(video: BiliVideo, comment: BiliComment) {
+        if (!requireInteractionLogin()) return
+        val reasonCodes = intArrayOf(1, 2, 3, 4, 5, 7, 8, 9, 10, 15, 0)
+        val reasons = arrayOf(
+            "垃圾广告", "色情低俗", "刷屏灌水", "引战或攻击", "剧透", "人身攻击",
+            "无关内容", "违法违规", "低俗内容", "侵犯隐私", "其他原因"
+        )
+        AlertDialog.Builder(this)
+            .setTitle("举报评论 · ${comment.userName}")
+            .setItems(reasons) { _, which ->
+                val reason = reasonCodes[which]
+                if (reason == 0) {
+                    val input = EditText(this).apply {
+                        hint = "请简要说明举报原因"
+                        minLines = 2
+                        maxLines = 4
+                        textSize = 14f
+                        setPadding(dp(12), dp(9), dp(12), dp(9))
+                        background = shape(field, 10)
+                    }
+                    AlertDialog.Builder(this)
+                        .setTitle("其他举报原因")
+                        .setView(input)
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("提交") { _, _ ->
+                            submitCommentReport(video, comment, reason, input.text?.toString().orEmpty())
+                        }
+                        .show()
+                } else {
+                    submitCommentReport(video, comment, reason, "")
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun submitCommentReport(
+        video: BiliVideo,
+        comment: BiliComment,
+        reason: Int,
+        detail: String
+    ) {
+        if (!requireInteractionLogin()) return
+        backgroundExecutor.execute {
+            try {
+                repositoryWithSavedCookie().reportVideoComment(
+                    aid = video.aid,
+                    rpid = comment.id,
+                    reason = reason,
+                    content = detail
+                )
+                runOnUiThread { toast("举报已提交，感谢反馈") }
+            } catch (error: Exception) {
+                runOnUiThread { toast(error.message ?: "举报提交失败") }
+            }
+        }
     }
 
     private fun performCommentLike(video: BiliVideo, comment: BiliComment) {
